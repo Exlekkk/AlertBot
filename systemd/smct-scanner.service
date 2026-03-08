@@ -5,8 +5,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/workspace/AlertBot
-ExecStart=/usr/bin/python3 /workspace/AlertBot/scripts/run_scanner.py
+WorkingDirectory=/opt/smct-alert
+ExecStart=/opt/smct-alert/venv/bin/python /opt/smct-alert/scripts/run_scanner.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
