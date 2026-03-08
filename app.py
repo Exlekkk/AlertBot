@@ -1,40 +1,20 @@
 from datetime import datetime, timedelta
-import logging
-import os
 
 from fastapi import FastAPI, HTTPException, Request
-import requests
-from dotenv import load_dotenv
 
-load_dotenv('/opt/smct-alert/config/.env')
+from config import (
+    ALERT_COOLDOWN_SECONDS,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    WEBHOOK_LOG_FILE,
+    WEBHOOK_SECRET,
+)
+from services.logger import get_logger
+from services.telegram import format_webhook_message, send_telegram_message
 
 app = FastAPI()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-
-LOG_FILE = os.getenv("WEBHOOK_LOG_FILE", "webhook.log")
-COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))
-
-logger = logging.getLogger("webhook")
-if not logger.handlers:
-    logger.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(LOG_FILE)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-    logger.addHandler(file_handler)
-
+logger = get_logger("webhook", WEBHOOK_LOG_FILE)
 last_sent = {}
-
-
-def send_telegram_message(text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
-    }
-    r = requests.post(url, json=payload, timeout=20)
-    return r.text
 
 
 def normalize_field(data: dict, *keys: str, default: str = "unknown") -> str:
@@ -79,17 +59,11 @@ async def webhook(request: Request):
     cooldown_key = (symbol, timeframe, signal)
     now = datetime.now()
     previous_time = last_sent.get(cooldown_key)
-    if previous_time and now - previous_time < timedelta(seconds=COOLDOWN_SECONDS):
+    if previous_time and now - previous_time < timedelta(seconds=ALERT_COOLDOWN_SECONDS):
         return {"ok": True, "skipped": True, "reason": "cooldown"}
 
-    message = (
-        "📡 SMCT预警\n"
-        f"标的：{symbol}\n"
-        f"周期：{timeframe}\n"
-        f"信号：{signal}\n"
-        "来源：TradingView"
-    )
-    result = send_telegram_message(message)
+    message = format_webhook_message(signal=signal, symbol=symbol, timeframe=timeframe)
+    result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
     last_sent[cooldown_key] = now
 
     return {"ok": True, "telegram_result": result}
