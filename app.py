@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, HTTPException, Request
 
 from config import (
@@ -7,13 +9,12 @@ from config import (
     WEBHOOK_LOG_FILE,
     WEBHOOK_SECRET,
 )
-from engine.cooldown import CooldownStore
 from services.logger import get_logger
-from services.telegram import format_alert_message, send_telegram_message
+from services.telegram import format_webhook_message, send_telegram_message
 
 app = FastAPI()
 logger = get_logger("webhook", WEBHOOK_LOG_FILE)
-cooldown = CooldownStore(ALERT_COOLDOWN_SECONDS)
+last_sent = {}
 
 
 def normalize_field(data: dict, *keys: str, default: str = "unknown") -> str:
@@ -56,18 +57,13 @@ async def webhook(request: Request):
     )
 
     cooldown_key = (symbol, timeframe, signal)
-    if cooldown.is_in_cooldown(cooldown_key):
+    now = datetime.now()
+    previous_time = last_sent.get(cooldown_key)
+    if previous_time and now - previous_time < timedelta(seconds=ALERT_COOLDOWN_SECONDS):
         return {"ok": True, "skipped": True, "reason": "cooldown"}
 
-    message = format_alert_message(
-        signal=signal,
-        symbol=symbol,
-        timeframe=timeframe,
-        context="Webhook事件",
-        trigger="外部信号触发",
-        source="TradingView",
-    )
+    message = format_webhook_message(signal=signal, symbol=symbol, timeframe=timeframe)
     result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
-    cooldown.mark_sent(cooldown_key)
+    last_sent[cooldown_key] = now
 
     return {"ok": True, "telegram_result": result}

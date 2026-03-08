@@ -12,7 +12,7 @@ from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
 from engine.signals import detect_signals
 from services.logger import get_logger
-from services.telegram import format_alert_message, send_telegram_message
+from services.telegram import format_engine_message, send_telegram_message
 
 
 class SMCTScanner:
@@ -43,7 +43,7 @@ class SMCTScanner:
                 self.logger.info("scan_cooldown_skip symbol=%s signal=%s", top["symbol"], top["signal"])
                 return {"ok": True, "signal": None, "reason": "cooldown"}
 
-            text = format_alert_message(
+            text = format_engine_message(
                 signal=top["signal"],
                 symbol=top["symbol"],
                 timeframe=top["timeframe"],

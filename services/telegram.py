@@ -14,7 +14,17 @@ def signal_label(signal: str) -> str:
     return SIGNAL_LABELS.get(signal, signal)
 
 
-def format_alert_message(signal: str, symbol: str, timeframe: str, context: str, trigger: str, source: str) -> str:
+def format_webhook_message(signal: str, symbol: str, timeframe: str) -> str:
+    return (
+        "📡 SMCT预警\n"
+        f"类型：{signal_label(signal)}\n"
+        f"标的：{symbol}\n"
+        f"周期：{timeframe}\n"
+        "来源：TradingView"
+    )
+
+
+def format_engine_message(signal: str, symbol: str, timeframe: str, context: str, trigger: str, source: str) -> str:
     return (
         "📡 SMCT预警\n"
         f"类型：{signal_label(signal)}\n"
