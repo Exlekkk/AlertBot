@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 venv/
 config/.env
+
+__pycache__/
+*.pyc
+webhook.log
+venv/
+config/.env

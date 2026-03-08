@@ -1,0 +1,15 @@
+[Unit]
+Description=SMCT BTCUSDT Scanner Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/smct-alert
+ExecStart=/opt/smct-alert/venv/bin/python /opt/smct-alert/scripts/run_scanner.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
