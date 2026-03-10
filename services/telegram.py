@@ -51,7 +51,7 @@ def status_label(status: str) -> str:
 
 def format_webhook_message(signal: str, symbol: str, timeframe: str) -> str:
     return (
-        "交易预警\n"
+        "📡 交易预警\n"
         "优先级: -\n"
         f"类型建议: {signal_label(signal)}\n"
         f"标的: {symbol}\n"
@@ -72,7 +72,7 @@ def format_engine_message(
     status: str,
 ) -> str:
     return (
-        "交易预警\n"
+        "📡 交易预警\n"
         f"优先级: {priority_label(priority)}\n"
         f"类型建议: {signal_label(signal)}\n"
         f"标的: {symbol}\n"
