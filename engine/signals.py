@@ -251,48 +251,78 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         )
 
     b_long_checks = {
-        "trend_4h_not_strong_bear": not strong_4h_bear,
-        "trend_1h_supportive": trend_1h_soft_bull,
-        "volume_ok_relaxed": latest["volume"] >= latest["vol_sma20"] * 0.5,
-        "close_above_ema20": latest["close"] > latest["ema20"],
-        "not_bearish_structure": not bearish_structure,
-        "not_hard_sideways": not hard_sideways,
-    }
-    if _evaluate_branch("B_PULLBACK_LONG", b_long_checks, near_miss_signals, blocked_counter):
-        signals.append(
-            {
-                "signal": "B_PULLBACK_LONG",
-                "symbol": symbol,
-                "timeframe": "15m",
-                "priority": SIGNAL_PRIORITY["B_PULLBACK_LONG"],
-                "direction": "long",
-                "price": latest["close"],
-                "trend_1h": trend_1h,
-                "status": "active",
-            }
-        )
+    "trend_4h_not_strong_bear": not strong_4h_bear,
+    "trend_1h_supportive": trend_1h_soft_bull,
+    "volume_ok_relaxed": latest["volume"] >= latest["vol_sma20"] * 0.5,
+    "close_above_ema20": latest["close"] > latest["ema20"],
+    "not_bearish_structure": not bearish_structure,
+    "not_hard_sideways": not hard_sideways,
+
+    # 新增过滤：别在高位快贴近前高/上方压力时还发B多
+    "not_near_resistance": not near_resistance,
+
+    # 新增过滤：不能已经离EMA20太远，避免把高位末端延伸误判成回踩多
+    "not_overextended_from_ema20": (latest["close"] - latest["ema20"]) < atr * 1.2,
+
+    # 新增过滤：最近一段如果已经明显拉升过快，禁止再发B多
+    "not_late_long_extension": not (
+        len(klines_15m) >= 6
+        and (klines_15m[-1]["close"] - klines_15m[-6]["close"]) > atr * 2.0
+    ),
+
+    # 新增过滤：至少不能跌回EMA10下方，避免高位转弱时误发
+    "close_above_ema10": latest["close"] >= latest["ema10"],
+}
+if _evaluate_branch("B_PULLBACK_LONG", b_long_checks, near_miss_signals, blocked_counter):
+    signals.append(
+        {
+            "signal": "B_PULLBACK_LONG",
+            "symbol": symbol,
+            "timeframe": "15m",
+            "priority": SIGNAL_PRIORITY["B_PULLBACK_LONG"],
+            "direction": "long",
+            "price": latest["close"],
+            "trend_1h": trend_1h,
+            "status": "active",
+        }
+    )
 
     b_short_checks = {
-        "trend_4h_not_strong_bull": not strong_4h_bull,
-        "trend_1h_supportive": trend_1h_soft_bear,
-        "volume_ok_relaxed": latest["volume"] >= latest["vol_sma20"] * 0.5,
-        "close_below_ema20": latest["close"] < latest["ema20"],
-        "not_bullish_structure": not bullish_structure,
-        "not_hard_sideways": not hard_sideways,
-    }
-    if _evaluate_branch("B_PULLBACK_SHORT", b_short_checks, near_miss_signals, blocked_counter):
-        signals.append(
-            {
-                "signal": "B_PULLBACK_SHORT",
-                "symbol": symbol,
-                "timeframe": "15m",
-                "priority": SIGNAL_PRIORITY["B_PULLBACK_SHORT"],
-                "direction": "short",
-                "price": latest["close"],
-                "trend_1h": trend_1h,
-                "status": "active",
-            }
-        )
+    "trend_4h_not_strong_bull": not strong_4h_bull,
+    "trend_1h_supportive": trend_1h_soft_bear,
+    "volume_ok_relaxed": latest["volume"] >= latest["vol_sma20"] * 0.5,
+    "close_below_ema20": latest["close"] < latest["ema20"],
+    "not_bullish_structure": not bullish_structure,
+    "not_hard_sideways": not hard_sideways,
+
+    # 新增过滤：别在低位快贴近前低/下方支撑时还发B空
+    "not_near_support": not near_support,
+
+    # 新增过滤：不能已经离EMA20太远，避免把低位末端延伸误判成回踩空
+    "not_overextended_from_ema20": (latest["ema20"] - latest["close"]) < atr * 1.2,
+
+    # 新增过滤：最近一段如果已经明显下跌过快，禁止再发B空
+    "not_late_short_extension": not (
+        len(klines_15m) >= 6
+        and (klines_15m[-6]["close"] - klines_15m[-1]["close"]) > atr * 2.0
+    ),
+
+    # 新增过滤：至少不能重新站回EMA10上方，避免低位转强时误发
+    "close_below_ema10": latest["close"] <= latest["ema10"],
+}
+if _evaluate_branch("B_PULLBACK_SHORT", b_short_checks, near_miss_signals, blocked_counter):
+    signals.append(
+        {
+            "signal": "B_PULLBACK_SHORT",
+            "symbol": symbol,
+            "timeframe": "15m",
+            "priority": SIGNAL_PRIORITY["B_PULLBACK_SHORT"],
+            "direction": "short",
+            "price": latest["close"],
+            "trend_1h": trend_1h,
+            "status": "active",
+        }
+    )
 
     macd_seq = [k["macd_hist"] for k in klines_15m[-8:]]
     c_long_checks = {
