@@ -181,8 +181,8 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
 
     a_near_resistance = piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) < atr * 0.5
     a_near_support = piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.5
-    a_long_not_overextended = (latest["close"] - latest["ema20"]) <= atr * 2.0
-    a_short_not_overextended = (latest["ema20"] - latest["close"]) <= atr * 2.0
+    a_long_not_overextended = (latest["close"] - latest["ema20"]) < atr * 2.0
+    a_short_not_overextended = (latest["ema20"] - latest["close"]) < atr * 2.0
 
     recent = klines_15m[-6:]
     a_late_long_extension = (

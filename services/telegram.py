@@ -47,14 +47,12 @@ def status_label(status: str) -> str:
 
 def format_webhook_message(signal: str, symbol: str, timeframe: str) -> str:
     return (
-        "📡 交易预警\n"
-        "优先级：-\n"
-        f"类型建议：{signal_label(signal)}\n"
-        f"标的：{symbol}\n"
-        "价格：-\n"
-        f"周期：{timeframe}\n"
-        "1h方向：-\n"
-        "状态：-"
+        "🎯 交易预警\n"
+        f"类型建议: {signal_label(signal)}\n"
+        f"标的: {symbol}\n"
+        f"周期: {timeframe}\n"
+        "方向: \n"
+        "状态: \n"
     )
 
 
@@ -68,14 +66,14 @@ def format_engine_message(
     status: str,
 ) -> str:
     return (
-        "📡 交易预警\n"
-        f"优先级：{priority_label(priority)}\n"
-        f"类型建议：{signal_label(signal)}\n"
-        f"标的：{symbol}\n"
-        f"价格：{price:.2f}\n"
-        f"周期：{timeframe}\n"
-        f"1h方向：{trend_1h_label(trend_1h)}\n"
-        f"状态：{status_label(status)}"
+        "⚡ 交易预警\n"
+        f"优先级: {priority_label(priority)}\n"
+        f"类型建议: {signal_label(signal)}\n"
+        f"标的: {symbol}\n"
+        f"价格: {price:.2f}\n"
+        f"周期: {timeframe}\n"
+        f"1h方向: {trend_1h_label(trend_1h)}\n"
+        f"状态: {status_label(status)}"
     )
 
 
