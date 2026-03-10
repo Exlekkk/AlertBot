@@ -15,7 +15,7 @@
 - `engine/structure.py`：pivot/BOS/MSS/FVG简化
 - `engine/signals.py`：A/B/C 信号判定（v1近似版）
 - `engine/scanner.py`：扫描主循环
-- `engine/cooldown.py`：冷却去重
+- `engine/cooldown.py`：状态去重
 - `scripts/run_scanner.py`：扫描器启动入口
 - `systemd/smct-scanner.service`：扫描器服务单元示例
 
@@ -55,8 +55,8 @@ sudo systemctl status smct-scanner.service --no-pager
 - A_LONG / A_SHORT
 - B_PULLBACK_LONG / B_PULLBACK_SHORT（近似）
 - C_LEFT_LONG / C_LEFT_SHORT（近似）
-- 优先级 `A > B > C`，每轮只推一个
-- 冷却去重（symbol + timeframe + signal）
+- 优先级 `A > B > C`，同方向每轮仅推最高优先级
+- 状态去重（同类型同方向同状态且价格微变时静默，升级/变化重推）
 
 ### TODO
 - 更完整的 FVG 区间管理与“未回补”状态跟踪

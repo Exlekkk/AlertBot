@@ -32,6 +32,25 @@ STATUS_LABELS = {
     "early": "早期预警",
 }
 
+PRIORITY_LABELS = {
+    1: "A",
+    2: "B",
+    3: "C",
+}
+
+TREND_1H_LABELS = {
+    "bull": "偏多",
+    "lean_bull": "偏多(弱)",
+    "neutral": "中性",
+    "lean_bear": "偏空(弱)",
+    "bear": "偏空",
+}
+
+STATUS_LABELS = {
+    "active": "进行中",
+    "early": "早期预警",
+}
+
 
 def signal_label(signal: str) -> str:
     return SIGNAL_LABELS.get(signal, signal)
@@ -51,6 +70,7 @@ def status_label(status: str) -> str:
 
 def format_webhook_message(signal: str, symbol: str, timeframe: str) -> str:
     return (
+ codex/update-btcusdt-scanner-push-rules-cjsvx2
         "交易预警\n"
         "优先级: -\n"
         f"类型建议: {signal_label(signal)}\n"
@@ -59,6 +79,16 @@ def format_webhook_message(signal: str, symbol: str, timeframe: str) -> str:
         f"周期: {timeframe}\n"
         "1h方向: \n"
         "状态: "
+
+        "📡 交易预警\n"
+        "优先级：-\n"
+        f"类型：{signal_label(signal)}\n"
+        f"标的：{symbol}\n"
+        "价格：-\n"
+        f"周期：{timeframe}\n"
+        "1h方向：-\n"
+        "状态：-"
+ main
     )
 
 
@@ -72,6 +102,7 @@ def format_engine_message(
     status: str,
 ) -> str:
     return (
+ codex/update-btcusdt-scanner-push-rules-cjsvx2
         "交易预警\n"
         f"优先级: {priority_label(priority)}\n"
         f"类型建议: {signal_label(signal)}\n"
@@ -80,6 +111,16 @@ def format_engine_message(
         f"周期: {timeframe}\n"
         f"1h方向: {trend_1h_label(trend_1h)}\n"
         f"状态: {status_label(status)}"
+
+        "📡 交易预警\n"
+        f"优先级：{priority_label(priority)}\n"
+        f"类型：{signal_label(signal)}\n"
+        f"标的：{symbol}\n"
+        f"价格：{price:.2f}\n"
+        f"周期：{timeframe}\n"
+        f"1h方向：{trend_1h_label(trend_1h)}\n"
+        f"状态：{status_label(status)}"
+ main
     )
 
 
