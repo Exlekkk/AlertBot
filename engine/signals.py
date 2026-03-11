@@ -134,6 +134,30 @@ def _is_soft_monotonic(values: list[float], direction: str, min_progress_steps: 
     return progresses >= min_progress_steps
 
 
+def _c_long_left_signal(macd_seq: list[float]) -> bool:
+    if len(macd_seq) < 4:
+        return False
+
+    left_warning_up = (
+        (len(macd_seq) >= 4 and _is_strictly_monotonic(macd_seq[-4:], "up"))
+        or (len(macd_seq) >= 5 and _is_soft_monotonic(macd_seq[-5:], "up", min_progress_steps=3))
+    )
+    mostly_below_zero = sum(v <= 0 for v in macd_seq[-4:]) >= 3
+    return left_warning_up and mostly_below_zero
+
+
+def _c_short_left_signal(macd_seq: list[float]) -> bool:
+    if len(macd_seq) < 4:
+        return False
+
+    left_warning_down = (
+        (len(macd_seq) >= 4 and _is_strictly_monotonic(macd_seq[-4:], "down"))
+        or (len(macd_seq) >= 5 and _is_soft_monotonic(macd_seq[-5:], "down", min_progress_steps=3))
+    )
+    mostly_above_zero = sum(v >= 0 for v in macd_seq[-4:]) >= 3
+    return left_warning_down and mostly_above_zero
+
+
 def _pick_best_per_direction(signals: list[dict]) -> list[dict]:
     best_by_direction = {}
     for signal in signals:
@@ -167,6 +191,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
     bos_15 = detect_last_bos(klines_15m, piv_h, piv_l)
     mss_15 = detect_last_mss(klines_15m, piv_h, piv_l)
     latest = klines_15m[-1]
+    prev = klines_15m[-2]
     last2 = klines_15m[-2:]
     atr = latest["atr"]
     sideways = _sideways_filter(klines_15m)
@@ -308,12 +333,24 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         )
 
     macd_seq = [k["macd_hist"] for k in klines_15m[-8:]]
+    prev_macd_seq = [k["macd_hist"] for k in klines_15m[-9:-1]] if len(klines_15m) >= 9 else []
+
+    current_c_long_left = _c_long_left_signal(macd_seq)
+    previous_c_long_left = _c_long_left_signal(prev_macd_seq)
+    current_c_short_left = _c_short_left_signal(macd_seq)
+    previous_c_short_left = _c_short_left_signal(prev_macd_seq)
+
+    c_long_price_confirm = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
+    c_short_price_confirm = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
+
+    c_long_position_ok = near_support or latest["close"] <= latest["ema20"] + atr * 0.35
+    c_short_position_ok = near_resistance or latest["close"] >= latest["ema20"] - atr * 0.35
+
     c_long_checks = {
-        "left_warning_up": (
-            (len(macd_seq) >= 4 and _is_strictly_monotonic(macd_seq[-4:], "up"))
-            or (len(macd_seq) >= 5 and _is_soft_monotonic(macd_seq[-5:], "up", min_progress_steps=3))
-        ),
-        "mostly_below_zero": len(macd_seq) >= 4 and sum(v <= 0 for v in macd_seq[-4:]) >= 3,
+        "left_warning_up": current_c_long_left,
+        "fresh_left_trigger": current_c_long_left and not previous_c_long_left,
+        "position_ok": c_long_position_ok,
+        "price_decelerating": c_long_price_confirm,
     }
     if _evaluate_branch("C_LEFT_LONG", c_long_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -330,11 +367,10 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         )
 
     c_short_checks = {
-        "left_warning_down": (
-            (len(macd_seq) >= 4 and _is_strictly_monotonic(macd_seq[-4:], "down"))
-            or (len(macd_seq) >= 5 and _is_soft_monotonic(macd_seq[-5:], "down", min_progress_steps=3))
-        ),
-        "mostly_above_zero": len(macd_seq) >= 4 and sum(v >= 0 for v in macd_seq[-4:]) >= 3,
+        "left_warning_down": current_c_short_left,
+        "fresh_left_trigger": current_c_short_left and not previous_c_short_left,
+        "position_ok": c_short_position_ok,
+        "price_decelerating": c_short_price_confirm,
     }
     if _evaluate_branch("C_LEFT_SHORT", c_short_checks, near_miss_signals, blocked_counter):
         signals.append(
