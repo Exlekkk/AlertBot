@@ -1,28 +1,59 @@
-import time
-
-
 class SignalStateStore:
     def __init__(
         self,
         price_change_threshold: float = 0.001,
-        b_signal_cooldown_seconds: int = 75 * 60,
-        c_signal_cooldown_seconds: int = 45 * 60,
+        b_upgrade_atr_ratio: float = 0.4,
+        c_upgrade_atr_ratio: float = 0.25,
     ):
         self.price_change_threshold = price_change_threshold
-        self.b_signal_cooldown_seconds = b_signal_cooldown_seconds
-        self.c_signal_cooldown_seconds = c_signal_cooldown_seconds
+        self.b_upgrade_atr_ratio = b_upgrade_atr_ratio
+        self.c_upgrade_atr_ratio = c_upgrade_atr_ratio
         self.last_sent: dict[tuple[str, str, str], dict] = {}
 
     def _price_change_ratio(self, previous_price: float, current_price: float) -> float:
         base = max(abs(previous_price), 1e-9)
         return abs(current_price - previous_price) / base
 
-    def _cooldown_seconds_for(self, signal_name: str) -> int:
+    def _trend_score(self, trend_1h: str) -> int:
+        mapping = {
+            "bear": 0,
+            "lean_bear": 1,
+            "neutral": 2,
+            "lean_bull": 3,
+            "bull": 4,
+        }
+        return mapping.get(trend_1h, 2)
+
+    def _is_same_signal_family(self, previous_signal: str, current_signal: str) -> bool:
+        return previous_signal == current_signal
+
+    def _has_trend_upgrade(self, previous: dict, current: dict) -> bool:
+        prev_score = self._trend_score(previous.get("trend_1h", "neutral"))
+        curr_score = self._trend_score(current.get("trend_1h", "neutral"))
+
+        if current["direction"] == "long":
+            return curr_score > prev_score
+        return curr_score < prev_score
+
+    def _has_price_upgrade(self, previous: dict, current: dict) -> bool:
+        previous_price = previous["price"]
+        current_price = current["price"]
+        atr = max(float(current.get("atr", 0.0)), 1e-9)
+
+        signal_name = current["signal"]
         if signal_name.startswith("B_"):
-            return self.b_signal_cooldown_seconds
-        if signal_name.startswith("C_"):
-            return self.c_signal_cooldown_seconds
-        return 0
+            threshold = atr * self.b_upgrade_atr_ratio
+        elif signal_name.startswith("C_"):
+            threshold = atr * self.c_upgrade_atr_ratio
+        else:
+            threshold = 0.0
+
+        if current["direction"] == "long":
+            return current_price > previous_price + threshold
+        return current_price < previous_price - threshold
+
+    def _is_b_or_c_signal(self, signal_name: str) -> bool:
+        return signal_name.startswith("B_") or signal_name.startswith("C_")
 
     def should_send(self, signal: dict) -> bool:
         key = (signal["symbol"], signal["timeframe"], signal["direction"])
@@ -32,26 +63,27 @@ class SignalStateStore:
 
         same_signal = previous["signal"] == signal["signal"]
         same_status = previous["status"] == signal["status"]
-        upgraded = (
-            signal["priority"] < previous["priority"]
-            or signal["status"] != previous["status"]
-        )
 
-        if upgraded:
+        upgraded_priority = signal["priority"] < previous["priority"]
+        changed_status = signal["status"] != previous["status"]
+
+        if upgraded_priority or changed_status:
             return True
-
-        cooldown_seconds = self._cooldown_seconds_for(signal["signal"])
-        if same_signal and same_status and cooldown_seconds > 0:
-            elapsed = time.time() - previous.get("sent_at", 0.0)
-            if elapsed < cooldown_seconds:
-                return False
 
         tiny_price_move = (
             self._price_change_ratio(previous["price"], signal["price"])
             <= self.price_change_threshold
         )
+
         if same_signal and same_status and tiny_price_move:
             return False
+
+        if self._is_b_or_c_signal(signal["signal"]) and self._is_same_signal_family(previous["signal"], signal["signal"]):
+            trend_upgrade = self._has_trend_upgrade(previous, signal)
+            price_upgrade = self._has_price_upgrade(previous, signal)
+
+            if not trend_upgrade and not price_upgrade:
+                return False
 
         return True
 
@@ -62,5 +94,6 @@ class SignalStateStore:
             "priority": signal["priority"],
             "status": signal["status"],
             "price": signal["price"],
-            "sent_at": time.time(),
+            "trend_1h": signal.get("trend_1h", "neutral"),
+            "atr": signal.get("atr", 0.0),
         }
