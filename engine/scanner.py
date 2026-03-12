@@ -27,10 +27,18 @@ class SMCTScanner:
 
     def scan_once(self) -> dict:
         try:
+            klines_1d = self._fetch_enriched("1d")
             klines_4h = self._fetch_enriched("4h")
             klines_1h = self._fetch_enriched("1h")
             klines_15m = self._fetch_enriched("15m")
-            signal_result = detect_signals(self.symbol, klines_4h, klines_1h, klines_15m)
+
+            signal_result = detect_signals(
+                self.symbol,
+                klines_1d,
+                klines_4h,
+                klines_1h,
+                klines_15m,
+            )
             signals = signal_result["signals"]
             near_miss_signals = signal_result["near_miss_signals"]
             blocked_reasons = signal_result["blocked_reasons"]
@@ -90,12 +98,14 @@ class SMCTScanner:
                     "near_miss_signals": near_miss_signals,
                     "blocked_reasons": blocked_reasons,
                 }
+
             return {
                 "ok": True,
                 "sent": sent_signals,
                 "near_miss_signals": near_miss_signals,
                 "blocked_reasons": blocked_reasons,
             }
+
         except Exception as exc:
             self.logger.exception("scan_failed error=%s", exc)
             return {"ok": False, "error": str(exc)}
