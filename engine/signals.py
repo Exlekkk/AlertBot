@@ -194,6 +194,16 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
     prev = klines_15m[-2]
     last2 = klines_15m[-2:]
     atr = latest["atr"]
+
+    eq_bearish_divergence = (
+        latest["close"] >= prev["close"] - atr * 0.05
+        and latest["macd_hist"] < prev["macd_hist"]
+    )
+    eq_bullish_divergence = (
+        latest["close"] <= prev["close"] + atr * 0.05
+        and latest["macd_hist"] > prev["macd_hist"]
+    )
+
     sideways = _sideways_filter(klines_15m)
     hard_sideways = _hard_sideways_filter(klines_15m)
 
@@ -236,6 +246,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         "breakout_or_gap": bos_15 == "up" or is_bullish_fvg(klines_15m[-10:]),
         "not_near_resistance": not near_resistance,
         "not_sideways": not sideways,
+        "no_eq_bearish_divergence": not eq_bearish_divergence,
     }
     if _evaluate_branch("A_LONG", a_long_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -259,6 +270,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         "breakdown_or_gap": bos_15 == "down" or is_bearish_fvg(klines_15m[-10:]),
         "not_near_support": not near_support,
         "not_sideways": not sideways,
+        "no_eq_bullish_divergence": not eq_bullish_divergence,
     }
     if _evaluate_branch("A_SHORT", a_short_checks, near_miss_signals, blocked_counter):
         signals.append(
