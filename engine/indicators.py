@@ -254,8 +254,13 @@ def tai_components(klines: list[dict], len_form: int = 20, len_hist: int = 252):
 
     tai_floor = rolling_low(vscale, len_hist)
 
-    # 兼容旧逻辑保留
-    tai_is_icepoint = [v < p for v, p in zip(vscale, p20)]
+    tai_icepoint_threshold = []
+    tai_is_icepoint = []
+    for v, floor_v, p20_v in zip(vscale, tai_floor, p20):
+        threshold = floor_v + max(p20_v - floor_v, 0.0) * 0.30
+        tai_icepoint_threshold.append(threshold)
+        tai_is_icepoint.append(v <= threshold)
+
     tai_rising = [False] + [vscale[i] > vscale[i - 1] for i in range(1, len(vscale))]
 
     return {
@@ -265,6 +270,7 @@ def tai_components(klines: list[dict], len_form: int = 20, len_hist: int = 252):
         "tai_p60": p60,
         "tai_p80": p80,
         "tai_floor": tai_floor,
+        "tai_icepoint_threshold": tai_icepoint_threshold,
         "tai_is_icepoint": tai_is_icepoint,
         "tai_rising": tai_rising,
     }
@@ -317,7 +323,6 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "ema169": ema169[i],
                 "atr": atr14[i],
                 "vol_sma20": vol20[i],
-
                 "sss_macd_line": sss["sss_macd_line"][i],
                 "sss_signal_line": sss["sss_signal_line"][i],
                 "sss_hist": sss["sss_hist"][i],
@@ -326,26 +331,23 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "sss_oversold_warning": sss["sss_oversold_warning"][i],
                 "sss_bull_div": sss["sss_bull_div"][i],
                 "sss_bear_div": sss["sss_bear_div"][i],
-
                 "fl_value": fl["fl_value"][i],
                 "fl_trend": fl["fl_trend"][i],
                 "fl_buy_signal": fl["fl_buy_signal"][i],
                 "fl_sell_signal": fl["fl_sell_signal"][i],
-
                 "rar_value": rar["rar_value"][i],
                 "rar_trigger": rar["rar_trigger"][i],
                 "rar_spread": rar["rar_spread"][i],
                 "rar_trend_strong": rar["rar_trend_strong"][i],
-
                 "tai_value": tai["tai_value"][i],
                 "tai_p20": tai["tai_p20"][i],
                 "tai_p40": tai["tai_p40"][i],
                 "tai_p60": tai["tai_p60"][i],
                 "tai_p80": tai["tai_p80"][i],
                 "tai_floor": tai["tai_floor"][i],
+                "tai_icepoint_threshold": tai["tai_icepoint_threshold"][i],
                 "tai_is_icepoint": tai["tai_is_icepoint"][i],
                 "tai_rising": tai["tai_rising"][i],
-
                 "cm_macd": cm["cm_macd"][i],
                 "cm_signal": cm["cm_signal"][i],
                 "cm_hist": cm["cm_hist"][i],
