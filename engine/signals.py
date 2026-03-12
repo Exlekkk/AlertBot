@@ -127,20 +127,6 @@ def _evaluate_branch(name: str, checks: dict[str, bool], near_miss_signals: list
 
 
 def _tai_not_icepoint(latest: dict) -> bool:
-    """
-    新规则：
-    不是简单的 TAI < P20 就禁播。
-    只有当 TAI 落入 P20 以下区域的“最底部30%”时，才算真正冰点禁播。
-
-    需要 indicators.py 提供：
-    - latest["tai_value"]
-    - latest["tai_p20"]
-    - latest["tai_floor"]
-
-    兜底：
-    如果字段不存在，则退回原逻辑：
-    - not latest["tai_is_icepoint"]
-    """
     tai_value = latest.get("tai_value")
     tai_p20 = latest.get("tai_p20")
     tai_floor = latest.get("tai_floor")
@@ -155,7 +141,7 @@ def _tai_not_icepoint(latest: dict) -> bool:
     if span <= 1e-9:
         return False
 
-    # P20以下区间的底部30%才视为真正冰点
+    # 只有 P20 以下区间“最底部30%”才禁播
     hard_ice_threshold = tai_floor + span * 0.30
     return tai_value > hard_ice_threshold
 
@@ -171,9 +157,6 @@ def detect_signals(
     trend_4h = classify_trend(klines_4h, structure_len=10)
     trend_1h = classify_trend(klines_1h, structure_len=10)
 
-    latest_1d = klines_1d[-1]
-    latest_4h = klines_4h[-1]
-    latest_1h = klines_1h[-1]
     latest = klines_15m[-1]
     prev = klines_15m[-2]
     atr = latest["atr"]
@@ -242,7 +225,6 @@ def detect_signals(
     near_miss_signals = []
     blocked_counter: Counter = Counter()
 
-    # A = 确认突破 / 可能突破后顺势，但不追涨杀跌
     a_long_checks = {
         "regime_allows_long": allow_long,
         "tai_not_icepoint": tai_not_icepoint,
@@ -299,7 +281,6 @@ def detect_signals(
             }
         )
 
-    # B = 最遵守 SMC + ICT，其余只参考
     b_long_checks = {
         "regime_allows_long": allow_long,
         "tai_not_icepoint": tai_not_icepoint,
@@ -352,7 +333,6 @@ def detect_signals(
             }
         )
 
-    # C = SMC + ICT 后，EQ 权重最高
     c_long_checks = {
         "regime_allows_long": allow_long,
         "tai_not_icepoint": tai_not_icepoint,
