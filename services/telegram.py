@@ -1,67 +1,3 @@
-import requests
-
-SIGNAL_LABELS = {
-    "A_LONG": "A类做多机会",
-    "A_SHORT": "A类做空机会",
-    "B_LONG": "B类回踩后做多机会",
-    "B_SHORT": "B类反弹后做空机会",
-    "B_PULLBACK_LONG": "B类回踩后做多机会",
-    "B_PULLBACK_SHORT": "B类反弹后做空机会",
-    "C_LONG": "C类做多机会",
-    "C_SHORT": "C类做空机会",
-    "C_LEFT_LONG": "C类做多机会",
-    "C_LEFT_SHORT": "C类做空机会",
-}
-
-PRIORITY_LABELS = {
-    1: "A",
-    2: "B",
-    3: "C",
-}
-
-TREND_1H_LABELS = {
-    "bull": "偏多",
-    "lean_bull": "偏多(弱)",
-    "neutral": "中性",
-    "lean_bear": "偏空(弱)",
-    "bear": "偏空",
-}
-
-STATUS_LABELS = {
-    "active": "进行中",
-    "early": "早期预警",
-}
-
-
-def signal_label(signal: str) -> str:
-    return SIGNAL_LABELS.get(signal, signal)
-
-
-def priority_label(priority: int) -> str:
-    return PRIORITY_LABELS.get(priority, str(priority))
-
-
-def trend_1h_label(trend_1h: str) -> str:
-    return TREND_1H_LABELS.get(trend_1h, trend_1h)
-
-
-def status_label(status: str) -> str:
-    return STATUS_LABELS.get(status, status)
-
-
-def format_webhook_message(signal: str, symbol: str, timeframe: str) -> str:
-    return (
-        "📡 交易预警\n"
-        "优先级: -\n"
-        f"类型建议: {signal_label(signal)}\n"
-        f"标的: {symbol}\n"
-        "价格: -\n"
-        f"周期: {timeframe}\n"
-        "1h方向: -\n"
-        "状态: -"
-    )
-
-
 def format_engine_message(
     signal: str,
     symbol: str,
@@ -71,23 +7,50 @@ def format_engine_message(
     trend_1h: str,
     status: str,
 ) -> str:
+    type_map = {
+        1: "A类",
+        2: "B类",
+        3: "C类",
+    }
+
+    action_map = {
+        "A_LONG": "顺势做多机会",
+        "A_SHORT": "顺势做空机会",
+        "B_PULLBACK_LONG": "回踩后做多机会",
+        "B_PULLBACK_SHORT": "反弹后做空机会",
+        "C_LEFT_LONG": "左侧提前预警做多机会",
+        "C_LEFT_SHORT": "左侧提前预警做空机会",
+    }
+
+    status_map = {
+        "A_LONG": "已满足突破确认，等待顺势执行",
+        "A_SHORT": "已满足跌破确认，等待顺势执行",
+        "B_PULLBACK_LONG": "回踩条件满足，等待延续确认",
+        "B_PULLBACK_SHORT": "反弹条件满足，等待延续确认",
+        "C_LEFT_LONG": "前提初步满足，处于早期观察阶段",
+        "C_LEFT_SHORT": "前提初步满足，处于早期观察阶段",
+    }
+
+    trend_map = {
+        "bull": "偏多",
+        "bear": "偏空",
+        "lean_bull": "偏多（弱）",
+        "lean_bear": "偏空（弱）",
+        "neutral": "中性",
+    }
+
+    signal_type = type_map.get(priority, f"{priority}类")
+    action_text = action_map.get(signal, signal)
+    status_text = status_map.get(signal, status)
+    trend_text = trend_map.get(trend_1h, trend_1h)
+
     return (
         "📡 交易预警\n"
-        f"优先级: {priority_label(priority)}\n"
-        f"类型建议: {signal_label(signal)}\n"
+        f"类型: {signal_type}\n"
+        f"操作建议: {action_text}\n"
         f"标的: {symbol}\n"
         f"价格: {price:.2f}\n"
-        f"周期: {timeframe}\n"
-        f"1h方向: {trend_1h_label(trend_1h)}\n"
-        f"状态: {status_label(status)}"
+        f"触发周期: {timeframe}\n"
+        f"趋势方向: {trend_text}\n"
+        f"状态说明: {status_text}"
     )
-
-
-def send_telegram_message(token: str, chat_id: str, text: str):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-    }
-    r = requests.post(url, json=payload, timeout=20)
-    return r.text
