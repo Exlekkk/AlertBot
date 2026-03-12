@@ -126,6 +126,40 @@ def _evaluate_branch(name: str, checks: dict[str, bool], near_miss_signals: list
     return False
 
 
+def _tai_not_icepoint(latest: dict) -> bool:
+    """
+    新规则：
+    不是简单的 TAI < P20 就禁播。
+    只有当 TAI 落入 P20 以下区域的“最底部30%”时，才算真正冰点禁播。
+
+    需要 indicators.py 提供：
+    - latest["tai_value"]
+    - latest["tai_p20"]
+    - latest["tai_floor"]
+
+    兜底：
+    如果字段不存在，则退回原逻辑：
+    - not latest["tai_is_icepoint"]
+    """
+    tai_value = latest.get("tai_value")
+    tai_p20 = latest.get("tai_p20")
+    tai_floor = latest.get("tai_floor")
+
+    if tai_value is None or tai_p20 is None or tai_floor is None:
+        return not latest.get("tai_is_icepoint", False)
+
+    if tai_value >= tai_p20:
+        return True
+
+    span = tai_p20 - tai_floor
+    if span <= 1e-9:
+        return False
+
+    # P20以下区间的底部30%才视为真正冰点
+    hard_ice_threshold = tai_floor + span * 0.30
+    return tai_value > hard_ice_threshold
+
+
 def detect_signals(
     symbol: str,
     klines_1d: list[dict],
@@ -158,7 +192,7 @@ def detect_signals(
         piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.35
     )
 
-    tai_not_icepoint = not latest["tai_is_icepoint"]
+    tai_not_icepoint = _tai_not_icepoint(latest)
 
     allow_long = _regime_allows("long", trend_1d, trend_4h, trend_1h)
     allow_short = _regime_allows("short", trend_1d, trend_4h, trend_1h)
