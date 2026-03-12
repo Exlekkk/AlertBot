@@ -21,47 +21,27 @@ SIGNAL_PRIORITY = {
 }
 
 
-def classify_4h_trend(klines_4h: list[dict]) -> str:
-    pivot_highs, pivot_lows = find_pivots(klines_4h)
-    bos = detect_last_bos(klines_4h, pivot_highs, pivot_lows)
-    k = klines_4h[-1]
-
-    bull_score = sum(
-        [
-            k["close"] > k["ema120"],
-            k["ema10"] > k["ema20"],
-            k["ema20"] > k["ema120"],
-            bos == "up",
-        ]
-    )
-    bear_score = sum(
-        [
-            k["close"] < k["ema120"],
-            k["ema10"] < k["ema20"],
-            k["ema20"] < k["ema120"],
-            bos == "down",
-        ]
-    )
-    if bull_score >= 2:
-        return "bull"
-    if bear_score >= 2:
-        return "bear"
-    return "neutral"
+def _is_bullish_label(label: str) -> bool:
+    return label in ("bull", "lean_bull")
 
 
-def classify_1h_trend(klines_1h: list[dict]) -> str:
-    pivot_highs, pivot_lows = find_pivots(klines_1h)
-    bos = detect_last_bos(klines_1h, pivot_highs, pivot_lows)
-    mss = detect_last_mss(klines_1h, pivot_highs, pivot_lows)
-    k = klines_1h[-1]
+def _is_bearish_label(label: str) -> bool:
+    return label in ("bear", "lean_bear")
+
+
+def classify_trend(klines: list[dict], structure_len: int = 10) -> str:
+    pivot_highs, pivot_lows = find_pivots(klines)
+    bos = detect_last_bos(klines, pivot_highs, pivot_lows)
+    mss = detect_last_mss(klines, pivot_highs, pivot_lows)
+    k = klines[-1]
 
     bull_score = sum(
         [
             k["close"] > k["ema20"],
             k["ema10"] > k["ema20"],
             k["ema20"] > k["ema120"],
-            (bos == "up" or mss == "up"),
-            higher_highs_lows(klines_1h, 10),
+            bos == "up" or mss == "up",
+            higher_highs_lows(klines, structure_len),
         ]
     )
     bear_score = sum(
@@ -69,14 +49,14 @@ def classify_1h_trend(klines_1h: list[dict]) -> str:
             k["close"] < k["ema20"],
             k["ema10"] < k["ema20"],
             k["ema20"] < k["ema120"],
-            (bos == "down" or mss == "down"),
-            lower_highs_lows(klines_1h, 10),
+            bos == "down" or mss == "down",
+            lower_highs_lows(klines, structure_len),
         ]
     )
 
-    if bull_score >= 3:
+    if bull_score >= 4:
         return "bull"
-    if bear_score >= 3:
+    if bear_score >= 4:
         return "bear"
     if bull_score > bear_score:
         return "lean_bull"
@@ -85,77 +65,41 @@ def classify_1h_trend(klines_1h: list[dict]) -> str:
     return "neutral"
 
 
-def _volume_expanded(last_two_15m: list[dict]) -> bool:
-    return any(k["volume"] > k["vol_sma20"] * 1.3 for k in last_two_15m)
+def _regime_allows(direction: str, trend_1d: str, trend_4h: str, trend_1h: str) -> bool:
+    if direction == "long":
+        h1_bull = _is_bullish_label(trend_1h)
+        h4_bull = _is_bullish_label(trend_4h)
+        d1_bull = _is_bullish_label(trend_1d)
 
+        h1_bear = _is_bearish_label(trend_1h)
+        h4_bear = _is_bearish_label(trend_4h)
 
-def _sideways_filter(klines_15m: list[dict]) -> bool:
-    recent = klines_15m[-12:]
-    if len(recent) < 12:
-        return False
-    highs = max(k["high"] for k in recent)
-    lows = min(k["low"] for k in recent)
-    range_pct = (highs - lows) / max(lows, 1e-9)
-    ema_tight = abs(recent[-1]["ema10"] - recent[-1]["ema20"]) < recent[-1]["atr"] * 0.15
-    weak_volume = sum(k["volume"] < k["vol_sma20"] * 0.9 for k in recent) >= 8
-    return range_pct < 0.01 and ema_tight and weak_volume
-
-
-def _hard_sideways_filter(klines_15m: list[dict]) -> bool:
-    recent = klines_15m[-12:]
-    if len(recent) < 12:
-        return False
-    highs = max(k["high"] for k in recent)
-    lows = min(k["low"] for k in recent)
-    range_pct = (highs - lows) / max(lows, 1e-9)
-    ema_tight = abs(recent[-1]["ema10"] - recent[-1]["ema20"]) < recent[-1]["atr"] * 0.08
-    weak_volume = sum(k["volume"] < k["vol_sma20"] * 0.85 for k in recent) >= 10
-    return range_pct < 0.006 and ema_tight and weak_volume
-
-
-def _is_strictly_monotonic(values: list[float], direction: str) -> bool:
-    if len(values) < 2:
-        return False
-    if direction == "up":
-        return all(values[i] < values[i + 1] for i in range(len(values) - 1))
-    return all(values[i] > values[i + 1] for i in range(len(values) - 1))
-
-
-def _is_soft_monotonic(values: list[float], direction: str, min_progress_steps: int) -> bool:
-    if len(values) < 2:
+        if h1_bull and h4_bull:
+            return True
+        if h1_bull and trend_4h == "neutral":
+            return True
+        if h4_bull and trend_1h == "neutral":
+            return True
+        if (h1_bull and h4_bear) or (h1_bear and h4_bull):
+            return d1_bull
         return False
 
-    progresses = 0
-    for i in range(len(values) - 1):
-        if direction == "up" and values[i + 1] > values[i]:
-            progresses += 1
-        if direction == "down" and values[i + 1] < values[i]:
-            progresses += 1
-    return progresses >= min_progress_steps
+    h1_bear = _is_bearish_label(trend_1h)
+    h4_bear = _is_bearish_label(trend_4h)
+    d1_bear = _is_bearish_label(trend_1d)
 
+    h1_bull = _is_bullish_label(trend_1h)
+    h4_bull = _is_bullish_label(trend_4h)
 
-def _c_long_left_signal(macd_seq: list[float]) -> bool:
-    if len(macd_seq) < 4:
-        return False
-
-    left_warning_up = (
-        (len(macd_seq) >= 4 and _is_strictly_monotonic(macd_seq[-4:], "up"))
-        or (len(macd_seq) >= 5 and _is_soft_monotonic(macd_seq[-5:], "up", min_progress_steps=3))
-    )
-    mostly_below_zero = sum(v <= 0 for v in macd_seq[-4:]) >= 3
-    return left_warning_up and mostly_below_zero
-
-
-def _c_short_left_signal(macd_seq: list[float]) -> bool:
-    if len(macd_seq) < 4:
-        return False
-
-    left_warning_down = (
-        (len(macd_seq) >= 4 and _is_strictly_monotonic(macd_seq[-4:], "down"))
-        or (len(macd_seq) >= 5 and _is_soft_monotonic(macd_seq[-5:], "down", min_progress_steps=3))
-    )
-    mostly_above_zero = sum(v >= 0 for v in macd_seq[-4:]) >= 3
-    return left_warning_down and mostly_above_zero
+    if h1_bear and h4_bear:
+        return True
+    if h1_bear and trend_4h == "neutral":
+        return True
+    if h4_bear and trend_1h == "neutral":
+        return True
+    if (h1_bear and h4_bull) or (h1_bull and h4_bear):
+        return d1_bear
+    return False
 
 
 def _pick_best_per_direction(signals: list[dict]) -> list[dict]:
@@ -182,71 +126,101 @@ def _evaluate_branch(name: str, checks: dict[str, bool], near_miss_signals: list
     return False
 
 
-def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], klines_15m: list[dict]) -> dict:
-    trend_4h = classify_4h_trend(klines_4h)
-    trend_1h = classify_1h_trend(klines_1h)
+def detect_signals(
+    symbol: str,
+    klines_1d: list[dict],
+    klines_4h: list[dict],
+    klines_1h: list[dict],
+    klines_15m: list[dict],
+) -> dict:
+    trend_1d = classify_trend(klines_1d, structure_len=8)
+    trend_4h = classify_trend(klines_4h, structure_len=10)
+    trend_1h = classify_trend(klines_1h, structure_len=10)
+
+    latest_1d = klines_1d[-1]
     latest_4h = klines_4h[-1]
     latest_1h = klines_1h[-1]
+    latest = klines_15m[-1]
+    prev = klines_15m[-2]
+    atr = latest["atr"]
+
     piv_h, piv_l = find_pivots(klines_15m)
     bos_15 = detect_last_bos(klines_15m, piv_h, piv_l)
     mss_15 = detect_last_mss(klines_15m, piv_h, piv_l)
-    latest = klines_15m[-1]
-    prev = klines_15m[-2]
-    last2 = klines_15m[-2:]
-    atr = latest["atr"]
-
-    eq_bearish_divergence = (
-        latest["close"] >= prev["close"] - atr * 0.05
-        and latest["macd_hist"] < prev["macd_hist"]
-    )
-    eq_bullish_divergence = (
-        latest["close"] <= prev["close"] + atr * 0.05
-        and latest["macd_hist"] > prev["macd_hist"]
-    )
-
-    sideways = _sideways_filter(klines_15m)
-    hard_sideways = _hard_sideways_filter(klines_15m)
 
     bullish_structure = bos_15 == "up" or mss_15 == "up"
     bearish_structure = bos_15 == "down" or mss_15 == "down"
-    vol_ok = _volume_expanded(last2)
 
-    near_resistance = piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) < atr * 0.3
-    near_support = piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.3
-
-    trend_1h_soft_bull = trend_1h in ("bull", "lean_bull", "neutral") or (
-        latest_1h["ema10"] > latest_1h["ema20"] or latest_1h["close"] > latest_1h["ema20"]
+    near_resistance = bool(
+        piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) < atr * 0.35
     )
-    trend_1h_soft_bear = trend_1h in ("bear", "lean_bear", "neutral") or (
-        latest_1h["ema10"] < latest_1h["ema20"] or latest_1h["close"] < latest_1h["ema20"]
+    near_support = bool(
+        piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.35
     )
 
-    strong_4h_bear = (
-        trend_4h == "bear"
-        and latest_4h["close"] < latest_4h["ema120"]
-        and latest_4h["ema10"] < latest_4h["ema20"]
-        and latest_4h["ema20"] < latest_4h["ema120"]
+    tai_not_icepoint = not latest["tai_is_icepoint"]
+
+    allow_long = _regime_allows("long", trend_1d, trend_4h, trend_1h)
+    allow_short = _regime_allows("short", trend_1d, trend_4h, trend_1h)
+
+    recent_4 = klines_15m[-4:]
+    b_long_pullback_seen = min(k["low"] for k in recent_4) <= latest["ema10"] + atr * 0.25
+    b_short_pullback_seen = max(k["high"] for k in recent_4) >= latest["ema10"] - atr * 0.25
+
+    b_long_reclaim = (
+        latest["close"] >= latest["ema10"]
+        and latest["close"] > latest["open"]
+        and latest["fl_trend"] >= 0
     )
-    strong_4h_bull = (
-        trend_4h == "bull"
-        and latest_4h["close"] > latest_4h["ema120"]
-        and latest_4h["ema10"] > latest_4h["ema20"]
-        and latest_4h["ema20"] > latest_4h["ema120"]
+    b_short_reject = (
+        latest["close"] <= latest["ema10"]
+        and latest["close"] < latest["open"]
+        and latest["fl_trend"] <= 0
     )
+
+    sss_long_improving = latest["sss_hist"] > prev["sss_hist"]
+    sss_short_improving = latest["sss_hist"] < prev["sss_hist"]
+
+    cm_long_supportive = latest["cm_macd_above_signal"] and latest["cm_hist_up"]
+    cm_short_supportive = (not latest["cm_macd_above_signal"]) and latest["cm_hist_down"]
+
+    a_long_breakout = (
+        bos_15 == "up"
+        or is_bullish_fvg(klines_15m[-10:])
+        or (latest["fl_buy_signal"] and latest["close"] > latest["ema20"])
+    )
+    a_short_breakdown = (
+        bos_15 == "down"
+        or is_bearish_fvg(klines_15m[-10:])
+        or (latest["fl_sell_signal"] and latest["close"] < latest["ema20"])
+    )
+
+    c_long_eq_core = latest["sss_bull_div"] or (latest["sss_oversold_warning"] and sss_long_improving)
+    c_short_eq_core = latest["sss_bear_div"] or (latest["sss_overbought_warning"] and sss_short_improving)
+
+    c_long_strategy_premise = near_support or is_bullish_fvg(klines_15m[-6:]) or latest["fl_buy_signal"]
+    c_short_strategy_premise = near_resistance or is_bearish_fvg(klines_15m[-6:]) or latest["fl_sell_signal"]
+
+    c_long_price_confirm = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
+    c_short_price_confirm = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
 
     signals = []
     near_miss_signals = []
     blocked_counter: Counter = Counter()
 
+    # A = 确认突破 / 可能突破后顺势，但不追涨杀跌
     a_long_checks = {
-        "trend_4h_not_bear": trend_4h != "bear",
-        "trend_1h_bull": trend_1h == "bull",
+        "regime_allows_long": allow_long,
+        "tai_not_icepoint": tai_not_icepoint,
+        "smc_breakout": a_long_breakout,
         "bullish_structure": bullish_structure,
-        "volume_expanded": vol_ok,
-        "breakout_or_gap": bos_15 == "up" or is_bullish_fvg(klines_15m[-10:]),
-        "not_near_resistance": not near_resistance,
-        "not_sideways": not sideways,
-        "no_eq_bearish_divergence": not eq_bearish_divergence,
+        "ema_supportive": latest["close"] > latest["ema20"] and latest["ema10"] > latest["ema20"],
+        "fl_supportive": latest["fl_trend"] == 1 or latest["fl_buy_signal"],
+        "no_sss_bear_div": not latest["sss_bear_div"],
+        "no_sss_overbought_warning": not latest["sss_overbought_warning"],
+        "cm_supportive": cm_long_supportive,
+        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) < atr * 1.4,
+        "rar_trend_not_weak": latest["rar_trend_strong"],
     }
     if _evaluate_branch("A_LONG", a_long_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -264,14 +238,17 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         )
 
     a_short_checks = {
-        "trend_4h_not_bull": trend_4h != "bull",
-        "trend_1h_bear": trend_1h == "bear",
+        "regime_allows_short": allow_short,
+        "tai_not_icepoint": tai_not_icepoint,
+        "smc_breakdown": a_short_breakdown,
         "bearish_structure": bearish_structure,
-        "volume_expanded": vol_ok,
-        "breakdown_or_gap": bos_15 == "down" or is_bearish_fvg(klines_15m[-10:]),
-        "not_near_support": not near_support,
-        "not_sideways": not sideways,
-        "no_eq_bullish_divergence": not eq_bullish_divergence,
+        "ema_supportive": latest["close"] < latest["ema20"] and latest["ema10"] < latest["ema20"],
+        "fl_supportive": latest["fl_trend"] == -1 or latest["fl_sell_signal"],
+        "no_sss_bull_div": not latest["sss_bull_div"],
+        "no_sss_oversold_warning": not latest["sss_oversold_warning"],
+        "cm_supportive": cm_short_supportive,
+        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) < atr * 1.4,
+        "rar_trend_not_weak": latest["rar_trend_strong"],
     }
     if _evaluate_branch("A_SHORT", a_short_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -288,23 +265,16 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
             }
         )
 
-    recent_4 = klines_15m[-4:]
-
-    b_long_pullback_seen = min(k["low"] for k in recent_4) <= latest["ema10"] + atr * 0.2
-    b_long_reclaim = latest["close"] >= latest["ema10"] and latest["close"] > latest["open"]
-
-    b_short_pullback_seen = max(k["high"] for k in recent_4) >= latest["ema10"] - atr * 0.2
-    b_short_reject = latest["close"] <= latest["ema10"] and latest["close"] < latest["open"]
-
+    # B = 最遵守 SMC + ICT，其余只参考
     b_long_checks = {
-        "trend_4h_not_strong_bear": not strong_4h_bear,
-        "trend_1h_supportive": trend_1h_soft_bull,
-        "volume_ok_relaxed": latest["volume"] >= latest["vol_sma20"] * 0.5,
-        "close_above_ema20": latest["close"] > latest["ema20"],
-        "not_bearish_structure": not bearish_structure,
-        "not_hard_sideways": not hard_sideways,
+        "regime_allows_long": allow_long,
+        "tai_not_icepoint": tai_not_icepoint,
+        "smc_premise_long": bullish_structure or is_bullish_fvg(klines_15m[-8:]) or near_support,
         "pullback_seen": b_long_pullback_seen,
         "reclaim_after_pullback": b_long_reclaim,
+        "close_above_ema20": latest["close"] > latest["ema20"],
+        "fl_not_bearish": latest["fl_trend"] >= 0,
+        "no_strong_sss_contradiction": not (latest["sss_bear_div"] and latest["cm_hist_down"]),
         "not_too_far_from_ema10": (latest["close"] - latest["ema10"]) < atr * 0.9,
     }
     if _evaluate_branch("B_PULLBACK_LONG", b_long_checks, near_miss_signals, blocked_counter):
@@ -323,14 +293,14 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         )
 
     b_short_checks = {
-        "trend_4h_not_strong_bull": not strong_4h_bull,
-        "trend_1h_supportive": trend_1h_soft_bear,
-        "volume_ok_relaxed": latest["volume"] >= latest["vol_sma20"] * 0.5,
-        "close_below_ema20": latest["close"] < latest["ema20"],
-        "not_bullish_structure": not bullish_structure,
-        "not_hard_sideways": not hard_sideways,
+        "regime_allows_short": allow_short,
+        "tai_not_icepoint": tai_not_icepoint,
+        "smc_premise_short": bearish_structure or is_bearish_fvg(klines_15m[-8:]) or near_resistance,
         "pullback_seen": b_short_pullback_seen,
         "reject_after_pullback": b_short_reject,
+        "close_below_ema20": latest["close"] < latest["ema20"],
+        "fl_not_bullish": latest["fl_trend"] <= 0,
+        "no_strong_sss_contradiction": not (latest["sss_bull_div"] and latest["cm_hist_up"]),
         "not_too_far_from_ema10": (latest["ema10"] - latest["close"]) < atr * 0.9,
     }
     if _evaluate_branch("B_PULLBACK_SHORT", b_short_checks, near_miss_signals, blocked_counter):
@@ -348,25 +318,15 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
             }
         )
 
-    macd_seq = [k["macd_hist"] for k in klines_15m[-8:]]
-    prev_macd_seq = [k["macd_hist"] for k in klines_15m[-9:-1]] if len(klines_15m) >= 9 else []
-
-    current_c_long_left = _c_long_left_signal(macd_seq)
-    previous_c_long_left = _c_long_left_signal(prev_macd_seq)
-    current_c_short_left = _c_short_left_signal(macd_seq)
-    previous_c_short_left = _c_short_left_signal(prev_macd_seq)
-
-    c_long_price_confirm = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
-    c_short_price_confirm = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
-
-    c_long_position_ok = near_support or latest["close"] <= latest["ema20"] + atr * 0.35
-    c_short_position_ok = near_resistance or latest["close"] >= latest["ema20"] - atr * 0.35
-
+    # C = SMC + ICT 后，EQ 权重最高
     c_long_checks = {
-        "left_warning_up": current_c_long_left,
-        "fresh_left_trigger": current_c_long_left and not previous_c_long_left,
-        "position_ok": c_long_position_ok,
-        "price_decelerating": c_long_price_confirm,
+        "regime_allows_long": allow_long,
+        "tai_not_icepoint": tai_not_icepoint,
+        "strategy_premise_long": c_long_strategy_premise,
+        "eq_core_long": c_long_eq_core,
+        "price_confirm": c_long_price_confirm,
+        "cm_not_weakening": latest["cm_hist_up"] or latest["cm_macd_above_signal"],
+        "fl_not_bearish": latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
     }
     if _evaluate_branch("C_LEFT_LONG", c_long_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -384,10 +344,13 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
         )
 
     c_short_checks = {
-        "left_warning_down": current_c_short_left,
-        "fresh_left_trigger": current_c_short_left and not previous_c_short_left,
-        "position_ok": c_short_position_ok,
-        "price_decelerating": c_short_price_confirm,
+        "regime_allows_short": allow_short,
+        "tai_not_icepoint": tai_not_icepoint,
+        "strategy_premise_short": c_short_strategy_premise,
+        "eq_core_short": c_short_eq_core,
+        "price_confirm": c_short_price_confirm,
+        "cm_not_weakening": latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
+        "fl_not_bullish": latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
     }
     if _evaluate_branch("C_LEFT_SHORT", c_short_checks, near_miss_signals, blocked_counter):
         signals.append(
