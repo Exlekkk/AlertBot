@@ -53,6 +53,14 @@ def percentile_linear(values: list[float], period: int, percentile: float) -> li
     return out
 
 
+def rolling_low(values: list[float], period: int) -> list[float]:
+    out = []
+    for i in range(len(values)):
+        start = max(0, i - period + 1)
+        out.append(min(values[start : i + 1]))
+    return out
+
+
 def atr(klines: list[dict], period: int = 14) -> list[float]:
     if not klines:
         return []
@@ -244,6 +252,9 @@ def tai_components(klines: list[dict], len_form: int = 20, len_hist: int = 252):
     p60 = percentile_linear(vscale, len_hist, 60)
     p80 = percentile_linear(vscale, len_hist, 80)
 
+    tai_floor = rolling_low(vscale, len_hist)
+
+    # 兼容旧逻辑保留
     tai_is_icepoint = [v < p for v, p in zip(vscale, p20)]
     tai_rising = [False] + [vscale[i] > vscale[i - 1] for i in range(1, len(vscale))]
 
@@ -253,6 +264,7 @@ def tai_components(klines: list[dict], len_form: int = 20, len_hist: int = 252):
         "tai_p40": p40,
         "tai_p60": p60,
         "tai_p80": p80,
+        "tai_floor": tai_floor,
         "tai_is_icepoint": tai_is_icepoint,
         "tai_rising": tai_rising,
     }
@@ -330,6 +342,7 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "tai_p40": tai["tai_p40"][i],
                 "tai_p60": tai["tai_p60"][i],
                 "tai_p80": tai["tai_p80"][i],
+                "tai_floor": tai["tai_floor"][i],
                 "tai_is_icepoint": tai["tai_is_icepoint"][i],
                 "tai_rising": tai["tai_rising"][i],
 
