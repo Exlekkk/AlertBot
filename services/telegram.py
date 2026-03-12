@@ -17,11 +17,11 @@ ACTION_LABELS = {
 }
 
 TREND_LABELS = {
-    "bull": "偏多",
+    "bull": "偏多（强）",
     "lean_bull": "偏多（弱）",
     "neutral": "中性",
     "lean_bear": "偏空（弱）",
-    "bear": "偏空",
+    "bear": "偏空（强）",
 }
 
 
@@ -29,12 +29,20 @@ def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
 
 
+
 def action_label(signal: str) -> str:
     return ACTION_LABELS.get(signal, signal)
 
 
+
 def trend_label(trend_1h: str) -> str:
     return TREND_LABELS.get(trend_1h, trend_1h)
+
+
+
+def title_prefix(priority: int) -> str:
+    return "⚠️" if priority == 3 else "🚨"
+
 
 
 def build_status_text(signal: str, status: str) -> str:
@@ -58,6 +66,7 @@ def build_status_text(signal: str, status: str) -> str:
     return status
 
 
+
 def format_engine_message(
     signal: str,
     symbol: str,
@@ -71,17 +80,17 @@ def format_engine_message(
     action_text = action_label(signal)
     status_text = build_status_text(signal, status)
     trend_text = trend_label(trend_1h)
+    prefix = title_prefix(priority)
 
     return (
-        "📡 交易预警\n"
-        f"类型: {signal_type}\n"
-        f"操作建议: {action_text}\n"
-        f"标的: {symbol}\n"
-        f"价格: {price:.2f}\n"
-        f"触发周期: {timeframe}\n"
-        f"趋势方向: {trend_text}\n"
-        f"状态说明: {status_text}"
+        f"{prefix} 盘面预警｜{signal_type}\n"
+        f"操作建议：{action_text}\n"
+        f"标的：{symbol}\n"
+        f"参考价位：{price:.2f}\n"
+        f"总体趋势方向：{trend_text}\n"
+        f"状态：{status_text}"
     )
+
 
 
 def send_telegram_message(token: str, chat_id: str, text: str):
