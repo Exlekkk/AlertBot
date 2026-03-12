@@ -259,6 +259,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
                 "price": latest["close"],
                 "trend_1h": trend_1h,
                 "status": "active",
+                "atr": atr,
             }
         )
 
@@ -283,6 +284,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
                 "price": latest["close"],
                 "trend_1h": trend_1h,
                 "status": "active",
+                "atr": atr,
             }
         )
 
@@ -316,6 +318,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
                 "price": latest["close"],
                 "trend_1h": trend_1h,
                 "status": "active",
+                "atr": atr,
             }
         )
 
@@ -341,6 +344,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
                 "price": latest["close"],
                 "trend_1h": trend_1h,
                 "status": "active",
+                "atr": atr,
             }
         )
 
@@ -375,6 +379,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
                 "price": latest["close"],
                 "trend_1h": trend_1h,
                 "status": "early",
+                "atr": atr,
             }
         )
 
@@ -395,6 +400,7 @@ def detect_signals(symbol: str, klines_4h: list[dict], klines_1h: list[dict], kl
                 "price": latest["close"],
                 "trend_1h": trend_1h,
                 "status": "early",
+                "atr": atr,
             }
         )
 
