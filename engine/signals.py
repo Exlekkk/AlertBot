@@ -41,11 +41,9 @@ def classify_trend(klines: list[dict], structure_len: int = 10) -> str:
 
     bull_score = sum(
         [
-            k["close"] >= k["ema20"],
-            k["close"] >= k["ema120"],
-            k["close"] >= k["ema169"],
-            k["ema10"] >= k["ema20"],
-            k["ema20"] >= k["ema120"],
+            k["close"] > k["ema20"],
+            k["ema10"] > k["ema20"],
+            k["ema20"] > k["ema120"],
             k["ema120"] >= k["ema169"],
             bos == "up" or mss == "up",
             higher_highs_lows(klines, structure_len),
@@ -53,20 +51,18 @@ def classify_trend(klines: list[dict], structure_len: int = 10) -> str:
     )
     bear_score = sum(
         [
-            k["close"] <= k["ema20"],
-            k["close"] <= k["ema120"],
-            k["close"] <= k["ema169"],
-            k["ema10"] <= k["ema20"],
-            k["ema20"] <= k["ema120"],
+            k["close"] < k["ema20"],
+            k["ema10"] < k["ema20"],
+            k["ema20"] < k["ema120"],
             k["ema120"] <= k["ema169"],
             bos == "down" or mss == "down",
             lower_highs_lows(klines, structure_len),
         ]
     )
 
-    if bull_score >= 6:
+    if bull_score >= 4:
         return "bull"
-    if bear_score >= 6:
+    if bear_score >= 4:
         return "bear"
     if bull_score > bear_score:
         return "lean_bull"
@@ -122,56 +118,36 @@ def _pick_best_per_direction(signals: list[dict]) -> list[dict]:
     return sorted(best_by_direction.values(), key=lambda s: s["priority"])
 
 
-def _register_candidate_result(
+def _evaluate_branch(
     name: str,
-    main_checks: dict[str, bool],
-    hard_block_reasons: list[str],
-    support_score: int,
+    required_checks: dict[str, bool],
+    support_checks: dict[str, bool],
+    min_support: int,
+    contradiction_checks: dict[str, bool],
+    contradiction_limit: int,
     near_miss_signals: list[dict],
     blocked_counter: Counter,
-) -> bool:
-    failed_main = [check_name for check_name, ok in main_checks.items() if not ok]
-    if failed_main:
-        detail = {
-            "candidate": name,
-            "kind": "main_failed",
-            "failed_checks": failed_main,
-        }
-        if len(failed_main) <= 2:
-            near_miss_signals.append(detail)
-        else:
-            for reason in failed_main:
-                blocked_counter[f"{name}:{reason}"] += 1
-        return False
+):
+    failed = [check_name for check_name, ok in required_checks.items() if not ok]
 
-    if hard_block_reasons:
-        near_miss_signals.append(
-            {
-                "candidate": name,
-                "kind": "hard_block",
-                "support_score": support_score,
-                "failed_checks": hard_block_reasons,
-            }
-        )
-        for reason in hard_block_reasons:
+    support_score = _count_true(*support_checks.values())
+    if support_score < min_support:
+        failed.append(f"support_score_lt_{min_support}")
+
+    contradiction_score = _count_true(*contradiction_checks.values())
+    if contradiction_score >= contradiction_limit:
+        failed.append("strong_secondary_contradiction")
+
+    if not failed:
+        return True
+
+    detail = {"candidate": name, "failed_checks": failed}
+    if len(failed) <= 2:
+        near_miss_signals.append(detail)
+    else:
+        for reason in failed:
             blocked_counter[f"{name}:{reason}"] += 1
-        return False
-
-    return True
-
-
-def _build_signal(signal: str, symbol: str, direction: str, price: float, trend_display: str, atr: float, status: str) -> dict:
-    return {
-        "signal": signal,
-        "symbol": symbol,
-        "timeframe": "15m",
-        "priority": SIGNAL_PRIORITY[signal],
-        "direction": direction,
-        "price": price,
-        "trend_1h": trend_display,
-        "status": status,
-        "atr": atr,
-    }
+    return False
 
 
 def detect_signals(
@@ -207,37 +183,40 @@ def detect_signals(
 
     recent_6 = klines_15m[-6:]
     recent_8 = klines_15m[-8:]
+    prior_6 = klines_15m[-7:-1] if len(klines_15m) >= 7 else recent_6[:-1]
 
     bullish_fvg_recent = is_bullish_fvg(recent_6)
     bearish_fvg_recent = is_bearish_fvg(recent_6)
 
     near_resistance = bool(
-        piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) <= atr * 0.55
+        piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) < atr * 0.55
     )
     near_support = bool(
-        piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) <= atr * 0.55
+        piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.55
     )
 
-    tai_ok = not latest["tai_is_icepoint"]
+    tai_not_icepoint = not latest["tai_is_icepoint"]
 
     recent_6_lows = min(k["low"] for k in recent_6)
     recent_6_highs = max(k["high"] for k in recent_6)
+    prior_6_high = max((k["high"] for k in prior_6), default=recent_6_highs)
+    prior_6_low = min((k["low"] for k in prior_6), default=recent_6_lows)
 
-    b_long_pullback_seen = near_support or recent_6_lows <= latest["ema20"] + atr * 0.45
-    b_short_pullback_seen = near_resistance or recent_6_highs >= latest["ema20"] - atr * 0.45
+    b_long_pullback_seen = recent_6_lows <= latest["ema10"] + atr * 0.45 or near_support
+    b_short_pullback_seen = recent_6_highs >= latest["ema10"] - atr * 0.45 or near_resistance
 
-    b_long_reaccept = (
-        latest["close"] >= latest["ema10"]
-        or latest["close"] > prev["high"]
-        or bullish_structure
-        or latest["fl_buy_signal"]
-    )
-    b_short_reaccept = (
-        latest["close"] <= latest["ema10"]
-        or latest["close"] < prev["low"]
-        or bearish_structure
-        or latest["fl_sell_signal"]
-    )
+    b_long_reclaim = _count_true(
+        latest["close"] >= latest["ema10"],
+        latest["close"] > prev["close"],
+        latest["close"] > latest["open"],
+        latest["low"] >= prev["low"],
+    ) >= 2
+    b_short_reject = _count_true(
+        latest["close"] <= latest["ema10"],
+        latest["close"] < prev["close"],
+        latest["close"] < latest["open"],
+        latest["high"] <= prev["high"],
+    ) >= 2
 
     sss_long_improving = latest["sss_hist"] > prev["sss_hist"]
     sss_short_improving = latest["sss_hist"] < prev["sss_hist"]
@@ -245,218 +224,249 @@ def detect_signals(
     cm_long_supportive = latest["cm_macd_above_signal"] and latest["cm_hist_up"]
     cm_short_supportive = (not latest["cm_macd_above_signal"]) and latest["cm_hist_down"]
 
-    a_long_trigger = (
-        bos_15 == "up"
-        or bullish_fvg_recent
-        or (mss_15 == "up" and latest["close"] >= prev["high"])
-    )
-    a_short_trigger = (
-        bos_15 == "down"
-        or bearish_fvg_recent
-        or (mss_15 == "down" and latest["close"] <= prev["low"])
-    )
+    cm_long_not_bad = latest["cm_macd_above_signal"] or latest["cm_hist_up"]
+    cm_short_not_bad = (not latest["cm_macd_above_signal"]) or latest["cm_hist_down"]
+
+    htf_a_long_allowed = allow_long or (_is_bullish_label(trend_4h) and trend_1d != "bear")
+    htf_a_short_allowed = allow_short or (_is_bearish_label(trend_4h) and trend_1d != "bull")
+
+    htf_b_long_allowed = allow_long or ((_is_bullish_label(trend_1h) or _is_bullish_label(trend_4h)) and trend_1d != "bear")
+    htf_b_short_allowed = allow_short or ((_is_bearish_label(trend_1h) or _is_bearish_label(trend_4h)) and trend_1d != "bull")
+
+    htf_c_long_allowed = not _is_bearish_label(trend_4h) and trend_1d != "bear"
+    htf_c_short_allowed = not _is_bullish_label(trend_4h) and trend_1d != "bull"
+
+    a_long_breakout = _count_true(
+        bos_15 == "up",
+        mss_15 == "up",
+        bullish_fvg_recent,
+        latest["close"] >= prior_6_high - atr * 0.18,
+        latest["close"] > latest["ema10"] and latest["close"] > prev["high"],
+    ) >= 2
+    a_short_breakdown = _count_true(
+        bos_15 == "down",
+        mss_15 == "down",
+        bearish_fvg_recent,
+        latest["close"] <= prior_6_low + atr * 0.18,
+        latest["close"] < latest["ema10"] and latest["close"] < prev["low"],
+    ) >= 2
 
     c_long_eq_core = latest["sss_bull_div"] or (latest["sss_oversold_warning"] and sss_long_improving)
     c_short_eq_core = latest["sss_bear_div"] or (latest["sss_overbought_warning"] and sss_short_improving)
 
-    c_long_left_setup = near_support or bullish_fvg_recent or mss_15 == "up"
-    c_short_left_setup = near_resistance or bearish_fvg_recent or mss_15 == "down"
+    c_long_strategy_premise = near_support or bullish_fvg_recent or latest["fl_buy_signal"] or mss_15 == "up"
+    c_short_strategy_premise = near_resistance or bearish_fvg_recent or latest["fl_sell_signal"] or mss_15 == "down"
 
-    c_long_price_stabilizing = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
-    c_short_price_stabilizing = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
+    c_long_price_confirm = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
+    c_short_price_confirm = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
 
     signals = []
     near_miss_signals = []
     blocked_counter: Counter = Counter()
 
-    # A类：高周期顺势已成立，15m 只负责突破/延续触发
-    a_long_support_score = _count_true(
-        latest["fl_trend"] == 1 or latest["fl_buy_signal"],
-        cm_long_supportive,
-        latest["rar_trend_strong"],
-        latest["close"] >= latest["ema20"],
-    )
-    a_long_hard_block = [
-        reason
-        for reason, cond in [
-            ("deep_tai_freeze", latest["tai_is_icepoint"]),
-            ("eq_bear_div", latest["sss_bear_div"]),
-            ("eq_overbought", latest["sss_overbought_warning"]),
-            ("cm_downshift", latest["cm_hist_down"] and not latest["cm_macd_above_signal"]),
-            ("fl_reverse", latest["fl_trend"] == -1),
-            ("lost_ema20", latest["close"] < latest["ema20"]),
-        ]
-        if cond
-    ]
-    if a_long_support_score >= 2 and "lost_ema20" in a_long_hard_block:
-        a_long_hard_block.remove("lost_ema20")
-    if len(a_long_hard_block) < 3:
-        a_long_hard_block = []
-
-    a_long_main = {
-        "regime_allows_long": allow_long,
-        "tai_ok": tai_ok,
-        "high_tf_bullish": _is_bullish_label(trend_display_long),
-        "smc_trigger_long": a_long_trigger,
-        "structure_long": bullish_structure or higher_highs_lows(klines_15m, 8),
+    a_long_required = {
+        "htf_a_long_allowed": htf_a_long_allowed,
+        "tai_not_icepoint": tai_not_icepoint,
+        "15m_breakout_trigger": a_long_breakout,
     }
-    if _register_candidate_result("A_LONG", a_long_main, a_long_hard_block, a_long_support_score, near_miss_signals, blocked_counter):
-        signals.append(_build_signal("A_LONG", symbol, "long", latest["close"], trend_display_long, atr, "active"))
-
-    a_short_support_score = _count_true(
-        latest["fl_trend"] == -1 or latest["fl_sell_signal"],
-        cm_short_supportive,
-        latest["rar_trend_strong"],
-        latest["close"] <= latest["ema20"],
-    )
-    a_short_hard_block = [
-        reason
-        for reason, cond in [
-            ("deep_tai_freeze", latest["tai_is_icepoint"]),
-            ("eq_bull_div", latest["sss_bull_div"]),
-            ("eq_oversold", latest["sss_oversold_warning"]),
-            ("cm_upshift", latest["cm_hist_up"] and latest["cm_macd_above_signal"]),
-            ("fl_reverse", latest["fl_trend"] == 1),
-            ("lost_ema20", latest["close"] > latest["ema20"]),
-        ]
-        if cond
-    ]
-    if a_short_support_score >= 2 and "lost_ema20" in a_short_hard_block:
-        a_short_hard_block.remove("lost_ema20")
-    if len(a_short_hard_block) < 3:
-        a_short_hard_block = []
-
-    a_short_main = {
-        "regime_allows_short": allow_short,
-        "tai_ok": tai_ok,
-        "high_tf_bearish": _is_bearish_label(trend_display_short),
-        "smc_trigger_short": a_short_trigger,
-        "structure_short": bearish_structure or lower_highs_lows(klines_15m, 8),
+    a_long_support = {
+        "bullish_structure": bullish_structure,
+        "ema_supportive": latest["ema10"] >= latest["ema20"] and latest["close"] >= latest["ema10"],
+        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 2.2,
+        "cm_supportive": cm_long_supportive,
+        "fl_supportive": latest["fl_trend"] == 1 or latest["fl_buy_signal"],
+        "rar_trend_not_weak": latest["rar_trend_strong"],
     }
-    if _register_candidate_result("A_SHORT", a_short_main, a_short_hard_block, a_short_support_score, near_miss_signals, blocked_counter):
-        signals.append(_build_signal("A_SHORT", symbol, "short", latest["close"], trend_display_short, atr, "active"))
-
-    # B类：高周期先给方向，15m 负责回踩/反弹后的重新接回
-    b_long_support_score = _count_true(
-        latest["fl_trend"] >= 0,
-        latest["cm_hist_up"] or latest["cm_macd_above_signal"],
-        latest["rar_trend_strong"],
-        latest["close"] >= latest["ema20"],
-    )
-    b_long_hard_block = [
-        reason
-        for reason, cond in [
-            ("deep_tai_freeze", latest["tai_is_icepoint"]),
-            ("eq_bear_div", latest["sss_bear_div"]),
-            ("cm_reject_down", latest["cm_hist_down"] and not latest["cm_macd_above_signal"]),
-            ("fl_reverse", latest["fl_trend"] == -1 and latest["fl_sell_signal"]),
-            ("full_bear_structure", bearish_structure and latest["close"] < latest["ema20"]),
-        ]
-        if cond
-    ]
-    if len(b_long_hard_block) < 3:
-        b_long_hard_block = []
-
-    b_long_main = {
-        "regime_allows_long": allow_long,
-        "tai_ok": tai_ok,
-        "high_tf_bullish": _is_bullish_label(trend_display_long),
-        "smc_context_long": bullish_structure or is_bullish_fvg(recent_8) or near_support,
-        "pullback_seen": b_long_pullback_seen,
-        "reaccept_after_pullback": b_long_reaccept,
+    a_long_contra = {
+        "eq_core_short": latest["sss_bear_div"],
+        "overbought_warning": latest["sss_overbought_warning"],
+        "cm_hist_down": latest["cm_hist_down"],
+        "fl_trend_down": latest["fl_trend"] == -1,
     }
-    if _register_candidate_result("B_PULLBACK_LONG", b_long_main, b_long_hard_block, b_long_support_score, near_miss_signals, blocked_counter):
-        signals.append(_build_signal("B_PULLBACK_LONG", symbol, "long", latest["close"], trend_display_long, atr, "active"))
+    if _evaluate_branch("A_LONG", a_long_required, a_long_support, 2, a_long_contra, 3, near_miss_signals, blocked_counter):
+        signals.append(
+            {
+                "signal": "A_LONG",
+                "symbol": symbol,
+                "timeframe": "15m",
+                "priority": SIGNAL_PRIORITY["A_LONG"],
+                "direction": "long",
+                "price": latest["close"],
+                "trend_1h": trend_display_long,
+                "status": "active",
+                "atr": atr,
+            }
+        )
 
-    b_short_support_score = _count_true(
-        latest["fl_trend"] <= 0,
-        latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
-        latest["rar_trend_strong"],
-        latest["close"] <= latest["ema20"],
-    )
-    b_short_hard_block = [
-        reason
-        for reason, cond in [
-            ("deep_tai_freeze", latest["tai_is_icepoint"]),
-            ("eq_bull_div", latest["sss_bull_div"]),
-            ("cm_reject_up", latest["cm_hist_up"] and latest["cm_macd_above_signal"]),
-            ("fl_reverse", latest["fl_trend"] == 1 and latest["fl_buy_signal"]),
-            ("full_bull_structure", bullish_structure and latest["close"] > latest["ema20"]),
-        ]
-        if cond
-    ]
-    if len(b_short_hard_block) < 3:
-        b_short_hard_block = []
-
-    b_short_main = {
-        "regime_allows_short": allow_short,
-        "tai_ok": tai_ok,
-        "high_tf_bearish": _is_bearish_label(trend_display_short),
-        "smc_context_short": bearish_structure or is_bearish_fvg(recent_8) or near_resistance,
-        "pullback_seen": b_short_pullback_seen,
-        "reaccept_after_pullback": b_short_reaccept,
+    a_short_required = {
+        "htf_a_short_allowed": htf_a_short_allowed,
+        "tai_not_icepoint": tai_not_icepoint,
+        "15m_breakdown_trigger": a_short_breakdown,
     }
-    if _register_candidate_result("B_PULLBACK_SHORT", b_short_main, b_short_hard_block, b_short_support_score, near_miss_signals, blocked_counter):
-        signals.append(_build_signal("B_PULLBACK_SHORT", symbol, "short", latest["close"], trend_display_short, atr, "active"))
+    a_short_support = {
+        "bearish_structure": bearish_structure,
+        "ema_supportive": latest["ema10"] <= latest["ema20"] and latest["close"] <= latest["ema10"],
+        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 2.2,
+        "cm_supportive": cm_short_supportive,
+        "fl_supportive": latest["fl_trend"] == -1 or latest["fl_sell_signal"],
+        "rar_trend_not_weak": latest["rar_trend_strong"],
+    }
+    a_short_contra = {
+        "eq_core_long": latest["sss_bull_div"],
+        "oversold_warning": latest["sss_oversold_warning"],
+        "cm_hist_up": latest["cm_hist_up"],
+        "fl_trend_up": latest["fl_trend"] == 1,
+    }
+    if _evaluate_branch("A_SHORT", a_short_required, a_short_support, 2, a_short_contra, 3, near_miss_signals, blocked_counter):
+        signals.append(
+            {
+                "signal": "A_SHORT",
+                "symbol": symbol,
+                "timeframe": "15m",
+                "priority": SIGNAL_PRIORITY["A_SHORT"],
+                "direction": "short",
+                "price": latest["close"],
+                "trend_1h": trend_display_short,
+                "status": "active",
+                "atr": atr,
+            }
+        )
 
-    # C类：高周期允许观察，15m 出左侧预警，EQ 为核心
-    c_long_support_score = _count_true(
-        latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
-        latest["cm_hist_up"] or latest["cm_macd_above_signal"],
-        latest["close"] >= latest["ema120"],
-        latest["tai_rising"],
-    )
-    c_long_hard_block = [
-        reason
-        for reason, cond in [
-            ("deep_tai_freeze", latest["tai_is_icepoint"]),
-            ("bearish_structure_pressure", bearish_structure and not near_support),
-            ("cm_downshift", latest["cm_hist_down"] and not latest["cm_macd_above_signal"]),
-            ("fl_reverse", latest["fl_trend"] == -1 and latest["fl_sell_signal"]),
-        ]
-        if cond
-    ]
-    if len(c_long_hard_block) < 2:
-        c_long_hard_block = []
+    b_long_required = {
+        "htf_b_long_allowed": htf_b_long_allowed,
+        "tai_not_icepoint": tai_not_icepoint,
+        "15m_smc_premise_long": bullish_structure or is_bullish_fvg(recent_8) or near_support or mss_15 == "up",
+        "pullback_then_reclaim": b_long_pullback_seen and b_long_reclaim,
+    }
+    b_long_support = {
+        "ema_not_lost": latest["close"] >= latest["ema20"] or latest["close"] >= latest["ema10"],
+        "cm_not_bad": cm_long_not_bad,
+        "fl_not_bearish": latest["fl_trend"] >= 0,
+        "rar_trend_not_weak": latest["rar_trend_strong"],
+        "price_recovering": latest["close"] >= prev["close"] or latest["low"] >= prev["low"],
+    }
+    b_long_contra = {
+        "eq_core_short": latest["sss_bear_div"],
+        "cm_hist_down": latest["cm_hist_down"],
+        "fl_trend_down": latest["fl_trend"] == -1,
+        "price_below_ema20_far": latest["close"] < latest["ema20"] - atr * 0.8,
+    }
+    if _evaluate_branch("B_PULLBACK_LONG", b_long_required, b_long_support, 1, b_long_contra, 3, near_miss_signals, blocked_counter):
+        signals.append(
+            {
+                "signal": "B_PULLBACK_LONG",
+                "symbol": symbol,
+                "timeframe": "15m",
+                "priority": SIGNAL_PRIORITY["B_PULLBACK_LONG"],
+                "direction": "long",
+                "price": latest["close"],
+                "trend_1h": trend_display_long,
+                "status": "active",
+                "atr": atr,
+            }
+        )
 
-    c_long_main = {
-        "regime_allows_long": allow_long,
-        "tai_ok": tai_ok,
-        "left_setup_long": c_long_left_setup,
+    b_short_required = {
+        "htf_b_short_allowed": htf_b_short_allowed,
+        "tai_not_icepoint": tai_not_icepoint,
+        "15m_smc_premise_short": bearish_structure or is_bearish_fvg(recent_8) or near_resistance or mss_15 == "down",
+        "pullback_then_reject": b_short_pullback_seen and b_short_reject,
+    }
+    b_short_support = {
+        "ema_not_lost": latest["close"] <= latest["ema20"] or latest["close"] <= latest["ema10"],
+        "cm_not_bad": cm_short_not_bad,
+        "fl_not_bullish": latest["fl_trend"] <= 0,
+        "rar_trend_not_weak": latest["rar_trend_strong"],
+        "price_weakening": latest["close"] <= prev["close"] or latest["high"] <= prev["high"],
+    }
+    b_short_contra = {
+        "eq_core_long": latest["sss_bull_div"],
+        "cm_hist_up": latest["cm_hist_up"],
+        "fl_trend_up": latest["fl_trend"] == 1,
+        "price_above_ema20_far": latest["close"] > latest["ema20"] + atr * 0.8,
+    }
+    if _evaluate_branch("B_PULLBACK_SHORT", b_short_required, b_short_support, 1, b_short_contra, 3, near_miss_signals, blocked_counter):
+        signals.append(
+            {
+                "signal": "B_PULLBACK_SHORT",
+                "symbol": symbol,
+                "timeframe": "15m",
+                "priority": SIGNAL_PRIORITY["B_PULLBACK_SHORT"],
+                "direction": "short",
+                "price": latest["close"],
+                "trend_1h": trend_display_short,
+                "status": "active",
+                "atr": atr,
+            }
+        )
+
+    c_long_required = {
+        "htf_c_long_allowed": htf_c_long_allowed,
+        "tai_not_icepoint": tai_not_icepoint,
+        "15m_strategy_premise_long": c_long_strategy_premise,
+        "early_confirmation_long": c_long_eq_core or c_long_price_confirm,
+    }
+    c_long_support = {
         "eq_core_long": c_long_eq_core,
-        "price_stabilizing": c_long_price_stabilizing,
+        "price_confirm": c_long_price_confirm,
+        "fl_not_bearish": latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
+        "cm_not_weakening": latest["cm_hist_up"] or latest["cm_macd_above_signal"],
+        "sss_hist_improving": sss_long_improving,
     }
-    if _register_candidate_result("C_LEFT_LONG", c_long_main, c_long_hard_block, c_long_support_score, near_miss_signals, blocked_counter):
-        signals.append(_build_signal("C_LEFT_LONG", symbol, "long", latest["close"], trend_display_long, atr, "early"))
+    c_long_contra = {
+        "eq_core_short": latest["sss_bear_div"],
+        "cm_hist_down": latest["cm_hist_down"],
+        "fl_trend_down": latest["fl_trend"] == -1,
+        "overbought_warning": latest["sss_overbought_warning"],
+    }
+    if _evaluate_branch("C_LEFT_LONG", c_long_required, c_long_support, 1, c_long_contra, 3, near_miss_signals, blocked_counter):
+        signals.append(
+            {
+                "signal": "C_LEFT_LONG",
+                "symbol": symbol,
+                "timeframe": "15m",
+                "priority": SIGNAL_PRIORITY["C_LEFT_LONG"],
+                "direction": "long",
+                "price": latest["close"],
+                "trend_1h": trend_display_long,
+                "status": "early",
+                "atr": atr,
+            }
+        )
 
-    c_short_support_score = _count_true(
-        latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
-        latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
-        latest["close"] <= latest["ema120"],
-        latest["tai_rising"],
-    )
-    c_short_hard_block = [
-        reason
-        for reason, cond in [
-            ("deep_tai_freeze", latest["tai_is_icepoint"]),
-            ("bullish_structure_pressure", bullish_structure and not near_resistance),
-            ("cm_upshift", latest["cm_hist_up"] and latest["cm_macd_above_signal"]),
-            ("fl_reverse", latest["fl_trend"] == 1 and latest["fl_buy_signal"]),
-        ]
-        if cond
-    ]
-    if len(c_short_hard_block) < 2:
-        c_short_hard_block = []
-
-    c_short_main = {
-        "regime_allows_short": allow_short,
-        "tai_ok": tai_ok,
-        "left_setup_short": c_short_left_setup,
+    c_short_required = {
+        "htf_c_short_allowed": htf_c_short_allowed,
+        "tai_not_icepoint": tai_not_icepoint,
+        "15m_strategy_premise_short": c_short_strategy_premise,
+        "early_confirmation_short": c_short_eq_core or c_short_price_confirm,
+    }
+    c_short_support = {
         "eq_core_short": c_short_eq_core,
-        "price_stabilizing": c_short_price_stabilizing,
+        "price_confirm": c_short_price_confirm,
+        "fl_not_bullish": latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
+        "cm_not_weakening": latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
+        "sss_hist_weakening": sss_short_improving,
     }
-    if _register_candidate_result("C_LEFT_SHORT", c_short_main, c_short_hard_block, c_short_support_score, near_miss_signals, blocked_counter):
-        signals.append(_build_signal("C_LEFT_SHORT", symbol, "short", latest["close"], trend_display_short, atr, "early"))
+    c_short_contra = {
+        "eq_core_long": latest["sss_bull_div"],
+        "cm_hist_up": latest["cm_hist_up"],
+        "fl_trend_up": latest["fl_trend"] == 1,
+        "oversold_warning": latest["sss_oversold_warning"],
+    }
+    if _evaluate_branch("C_LEFT_SHORT", c_short_required, c_short_support, 1, c_short_contra, 3, near_miss_signals, blocked_counter):
+        signals.append(
+            {
+                "signal": "C_LEFT_SHORT",
+                "symbol": symbol,
+                "timeframe": "15m",
+                "priority": SIGNAL_PRIORITY["C_LEFT_SHORT"],
+                "direction": "short",
+                "price": latest["close"],
+                "trend_1h": trend_display_short,
+                "status": "early",
+                "atr": atr,
+            }
+        )
 
     return {
         "signals": _pick_best_per_direction(signals),
