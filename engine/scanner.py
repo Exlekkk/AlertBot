@@ -25,6 +25,73 @@ class SMCTScanner:
         klines = self.market_data.get_klines(self.symbol, interval=interval, limit=300)
         return enrich_klines(klines[:-1])
 
+    @staticmethod
+    def _safe_band(low: float, high: float) -> tuple[float, float]:
+        low = float(low)
+        high = float(high)
+        if low > high:
+            low, high = high, low
+        return round(low, 2), round(high, 2)
+
+    def _build_entry_zone(self, signal: dict, klines_15m: list[dict]) -> tuple[float, float]:
+        latest = klines_15m[-1]
+        recent_6 = klines_15m[-6:]
+        recent_8 = klines_15m[-8:]
+
+        price = float(signal["price"])
+        atr = max(float(latest.get("atr", 0.0)), price * 0.0015)
+        ema10 = float(latest["ema10"])
+        ema20 = float(latest["ema20"])
+        recent_support = min(float(k["low"]) for k in recent_8)
+        recent_resistance = max(float(k["high"]) for k in recent_8)
+        local_reclaim = max(float(k["close"]) for k in recent_6[:-1]) if len(recent_6) > 1 else price
+        local_reject = min(float(k["close"]) for k in recent_6[:-1]) if len(recent_6) > 1 else price
+
+        signal_name = signal["signal"]
+
+        # A类：给突破/跌破后的回踩执行带，区间偏窄
+        if signal_name == "A_LONG":
+            anchor = max(min(recent_resistance, price), ema10)
+            low = min(anchor - atr * 0.10, price - atr * 0.22)
+            high = min(price, max(anchor + atr * 0.12, price - atr * 0.05))
+            return self._safe_band(low, high)
+
+        if signal_name == "A_SHORT":
+            anchor = min(max(recent_support, price), ema10)
+            low = max(price, min(anchor - atr * 0.12, price + atr * 0.05))
+            high = max(anchor + atr * 0.10, price + atr * 0.22)
+            return self._safe_band(low, high)
+
+        # B类：给EMA10/20与最近支撑/压力重叠的接回区，区间最实用
+        if signal_name == "B_PULLBACK_LONG":
+            base_low = min(ema10, ema20, recent_support)
+            base_high = max(ema10, ema20, local_reclaim)
+            low = base_low - atr * 0.10
+            high = min(price + atr * 0.03, base_high + atr * 0.12)
+            return self._safe_band(low, high)
+
+        if signal_name == "B_PULLBACK_SHORT":
+            base_low = min(ema10, ema20, local_reject)
+            base_high = max(ema10, ema20, recent_resistance)
+            low = max(price - atr * 0.03, base_low - atr * 0.12)
+            high = base_high + atr * 0.10
+            return self._safe_band(low, high)
+
+        # C类：给左侧观察区，区间略宽，不等同于追单位
+        if signal_name == "C_LEFT_LONG":
+            anchor = min(ema20, recent_support)
+            low = anchor - atr * 0.18
+            high = max(anchor + atr * 0.20, ema10 + atr * 0.05)
+            return self._safe_band(low, high)
+
+        if signal_name == "C_LEFT_SHORT":
+            anchor = max(ema20, recent_resistance)
+            low = min(anchor - atr * 0.20, ema10 - atr * 0.05)
+            high = anchor + atr * 0.18
+            return self._safe_band(low, high)
+
+        return self._safe_band(price, price)
+
     def scan_once(self) -> dict:
         try:
             klines_1d = self._fetch_enriched("1d")
@@ -68,6 +135,8 @@ class SMCTScanner:
                     )
                     continue
 
+                entry_zone_low, entry_zone_high = self._build_entry_zone(signal, klines_15m)
+
                 text = format_engine_message(
                     signal=signal["signal"],
                     symbol=signal["symbol"],
@@ -76,11 +145,25 @@ class SMCTScanner:
                     price=signal["price"],
                     trend_1h=signal["trend_1h"],
                     status=signal["status"],
+                    entry_zone_low=entry_zone_low,
+                    entry_zone_high=entry_zone_high,
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
                 self.state_store.mark_sent(signal)
-                sent_signals.append({"signal": signal["signal"], "telegram_result": telegram_result})
-                self.logger.info("scan_signal_sent symbol=%s signal=%s", signal["symbol"], signal["signal"])
+                sent_signals.append(
+                    {
+                        "signal": signal["signal"],
+                        "entry_zone": [entry_zone_low, entry_zone_high],
+                        "telegram_result": telegram_result,
+                    }
+                )
+                self.logger.info(
+                    "scan_signal_sent symbol=%s signal=%s entry_zone=[%.2f, %.2f]",
+                    signal["symbol"],
+                    signal["signal"],
+                    entry_zone_low,
+                    entry_zone_high,
+                )
 
             self.logger.info(
                 "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
