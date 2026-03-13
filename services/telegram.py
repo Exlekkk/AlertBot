@@ -29,20 +29,16 @@ def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
 
 
-
 def action_label(signal: str) -> str:
     return ACTION_LABELS.get(signal, signal)
-
 
 
 def trend_label(trend_1h: str) -> str:
     return TREND_LABELS.get(trend_1h, trend_1h)
 
 
-
 def title_prefix(priority: int) -> str:
     return "⚠️" if priority == 3 else "🚨"
-
 
 
 def build_status_text(signal: str, status: str) -> str:
@@ -54,9 +50,7 @@ def build_status_text(signal: str, status: str) -> str:
         return "回踩条件满足，等待延续确认"
     if signal == "B_PULLBACK_SHORT":
         return "反弹条件满足，等待延续确认"
-    if signal == "C_LEFT_LONG":
-        return "前提初步满足，处于早期观察阶段"
-    if signal == "C_LEFT_SHORT":
+    if signal in ("C_LEFT_LONG", "C_LEFT_SHORT"):
         return "前提初步满足，处于早期观察阶段"
 
     if status == "active":
@@ -65,6 +59,13 @@ def build_status_text(signal: str, status: str) -> str:
         return "前提初步满足，处于观察阶段"
     return status
 
+
+def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
+    if entry_zone_low is None or entry_zone_high is None:
+        return f"{price:.2f}"
+    low = min(float(entry_zone_low), float(entry_zone_high))
+    high = max(float(entry_zone_low), float(entry_zone_high))
+    return f"{low:.2f} - {high:.2f}"
 
 
 def format_engine_message(
@@ -75,22 +76,24 @@ def format_engine_message(
     price: float,
     trend_1h: str,
     status: str,
+    entry_zone_low: float | None = None,
+    entry_zone_high: float | None = None,
 ) -> str:
     signal_type = type_label(priority)
     action_text = action_label(signal)
     status_text = build_status_text(signal, status)
     trend_text = trend_label(trend_1h)
     prefix = title_prefix(priority)
+    entry_zone_text = zone_text(entry_zone_low, entry_zone_high, price)
 
     return (
         f"{prefix} 盘面预警｜{signal_type}\n"
         f"操作建议：{action_text}\n"
         f"标的：{symbol}\n"
-        f"参考价位：{price:.2f}\n"
+        f"参考价位区间：{entry_zone_text}\n"
         f"总体趋势方向：{trend_text}\n"
         f"状态：{status_text}"
     )
-
 
 
 def send_telegram_message(token: str, chat_id: str, text: str):
