@@ -149,6 +149,55 @@ def _short_regime_state(trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict,
     return "blocked"
 
 
+def _tai_heat_state(k: dict) -> str:
+    value = float(k.get("tai_value", 0.0))
+    p20 = float(k.get("tai_p20", 0.0))
+    floor = float(k.get("tai_floor", 0.0))
+
+    # 只有 P20 以下区间的底部 30% 才算真正冰点
+    extreme_cutoff = floor + (p20 - floor) * 0.30
+    if value <= extreme_cutoff:
+        return "extreme_cold"
+    if value <= p20:
+        return "cold"
+    return "normal"
+
+
+def _b_long_htf_allowed(regime_long_state: str, trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict) -> bool:
+    if regime_long_state == "strong":
+        return True
+    if regime_long_state != "weak":
+        return False
+
+    # B类必须先有高周期许可，再看15m接回，不能退化成只看15m
+    return (
+        trend_4h in ("bull", "lean_bull")
+        and trend_1d in ("bull", "lean_bull")
+        and trend_1h in ("bull", "lean_bull", "neutral")
+        and not _down_pressure(k_1h)
+        and k_1h["close"] >= k_1h["ema20"]
+    )
+
+
+def _b_short_htf_allowed(regime_short_state: str, trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict) -> bool:
+    if regime_short_state == "strong":
+        return True
+    if regime_short_state != "weak":
+        return False
+
+    # B类空头也必须先有高周期转弱/允许，不能只要15m形态像空就发
+    return (
+        trend_1h in ("bear", "lean_bear")
+        and _down_pressure(k_1h)
+        and trend_4h not in ("bull",)
+    ) or (
+        trend_4h in ("bear", "lean_bear")
+        and trend_1d in ("bear", "lean_bear", "neutral")
+        and k_1h["close"] <= k_1h["ema20"]
+        and not _up_pressure(k_4h)
+    )
+
+
 def _pick_best_per_direction(signals: list[dict]) -> list[dict]:
     best_by_direction = {}
     for signal in signals:
@@ -201,6 +250,9 @@ def detect_signals(
     latest = klines_15m[-1]
     prev = klines_15m[-2]
     atr = latest["atr"]
+    tai_heat = _tai_heat_state(latest)
+    tai_extreme_cold = tai_heat == "extreme_cold" and not latest["tai_rising"]
+
 
     piv_h, piv_l = find_pivots(klines_15m)
     bos_15 = detect_last_bos(klines_15m, piv_h, piv_l)
@@ -220,8 +272,6 @@ def detect_signals(
     near_support = bool(
         piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.45
     )
-
-    tai_not_icepoint = not latest["tai_is_icepoint"]
 
     recent_6_lows = min(k["low"] for k in recent_6)
     recent_6_highs = max(k["high"] for k in recent_6)
@@ -253,6 +303,9 @@ def detect_signals(
     c_long_price_confirm = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
     c_short_price_confirm = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
 
+    b_long_htf_allowed = _b_long_htf_allowed(regime_long_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h)
+    b_short_htf_allowed = _b_short_htf_allowed(regime_short_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h)
+
     signals = []
     near_miss_signals = []
     blocked_counter: Counter = Counter()
@@ -273,7 +326,6 @@ def detect_signals(
 
     a_long_checks = {
         "htf_a_long_allowed": allow_long_strong,
-        "tai_not_icepoint": tai_not_icepoint,
         "15m_breakout_trigger": a_long_breakout,
         "bullish_structure": bullish_structure,
         "ema_supportive": latest["ema10"] >= latest["ema20"] and latest["close"] >= latest["ema10"],
@@ -311,7 +363,6 @@ def detect_signals(
 
     a_short_checks = {
         "htf_a_short_allowed": allow_short_strong,
-        "tai_not_icepoint": tai_not_icepoint,
         "15m_breakdown_trigger": a_short_breakdown,
         "bearish_structure": bearish_structure,
         "ema_supportive": latest["ema10"] <= latest["ema20"] and latest["close"] <= latest["ema10"],
@@ -348,8 +399,7 @@ def detect_signals(
     ) >= 2
 
     b_long_checks = {
-        "htf_b_long_allowed": allow_long_strong,
-        "tai_not_icepoint": tai_not_icepoint,
+        "htf_b_long_allowed": b_long_htf_allowed,
         "15m_smc_premise_long": bullish_structure or is_bullish_fvg(recent_8) or near_support,
         "pullback_seen": b_long_pullback_seen,
         "pullback_then_reclaim": b_long_reclaim,
@@ -386,8 +436,7 @@ def detect_signals(
     ) >= 2
 
     b_short_checks = {
-        "htf_b_short_allowed": allow_short_weak,
-        "tai_not_icepoint": tai_not_icepoint,
+        "htf_b_short_allowed": b_short_htf_allowed,
         "15m_smc_premise_short": bearish_structure or is_bearish_fvg(recent_8) or near_resistance,
         "pullback_seen": b_short_pullback_seen,
         "pullback_then_reject": b_short_reject,
@@ -420,7 +469,7 @@ def detect_signals(
 
     c_long_checks = {
         "htf_c_long_allowed": allow_long_weak,
-        "tai_not_icepoint": tai_not_icepoint,
+        "tai_not_extreme_cold": not tai_extreme_cold,
         "15m_strategy_premise_long": c_long_strategy_premise,
         "eq_core_long": c_long_eq_core,
         "early_confirmation_long": c_long_confirmation_ok,
@@ -448,7 +497,7 @@ def detect_signals(
 
     c_short_checks = {
         "htf_c_short_allowed": allow_short_weak,
-        "tai_not_icepoint": tai_not_icepoint,
+        "tai_not_extreme_cold": not tai_extreme_cold,
         "15m_strategy_premise_short": c_short_strategy_premise,
         "eq_core_short": c_short_eq_core,
         "early_confirmation_short": c_short_confirmation_ok,
