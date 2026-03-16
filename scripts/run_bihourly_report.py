@@ -30,7 +30,16 @@ class BihourlyReporter:
         try:
             scanner_module = import_module("engine.scanner")
             scanner_cls = getattr(scanner_module, "SMCTScanner")
-            return scanner_cls.healthcheck(symbol=self.symbol)
+            scanner = scanner_cls(symbol=self.symbol)
+
+            if hasattr(scanner, "health_check"):
+                return scanner.health_check()
+
+            if hasattr(scanner, "healthcheck"):
+                return scanner.healthcheck()
+
+            raise AttributeError("SMCTScanner has neither 'health_check' nor 'healthcheck'")
+
         except Exception as exc:
             self.logger.exception("bihourly_healthcheck_failed error=%s", exc)
             return {"ok": False, "error": str(exc)}
