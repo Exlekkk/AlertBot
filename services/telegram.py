@@ -38,7 +38,7 @@ def trend_label(trend_1h: str) -> str:
 
 
 def title_prefix(priority: int) -> str:
-    return "🚨"
+    return "⚠️"
 
 
 def build_status_text(signal: str, status: str) -> str:
