@@ -38,7 +38,7 @@ def trend_label(trend_1h: str) -> str:
 
 
 def title_prefix(priority: int) -> str:
-    return "⚠️" if priority == 3 else "🚨"
+    return "🚨"
 
 
 def build_status_text(signal: str, status: str) -> str:
@@ -62,9 +62,16 @@ def build_status_text(signal: str, status: str) -> str:
 
 def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
     if entry_zone_low is None or entry_zone_high is None:
-        return f"{price:.2f}"
-    low = min(float(entry_zone_low), float(entry_zone_high))
-    high = max(float(entry_zone_low), float(entry_zone_high))
+        pad = max(abs(float(price)) * 0.0012, 12.0)
+        low = float(price) - pad * 0.5
+        high = float(price) + pad * 0.5
+    else:
+        low = min(float(entry_zone_low), float(entry_zone_high))
+        high = max(float(entry_zone_low), float(entry_zone_high))
+        if abs(high - low) < max(abs(float(price)) * 0.0008, 8.0):
+            pad = max(abs(float(price)) * 0.0012, 12.0)
+            low -= pad * 0.5
+            high += pad * 0.5
     return f"{low:.2f} - {high:.2f}"
 
 
