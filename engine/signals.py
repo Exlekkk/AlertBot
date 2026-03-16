@@ -48,13 +48,38 @@ def _up_pressure(k: dict) -> bool:
 def _long_overheat(k: dict, prev_k: dict | None = None) -> bool:
     sss_rollover = prev_k is not None and float(k.get("sss_hist", 0.0)) < float(prev_k.get("sss_hist", 0.0))
     cm_rollover = prev_k is not None and float(k.get("cm_hist", 0.0)) < float(prev_k.get("cm_hist", 0.0))
-    return bool(k.get("sss_bear_div")) or bool(k.get("sss_overbought_warning")) or (sss_rollover and cm_rollover)
+    strong_warning = bool(k.get("sss_overbought_warning")) and (sss_rollover or cm_rollover)
+    return bool(k.get("sss_bear_div")) or strong_warning
 
 
 def _short_exhausted(k: dict, prev_k: dict | None = None) -> bool:
     sss_rebound = prev_k is not None and float(k.get("sss_hist", 0.0)) > float(prev_k.get("sss_hist", 0.0))
     cm_rebound = prev_k is not None and float(k.get("cm_hist", 0.0)) > float(prev_k.get("cm_hist", 0.0))
-    return bool(k.get("sss_bull_div")) or bool(k.get("sss_oversold_warning")) or (sss_rebound and cm_rebound)
+    strong_warning = bool(k.get("sss_oversold_warning")) and (sss_rebound or cm_rebound)
+    return bool(k.get("sss_bull_div")) or strong_warning
+
+
+def _opposite_eq_strong(direction: str, k_15m: dict, p_15m: dict | None, k_1h: dict, p_1h: dict | None) -> bool:
+    if direction == "long":
+        div_15m = bool(k_15m.get("sss_bear_div"))
+        warn_15m = bool(k_15m.get("sss_overbought_warning"))
+        div_1h = bool(k_1h.get("sss_bear_div"))
+        warn_1h = bool(k_1h.get("sss_overbought_warning"))
+        sss_roll_15m = p_15m is not None and float(k_15m.get("sss_hist", 0.0)) < float(p_15m.get("sss_hist", 0.0))
+        cm_roll_15m = p_15m is not None and float(k_15m.get("cm_hist", 0.0)) < float(p_15m.get("cm_hist", 0.0))
+        sss_roll_1h = p_1h is not None and float(k_1h.get("sss_hist", 0.0)) < float(p_1h.get("sss_hist", 0.0))
+        cm_roll_1h = p_1h is not None and float(k_1h.get("cm_hist", 0.0)) < float(p_1h.get("cm_hist", 0.0))
+        return div_15m or div_1h or ((warn_15m and warn_1h) and (sss_roll_15m or cm_roll_15m or sss_roll_1h or cm_roll_1h))
+
+    div_15m = bool(k_15m.get("sss_bull_div"))
+    warn_15m = bool(k_15m.get("sss_oversold_warning"))
+    div_1h = bool(k_1h.get("sss_bull_div"))
+    warn_1h = bool(k_1h.get("sss_oversold_warning"))
+    sss_rebound_15m = p_15m is not None and float(k_15m.get("sss_hist", 0.0)) > float(p_15m.get("sss_hist", 0.0))
+    cm_rebound_15m = p_15m is not None and float(k_15m.get("cm_hist", 0.0)) > float(p_15m.get("cm_hist", 0.0))
+    sss_rebound_1h = p_1h is not None and float(k_1h.get("sss_hist", 0.0)) > float(p_1h.get("sss_hist", 0.0))
+    cm_rebound_1h = p_1h is not None and float(k_1h.get("cm_hist", 0.0)) > float(p_1h.get("cm_hist", 0.0))
+    return div_15m or div_1h or ((warn_15m and warn_1h) and (sss_rebound_15m or cm_rebound_15m or sss_rebound_1h or cm_rebound_1h))
 
 
 def _cross_up(curr_a: float, curr_b: float, prev_a: float, prev_b: float) -> bool:
@@ -296,15 +321,47 @@ def detect_signals(
     a_long_impulse_ok = close_pos >= 0.62 and expand_ok and _count_true(cm_long_supportive, rar_long_supportive, bool(latest.get("fl_buy_signal")) or int(latest.get("fl_trend", 0)) >= 0) >= 2
     a_short_impulse_ok = close_pos <= 0.38 and expand_ok and _count_true(cm_short_supportive, rar_short_supportive, bool(latest.get("fl_sell_signal")) or int(latest.get("fl_trend", 0)) <= 0) >= 2
 
-    b_long_pullback_seen = min(float(k["low"]) for k in recent_6) <= float(latest["ema10"]) + atr * 0.45 or near_support or bullish_fvg_recent
-    b_short_pullback_seen = max(float(k["high"]) for k in recent_6) >= float(latest["ema10"]) - atr * 0.45 or near_resistance or bearish_fvg_recent
-    b_long_reclaim = float(latest["close"]) >= float(latest["ema10"]) and float(latest["close"]) > float(prev["close"]) and close_pos >= 0.52
-    b_short_reject = float(latest["close"]) <= float(latest["ema10"]) and float(latest["close"]) < float(prev["close"]) and close_pos <= 0.48
+    b_long_pullback_seen = (
+        min(float(k["low"]) for k in recent_6) <= float(latest["ema10"]) + atr * 0.45
+        or near_support
+        or bullish_fvg_recent
+        or min(float(k["low"]) for k in recent_6) <= float(latest["ema20"]) + atr * 0.30
+    )
+    b_short_pullback_seen = (
+        max(float(k["high"]) for k in recent_6) >= float(latest["ema10"]) - atr * 0.45
+        or near_resistance
+        or bearish_fvg_recent
+        or max(float(k["high"]) for k in recent_6) >= float(latest["ema20"]) - atr * 0.30
+    )
+    b_long_reclaim = b_long_pullback_seen and (
+        float(latest["close"]) >= float(latest["ema10"]) - atr * 0.12
+        and float(latest["close"]) >= float(latest["ema20"])
+        and _count_true(
+            float(latest["close"]) > float(prev["close"]),
+            close_pos >= 0.48,
+            cm_long_not_bad,
+            float(latest["low"]) >= float(latest["ema10"]) - atr * 0.35,
+            float(latest["high"]) >= float(prev["high"]) - atr * 0.08,
+        ) >= 3
+    )
+    b_short_reject = b_short_pullback_seen and (
+        float(latest["close"]) <= float(latest["ema10"]) + atr * 0.12
+        and float(latest["close"]) <= float(latest["ema20"])
+        and _count_true(
+            float(latest["close"]) < float(prev["close"]),
+            close_pos <= 0.52,
+            cm_short_not_bad,
+            float(latest["high"]) <= float(latest["ema10"]) + atr * 0.35,
+            float(latest["low"]) <= float(prev["low"]) + atr * 0.08,
+        ) >= 3
+    )
 
     eq_long_15m = bool(latest.get("sss_bull_div")) or bool(latest.get("sss_oversold_warning"))
     eq_short_15m = bool(latest.get("sss_bear_div")) or bool(latest.get("sss_overbought_warning"))
     eq_long_1h = bool(k_1h.get("sss_bull_div")) or bool(k_1h.get("sss_oversold_warning"))
     eq_short_1h = bool(k_1h.get("sss_bear_div")) or bool(k_1h.get("sss_overbought_warning"))
+    opposite_eq_strong_for_long = _opposite_eq_strong("long", latest, prev, k_1h, p_1h)
+    opposite_eq_strong_for_short = _opposite_eq_strong("short", latest, prev, k_1h, p_1h)
 
     c_long_eq_core = eq_long_15m or eq_long_1h or _cross_up(
         float(latest.get("sss_macd_line", 0.0)),
@@ -344,10 +401,10 @@ def detect_signals(
         "15m_breakout_trigger": a_long_breakout,
         "structure_backing": bullish_structure or bullish_fvg_recent or trend_1h in ("bull", "lean_bull"),
         "impulse_ok": a_long_impulse_ok,
-        "no_opposite_eq_short": not eq_short_15m and not eq_short_1h,
+        "no_opposite_eq_short": not opposite_eq_strong_for_long,
         "not_higher_tf_overheat": not long_h1_overheat and not long_h4_overheat,
         "not_too_far_from_ema20": (float(latest["close"]) - float(latest["ema20"])) <= atr * 1.25,
-        "no_strong_secondary_contradiction": not (_count_true(eq_short_15m, bool(latest.get("cm_hist_down")), int(latest.get("fl_trend", 0)) == -1) >= 2),
+        "no_strong_secondary_contradiction": not (opposite_eq_strong_for_long and _count_true(bool(latest.get("cm_hist_down")), int(latest.get("fl_trend", 0)) == -1, float(latest["close"]) < float(latest["ema10"])) >= 1),
     }
     if _evaluate_branch("A_LONG", a_long_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -369,10 +426,10 @@ def detect_signals(
         "15m_breakdown_trigger": a_short_breakdown,
         "structure_backing": bearish_structure or bearish_fvg_recent or trend_1h in ("bear", "lean_bear"),
         "impulse_ok": a_short_impulse_ok,
-        "no_opposite_eq_long": not eq_long_15m and not eq_long_1h,
+        "no_opposite_eq_long": not opposite_eq_strong_for_short,
         "not_higher_tf_exhausted": not short_h1_exhausted and not short_h4_exhausted,
         "not_too_far_from_ema20": (float(latest["ema20"]) - float(latest["close"])) <= atr * 1.25,
-        "no_strong_secondary_contradiction": not (_count_true(eq_long_15m, bool(latest.get("cm_hist_up")), int(latest.get("fl_trend", 0)) == 1) >= 2),
+        "no_strong_secondary_contradiction": not (opposite_eq_strong_for_short and _count_true(bool(latest.get("cm_hist_up")), int(latest.get("fl_trend", 0)) == 1, float(latest["close"]) > float(latest["ema10"])) >= 1),
     }
     if _evaluate_branch("A_SHORT", a_short_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -395,9 +452,9 @@ def detect_signals(
         "pullback_seen": b_long_pullback_seen,
         "pullback_then_reclaim": b_long_reclaim,
         "ema_not_lost": float(latest["close"]) >= float(latest["ema20"]) or (float(latest["ema10"]) >= float(latest["ema20"]) and float(latest["close"]) >= float(latest["ema10"])),
-        "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
-        "not_too_far_from_ema10": abs(float(latest["close"]) - float(latest["ema10"])) <= atr * 1.05,
-        "no_strong_secondary_contradiction": not (_count_true(eq_short_15m, bool(latest.get("cm_hist_down")), int(latest.get("fl_trend", 0)) == -1) >= 2),
+        "not_eq_overheat_long": not (bool(latest.get("sss_bear_div")) or bool(k_1h.get("sss_bear_div")) or (long_m15_overheat and long_h1_overheat)),
+        "not_too_far_from_ema10": abs(float(latest["close"]) - float(latest["ema10"])) <= atr * 1.35,
+        "no_strong_secondary_contradiction": not (opposite_eq_strong_for_long and _count_true(bool(latest.get("cm_hist_down")), int(latest.get("fl_trend", 0)) == -1, float(latest["close"]) < float(latest["ema10"])) >= 1),
     }
     if _evaluate_branch("B_PULLBACK_LONG", b_long_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -420,9 +477,9 @@ def detect_signals(
         "pullback_seen": b_short_pullback_seen,
         "pullback_then_reject": b_short_reject,
         "ema_not_lost": float(latest["close"]) <= float(latest["ema20"]) or (float(latest["ema10"]) <= float(latest["ema20"]) and float(latest["close"]) <= float(latest["ema10"])),
-        "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
-        "not_too_far_from_ema10": abs(float(latest["ema10"]) - float(latest["close"])) <= atr * 1.05,
-        "no_strong_secondary_contradiction": not (_count_true(eq_long_15m, bool(latest.get("cm_hist_up")), int(latest.get("fl_trend", 0)) == 1) >= 2),
+        "not_eq_exhausted_short": not (bool(latest.get("sss_bull_div")) or bool(k_1h.get("sss_bull_div")) or (short_m15_exhausted and short_h1_exhausted)),
+        "not_too_far_from_ema10": abs(float(latest["ema10"]) - float(latest["close"])) <= atr * 1.35,
+        "no_strong_secondary_contradiction": not (opposite_eq_strong_for_short and _count_true(bool(latest.get("cm_hist_up")), int(latest.get("fl_trend", 0)) == 1, float(latest["close"]) > float(latest["ema10"])) >= 1),
     }
     if _evaluate_branch("B_PULLBACK_SHORT", b_short_checks, near_miss_signals, blocked_counter):
         signals.append(
@@ -444,7 +501,7 @@ def detect_signals(
         "15m_strategy_premise_long": c_long_strategy_premise,
         "eq_core_long": c_long_eq_core,
         "early_confirmation_long": c_long_confirmation_ok,
-        "no_opposite_eq_short": not eq_short_15m and not eq_short_1h,
+        "no_opposite_eq_short": not opposite_eq_strong_for_long,
         "not_higher_tf_overheat": not long_h1_overheat and not long_h4_overheat,
     }
     if _evaluate_branch("C_LEFT_LONG", c_long_checks, near_miss_signals, blocked_counter):
@@ -467,7 +524,7 @@ def detect_signals(
         "15m_strategy_premise_short": c_short_strategy_premise,
         "eq_core_short": c_short_eq_core,
         "early_confirmation_short": c_short_confirmation_ok,
-        "no_opposite_eq_long": not eq_long_15m and not eq_long_1h,
+        "no_opposite_eq_long": not opposite_eq_strong_for_short,
         "not_higher_tf_exhausted": not short_h1_exhausted and not short_h4_exhausted,
     }
     if _evaluate_branch("C_LEFT_SHORT", c_short_checks, near_miss_signals, blocked_counter):
