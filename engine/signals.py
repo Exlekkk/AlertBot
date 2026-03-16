@@ -244,6 +244,7 @@ def detect_signals(
     trend_1h = classify_trend(klines_1h, structure_len=10)
 
     k_4h = klines_4h[-1]
+    p_4h = klines_4h[-2]
     k_1h = klines_1h[-1]
     p_1h = klines_1h[-2]
 
@@ -273,6 +274,7 @@ def detect_signals(
 
     recent_6 = klines_15m[-6:]
     recent_8 = klines_15m[-8:]
+    recent_12 = klines_15m[-12:]
     bullish_fvg_recent = is_bullish_fvg(recent_6)
     bearish_fvg_recent = is_bearish_fvg(recent_6)
 
@@ -281,6 +283,8 @@ def detect_signals(
 
     recent_6_lows = min(k["low"] for k in recent_6)
     recent_6_highs = max(k["high"] for k in recent_6)
+    prior_break_high = max(k["high"] for k in recent_12[:-1]) if len(recent_12) > 1 else prev["high"]
+    prior_break_low = min(k["low"] for k in recent_12[:-1]) if len(recent_12) > 1 else prev["low"]
 
     b_long_pullback_seen = recent_6_lows <= latest["ema10"] + atr * 0.35 or near_support
     b_short_pullback_seen = recent_6_highs >= latest["ema10"] - atr * 0.35 or near_resistance
@@ -297,8 +301,18 @@ def detect_signals(
     cm_long_not_bad = latest["cm_macd_above_signal"] or latest["cm_hist_up"]
     cm_short_not_bad = (not latest["cm_macd_above_signal"]) or latest["cm_hist_down"]
 
-    a_long_breakout = bos_15 == "up" or bullish_fvg_recent or (mss_15 == "up" and latest["close"] > latest["ema10"])
-    a_short_breakdown = bos_15 == "down" or bearish_fvg_recent or (mss_15 == "down" and latest["close"] < latest["ema10"])
+    a_long_breakout = (
+        (bos_15 == "up" or mss_15 == "up")
+        and latest["close"] > prev["close"]
+        and latest["high"] >= prior_break_high - atr * 0.10
+        and latest["close"] >= latest["ema10"]
+    )
+    a_short_breakdown = (
+        (bos_15 == "down" or mss_15 == "down")
+        and latest["close"] < prev["close"]
+        and latest["low"] <= prior_break_low + atr * 0.10
+        and latest["close"] <= latest["ema10"]
+    )
 
     c_long_eq_core = latest["sss_bull_div"] or (latest["sss_oversold_warning"] and sss_long_improving)
     c_short_eq_core = latest["sss_bear_div"] or (latest["sss_overbought_warning"] and sss_short_improving)
@@ -316,24 +330,28 @@ def detect_signals(
     short_m15_exhausted = _short_exhausted(latest, prev)
     long_h1_overheat = _long_overheat(k_1h, p_1h)
     short_h1_exhausted = _short_exhausted(k_1h, p_1h)
+    long_h4_overheat = _long_overheat(k_4h, p_4h)
+    short_h4_exhausted = _short_exhausted(k_4h, p_4h)
 
     signals = []
     near_miss_signals = []
     blocked_counter: Counter = Counter()
 
-    # A 类：必须是“4h+1h 强方向 + 15m 突破”，不允许高位衰减也继续报 A。
-    a_long_secondary_ok = _count_true(
-        latest["fl_trend"] == 1 or latest["fl_buy_signal"],
-        cm_long_supportive,
-        not latest["sss_bear_div"],
-        latest["rar_trend_strong"],
-    ) >= 3
+    # A 类：只保留真正的强顺势突破，不能再让 FVG/BOS 一碰就报 A。
+    a_long_secondary_ok = (
+        cm_long_supportive
+        and latest["rar_trend_strong"]
+        and not latest["sss_bear_div"]
+        and not latest["sss_overbought_warning"]
+        and (latest["fl_trend"] >= 0 or latest["fl_buy_signal"])
+    )
     a_long_strong_contra = _count_true(
         latest["sss_bear_div"],
         latest["sss_overbought_warning"],
         latest["cm_hist_down"],
         latest["fl_trend"] == -1,
         long_h1_overheat,
+        long_h4_overheat,
     ) >= 2
 
     a_long_checks = {
@@ -342,8 +360,9 @@ def detect_signals(
         "bullish_structure": bullish_structure,
         "ema_supportive": latest["ema10"] >= latest["ema20"] and latest["close"] >= latest["ema10"],
         "h1_momentum_supportive": k_1h["close"] >= k_1h["ema20"] and k_1h["ema10"] >= k_1h["ema20"] and _momentum_up(k_1h),
+        "h4_not_overheat": not long_h4_overheat,
         "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
-        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 1.20,
+        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 0.95,
         "secondary_pack_ok": a_long_secondary_ok,
         "no_strong_secondary_contradiction": not a_long_strong_contra,
     }
@@ -362,18 +381,20 @@ def detect_signals(
             }
         )
 
-    a_short_secondary_ok = _count_true(
-        latest["fl_trend"] == -1 or latest["fl_sell_signal"],
-        cm_short_supportive,
-        not latest["sss_bull_div"],
-        latest["rar_trend_strong"],
-    ) >= 3
+    a_short_secondary_ok = (
+        cm_short_supportive
+        and latest["rar_trend_strong"]
+        and not latest["sss_bull_div"]
+        and not latest["sss_oversold_warning"]
+        and (latest["fl_trend"] <= 0 or latest["fl_sell_signal"])
+    )
     a_short_strong_contra = _count_true(
         latest["sss_bull_div"],
         latest["sss_oversold_warning"],
         latest["cm_hist_up"],
         latest["fl_trend"] == 1,
         short_h1_exhausted,
+        short_h4_exhausted,
     ) >= 2
 
     a_short_checks = {
@@ -382,8 +403,9 @@ def detect_signals(
         "bearish_structure": bearish_structure,
         "ema_supportive": latest["ema10"] <= latest["ema20"] and latest["close"] <= latest["ema10"],
         "h1_momentum_supportive": k_1h["close"] <= k_1h["ema20"] and k_1h["ema10"] <= k_1h["ema20"] and _momentum_down(k_1h),
+        "h4_not_exhausted": not short_h4_exhausted,
         "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
-        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 1.20,
+        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 0.95,
         "secondary_pack_ok": a_short_secondary_ok,
         "no_strong_secondary_contradiction": not a_short_strong_contra,
     }
@@ -402,7 +424,7 @@ def detect_signals(
             }
         )
 
-    # B 类：高周期允许 + 15m 回踩/反弹延续，但不再无脑顺着 4h 报多。
+    # B 类：仍允许顺大级别回踩/反弹，但必须保留 15m 结构与 1h 健康度。
     b_long_secondary_ok = _count_true(
         latest["fl_trend"] >= 0,
         cm_long_not_bad,
@@ -481,7 +503,7 @@ def detect_signals(
             }
         )
 
-    # C 类：必须真有 EQ 左侧核心，不再只靠计分就乱报；高位顶背离直接禁多。
+    # C 类：必须真有左侧 EQ 核心，且 15m/1h 不能已经进入明显反向衰减。
     c_long_confirmation_ok = _count_true(
         c_long_price_confirm,
         latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
@@ -493,7 +515,7 @@ def detect_signals(
         latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
         latest["cm_hist_up"] or latest["cm_macd_above_signal"],
         bullish_structure or bullish_fvg_recent or mss_15 == "up",
-    ) >= 3
+    ) >= 4
 
     c_long_checks = {
         "htf_c_long_allowed": allow_long_weak,
@@ -501,6 +523,9 @@ def detect_signals(
         "15m_strategy_premise_long": c_long_strategy_premise,
         "eq_core_long": c_long_eq_core,
         "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
+        "not_h4_overheat_long": not long_h4_overheat,
+        "no_opposite_eq_short": not latest["sss_bear_div"] and not latest["sss_overbought_warning"],
+        "no_opposite_cm_short": not (latest["cm_hist_down"] and not latest["cm_macd_above_signal"]),
         "early_signal_long": c_long_early_signal_ok,
         "early_confirmation_long": c_long_confirmation_ok,
     }
@@ -530,7 +555,7 @@ def detect_signals(
         latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
         latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
         bearish_structure or bearish_fvg_recent or mss_15 == "down",
-    ) >= 3
+    ) >= 4
 
     c_short_checks = {
         "htf_c_short_allowed": allow_short_weak,
@@ -538,6 +563,9 @@ def detect_signals(
         "15m_strategy_premise_short": c_short_strategy_premise,
         "eq_core_short": c_short_eq_core,
         "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
+        "not_h4_exhausted_short": not short_h4_exhausted,
+        "no_opposite_eq_long": not latest["sss_bull_div"] and not latest["sss_oversold_warning"],
+        "no_opposite_cm_long": not (latest["cm_hist_up"] and latest["cm_macd_above_signal"]),
         "early_signal_short": c_short_early_signal_ok,
         "early_confirmation_short": c_short_confirmation_ok,
     }
