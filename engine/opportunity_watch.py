@@ -52,40 +52,81 @@ def _build_text(direction: str) -> str:
     return f"{title}\n请注意实盘，留意入场机会。"
 
 
+def _m15_long_veto(m15_prev: dict, m15_last: dict) -> bool:
+    eq_cross_down = _cross_down(
+        m15_last["sss_macd_line"],
+        m15_last["sss_signal_line"],
+        m15_prev["sss_macd_line"],
+        m15_prev["sss_signal_line"],
+    )
+    ult_cross_down = (not m15_last["cm_macd_above_signal"]) and m15_prev["cm_macd_above_signal"]
+    dual_rollover = (
+        float(m15_last.get("sss_hist", 0.0)) < float(m15_prev.get("sss_hist", 0.0))
+        and float(m15_last.get("cm_hist", 0.0)) < float(m15_prev.get("cm_hist", 0.0))
+    )
+    return bool(
+        m15_last.get("sss_bear_div")
+        or m15_last.get("sss_overbought_warning")
+        or eq_cross_down
+        or ult_cross_down
+        or (dual_rollover and m15_last["close"] < m15_last["ema10"])
+    )
+
+
+def _m15_short_veto(m15_prev: dict, m15_last: dict) -> bool:
+    eq_cross_up = _cross_up(
+        m15_last["sss_macd_line"],
+        m15_last["sss_signal_line"],
+        m15_prev["sss_macd_line"],
+        m15_prev["sss_signal_line"],
+    )
+    ult_cross_up = m15_last["cm_macd_above_signal"] and (not m15_prev["cm_macd_above_signal"])
+    dual_rebound = (
+        float(m15_last.get("sss_hist", 0.0)) > float(m15_prev.get("sss_hist", 0.0))
+        and float(m15_last.get("cm_hist", 0.0)) > float(m15_prev.get("cm_hist", 0.0))
+    )
+    return bool(
+        m15_last.get("sss_bull_div")
+        or m15_last.get("sss_oversold_warning")
+        or eq_cross_up
+        or ult_cross_up
+        or (dual_rebound and m15_last["close"] > m15_last["ema10"])
+    )
+
+
 def _long_components(h4_prev: dict, h4_last: dict, h1_prev: dict, h1_last: dict, m15_prev: dict, m15_last: dict) -> dict:
     rar_signal = h1_last["rar_trend_strong"] or h1_last["rar_spread"] < h1_prev["rar_spread"] or _cross_up(
         h1_last["rar_value"], h1_last["rar_trigger"], h1_prev["rar_value"], h1_prev["rar_trigger"]
     )
-    eq_signal = _cross_up(
-        h1_last["sss_macd_line"], h1_last["sss_signal_line"], h1_prev["sss_macd_line"], h1_prev["sss_signal_line"]
-    ) or _rising(h1_last["sss_hist"], h1_prev["sss_hist"])
-    ult_signal = bool(
-        (h1_last["cm_macd_above_signal"] and not h1_prev["cm_macd_above_signal"])
-        or h1_last["cm_hist_up"]
-        or h1_last["cm_hist"] > h1_prev["cm_hist"]
-    )
 
-    h4_ok = _h4_long_support(h4_last)
+    eq_cross = _cross_up(
+        h1_last["sss_macd_line"], h1_last["sss_signal_line"], h1_prev["sss_macd_line"], h1_prev["sss_signal_line"]
+    )
+    eq_hist_turn = _rising(h1_last["sss_hist"], h1_prev["sss_hist"]) and float(h1_prev.get("sss_hist", 0.0)) <= 0
+    eq_div = bool(h1_last.get("sss_bull_div")) or bool(h1_last.get("sss_oversold_warning"))
+    eq_signal = eq_cross or (eq_div and eq_hist_turn)
+
+    ult_cross = bool(h1_last["cm_macd_above_signal"] and not h1_prev["cm_macd_above_signal"])
+    ult_hist_turn = bool(h1_last["cm_hist_up"]) and float(h1_prev.get("cm_hist", 0.0)) <= 0
+    ult_signal = ult_cross or ult_hist_turn
+
+    h4_ok = _h4_long_support(h4_last) and not _long_overheat(h4_last, h4_prev)
     h1_ok = h1_last["close"] >= h1_last["ema20"] and h1_last["ema10"] >= h1_last["ema20"]
     h1_overheat = _long_overheat(h1_last, h1_prev)
-    m15_overheat = _long_overheat(m15_last, m15_prev)
+    m15_veto = _m15_long_veto(m15_prev, m15_last)
 
-    # 15m 这里只做否决，不再让它反客为主。
-    m15_veto = m15_overheat or (
-        float(m15_last.get("sss_hist", 0.0)) < float(m15_prev.get("sss_hist", 0.0))
-        and float(m15_last.get("cm_hist", 0.0)) < float(m15_prev.get("cm_hist", 0.0))
-        and m15_last["close"] < m15_last["ema10"]
-    )
-
-    score = sum([rar_signal, eq_signal, ult_signal, h4_ok, h1_ok])
-    if h4_ok and h1_ok and not h1_overheat and not m15_veto and score >= 4:
-        level = 3 if (eq_signal and ult_signal) else 2
-    else:
-        level = 0
+    level = 0
+    if h4_ok and h1_ok and not h1_overheat and not m15_veto and (eq_signal or ult_signal or eq_div):
+        if eq_div and eq_cross:
+            level = 4
+        elif eq_signal and ult_signal:
+            level = 3
+        elif (eq_signal or ult_signal) and rar_signal:
+            level = 2
 
     return {
         "level": level,
-        "signature": f"L{level}:rar{int(rar_signal)}:eq{int(eq_signal)}:ult{int(ult_signal)}:veto{int(m15_veto or h1_overheat)}",
+        "signature": f"L{level}:rar{int(rar_signal)}:eq{int(eq_signal)}:ult{int(ult_signal)}:div{int(eq_div)}:veto{int(m15_veto or h1_overheat)}",
     }
 
 
@@ -93,35 +134,35 @@ def _short_components(h4_prev: dict, h4_last: dict, h1_prev: dict, h1_last: dict
     rar_signal = h1_last["rar_trend_strong"] or h1_last["rar_spread"] < h1_prev["rar_spread"] or _cross_down(
         h1_last["rar_value"], h1_last["rar_trigger"], h1_prev["rar_value"], h1_prev["rar_trigger"]
     )
-    eq_signal = _cross_down(
-        h1_last["sss_macd_line"], h1_last["sss_signal_line"], h1_prev["sss_macd_line"], h1_prev["sss_signal_line"]
-    ) or _falling(h1_last["sss_hist"], h1_prev["sss_hist"])
-    ult_signal = bool(
-        ((not h1_last["cm_macd_above_signal"]) and h1_prev["cm_macd_above_signal"])
-        or h1_last["cm_hist_down"]
-        or h1_last["cm_hist"] < h1_prev["cm_hist"]
-    )
 
-    h4_ok = _h4_short_support(h4_last)
+    eq_cross = _cross_down(
+        h1_last["sss_macd_line"], h1_last["sss_signal_line"], h1_prev["sss_macd_line"], h1_prev["sss_signal_line"]
+    )
+    eq_hist_turn = _falling(h1_last["sss_hist"], h1_prev["sss_hist"]) and float(h1_prev.get("sss_hist", 0.0)) >= 0
+    eq_div = bool(h1_last.get("sss_bear_div")) or bool(h1_last.get("sss_overbought_warning"))
+    eq_signal = eq_cross or (eq_div and eq_hist_turn)
+
+    ult_cross = bool((not h1_last["cm_macd_above_signal"]) and h1_prev["cm_macd_above_signal"])
+    ult_hist_turn = bool(h1_last["cm_hist_down"]) and float(h1_prev.get("cm_hist", 0.0)) >= 0
+    ult_signal = ult_cross or ult_hist_turn
+
+    h4_ok = _h4_short_support(h4_last) and not _short_exhausted(h4_last, h4_prev)
     h1_ok = h1_last["close"] <= h1_last["ema20"] and h1_last["ema10"] <= h1_last["ema20"]
     h1_exhausted = _short_exhausted(h1_last, h1_prev)
-    m15_exhausted = _short_exhausted(m15_last, m15_prev)
+    m15_veto = _m15_short_veto(m15_prev, m15_last)
 
-    m15_veto = m15_exhausted or (
-        float(m15_last.get("sss_hist", 0.0)) > float(m15_prev.get("sss_hist", 0.0))
-        and float(m15_last.get("cm_hist", 0.0)) > float(m15_prev.get("cm_hist", 0.0))
-        and m15_last["close"] > m15_last["ema10"]
-    )
-
-    score = sum([rar_signal, eq_signal, ult_signal, h4_ok, h1_ok])
-    if h4_ok and h1_ok and not h1_exhausted and not m15_veto and score >= 4:
-        level = 3 if (eq_signal and ult_signal) else 2
-    else:
-        level = 0
+    level = 0
+    if h4_ok and h1_ok and not h1_exhausted and not m15_veto and (eq_signal or ult_signal or eq_div):
+        if eq_div and eq_cross:
+            level = 4
+        elif eq_signal and ult_signal:
+            level = 3
+        elif (eq_signal or ult_signal) and rar_signal:
+            level = 2
 
     return {
         "level": level,
-        "signature": f"L{level}:rar{int(rar_signal)}:eq{int(eq_signal)}:ult{int(ult_signal)}:veto{int(m15_veto or h1_exhausted)}",
+        "signature": f"L{level}:rar{int(rar_signal)}:eq{int(eq_signal)}:ult{int(ult_signal)}:div{int(eq_div)}:veto{int(m15_veto or h1_exhausted)}",
     }
 
 
