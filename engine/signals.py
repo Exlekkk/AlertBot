@@ -34,34 +34,38 @@ def _count_true(*conds) -> int:
 
 
 def _momentum_up(k: dict) -> bool:
-    return bool(k.get("cm_macd_above_signal")) and (bool(k.get("cm_hist_up")) or float(k.get("sss_hist", 0.0)) >= 0)
+    return bool(k.get("cm_macd_above_signal")) and (
+        bool(k.get("cm_hist_up")) or float(k.get("sss_hist", 0.0)) >= 0
+    )
 
 
 def _momentum_down(k: dict) -> bool:
-    return (not bool(k.get("cm_macd_above_signal"))) and (bool(k.get("cm_hist_down")) or float(k.get("sss_hist", 0.0)) <= 0)
+    return (not bool(k.get("cm_macd_above_signal"))) and (
+        bool(k.get("cm_hist_down")) or float(k.get("sss_hist", 0.0)) <= 0
+    )
 
 
 def _down_pressure(k: dict) -> bool:
-    return (
-        k["close"] < k["ema20"]
-        and k["ema10"] < k["ema20"]
-        and _momentum_down(k)
-    )
+    return k["close"] < k["ema20"] and k["ema10"] < k["ema20"] and _momentum_down(k)
 
 
 def _up_pressure(k: dict) -> bool:
-    return (
-        k["close"] > k["ema20"]
-        and k["ema10"] > k["ema20"]
-        and _momentum_up(k)
-    )
+    return k["close"] > k["ema20"] and k["ema10"] > k["ema20"] and _momentum_up(k)
+
+
+def _long_overheat(k: dict, prev_k: dict | None = None) -> bool:
+    sss_rollover = prev_k is not None and float(k.get("sss_hist", 0.0)) < float(prev_k.get("sss_hist", 0.0))
+    cm_rollover = prev_k is not None and float(k.get("cm_hist", 0.0)) < float(prev_k.get("cm_hist", 0.0))
+    return bool(k.get("sss_bear_div")) or bool(k.get("sss_overbought_warning")) or (sss_rollover and cm_rollover)
+
+
+def _short_exhausted(k: dict, prev_k: dict | None = None) -> bool:
+    sss_rebound = prev_k is not None and float(k.get("sss_hist", 0.0)) > float(prev_k.get("sss_hist", 0.0))
+    cm_rebound = prev_k is not None and float(k.get("cm_hist", 0.0)) > float(prev_k.get("cm_hist", 0.0))
+    return bool(k.get("sss_bull_div")) or bool(k.get("sss_oversold_warning")) or (sss_rebound and cm_rebound)
 
 
 def classify_trend(klines: list[dict], structure_len: int = 10) -> str:
-    """
-    比旧版更看重 1h/4h 的“快线+动能”状态，避免：
-    盘面已经跌破 EMA10/20 并转弱，但仍因为价格高于 EMA120/169 被判成 lean_bull。
-    """
     pivot_highs, pivot_lows = find_pivots(klines)
     bos = detect_last_bos(klines, pivot_highs, pivot_lows)
     mss = detect_last_mss(klines, pivot_highs, pivot_lows)
@@ -83,8 +87,8 @@ def classify_trend(klines: list[dict], structure_len: int = 10) -> str:
         and _momentum_down(k)
     )
 
-    long_term_bull = k["close"] > k["ema120"] and k["close"] > k["ema169"] and k["ema20"] > k["ema120"]
-    long_term_bear = k["close"] < k["ema120"] and k["close"] < k["ema169"] and k["ema20"] < k["ema120"]
+    long_term_bull = k["close"] > k["ema120"] and k["close"] > k["ema169"] and k["ema20"] >= k["ema120"]
+    long_term_bear = k["close"] < k["ema120"] and k["close"] < k["ema169"] and k["ema20"] <= k["ema120"]
 
     if strong_bull_setup and long_term_bull and k["ema120"] >= k["ema169"]:
         return "bull"
@@ -104,52 +108,51 @@ def classify_trend(klines: list[dict], structure_len: int = 10) -> str:
     return "neutral"
 
 
-def _long_regime_state(trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict) -> str:
-    h1_down = _down_pressure(k_1h)
-    h4_down = _down_pressure(k_4h)
-
-    if h1_down:
+def _long_regime_state(trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict, prev_1h: dict) -> str:
+    if _down_pressure(k_1h):
         return "blocked"
+    if _long_overheat(k_1h, prev_1h):
+        return "weak" if trend_4h in ("bull", "lean_bull") else "blocked"
 
     if trend_4h == "bull" and trend_1h in ("bull", "lean_bull"):
         return "strong"
     if trend_4h == "lean_bull" and trend_1h == "bull":
         return "strong"
 
-    # 微调：恢复弱多环境里的 long 许可，但不回到 long bias
     if (
         trend_4h in ("bull", "lean_bull")
         and trend_1h in ("bull", "lean_bull")
         and trend_1d in ("bull", "lean_bull", "neutral")
-        and not h4_down
+        and not _down_pressure(k_4h)
     ):
         return "weak"
-    if trend_4h in ("bull", "lean_bull") and trend_1h == "neutral" and trend_1d in ("bull", "lean_bull") and not h4_down:
+    if (
+        trend_4h in ("bull", "lean_bull")
+        and trend_1h == "neutral"
+        and trend_1d in ("bull", "lean_bull")
+        and not _down_pressure(k_4h)
+    ):
         return "weak"
 
     return "blocked"
 
 
-def _short_regime_state(trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict) -> str:
-    h1_down = _down_pressure(k_1h)
-    h1_up = _up_pressure(k_1h)
-    h4_up = _up_pressure(k_4h)
-
-    if h1_up:
+def _short_regime_state(trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict, prev_1h: dict) -> str:
+    if _up_pressure(k_1h):
         return "blocked"
+    if _short_exhausted(k_1h, prev_1h):
+        return "weak" if trend_4h in ("bear", "lean_bear") else "blocked"
 
     if trend_4h == "bear" and trend_1h in ("bear", "lean_bear"):
         return "strong"
     if trend_4h == "lean_bear" and trend_1h == "bear":
         return "strong"
 
-    if trend_4h in ("bear", "lean_bear") and trend_1h == "neutral" and trend_1d in ("bear", "lean_bear") and not h4_up:
+    if trend_4h in ("bear", "lean_bear") and trend_1h == "neutral" and trend_1d in ("bear", "lean_bear") and not _up_pressure(k_4h):
         return "weak"
-
-    # 给 short 更早的放行窗口：4h 未完全翻空，但 1h 已经明显转弱，不再等到“彻底熊市”
-    if trend_4h in ("neutral", "lean_bull", "lean_bear") and trend_1h in ("bear", "lean_bear") and h1_down:
+    if trend_4h in ("neutral", "lean_bull", "lean_bear") and trend_1h in ("bear", "lean_bear") and _down_pressure(k_1h):
         return "weak"
-    if trend_4h == "bull" and trend_1h == "bear" and trend_1d != "bull" and h1_down:
+    if trend_4h == "bull" and trend_1h == "bear" and trend_1d != "bull" and _down_pressure(k_1h):
         return "weak"
 
     return "blocked"
@@ -159,8 +162,6 @@ def _tai_heat_state(k: dict) -> str:
     value = float(k.get("tai_value", 0.0))
     p20 = float(k.get("tai_p20", 0.0))
     floor = float(k.get("tai_floor", 0.0))
-
-    # 只有 P20 以下区间的底部 30% 才算真正冰点
     extreme_cutoff = floor + (p20 - floor) * 0.30
     if value <= extreme_cutoff:
         return "extreme_cold"
@@ -169,18 +170,18 @@ def _tai_heat_state(k: dict) -> str:
     return "normal"
 
 
-def _b_long_htf_allowed(regime_long_state: str, trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict) -> bool:
+def _b_long_htf_allowed(regime_long_state: str, trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict, prev_1h: dict) -> bool:
     if regime_long_state == "strong":
         return True
     if regime_long_state != "weak":
         return False
 
-    # 微调：B类恢复“弱多可报”，但仍保留高周期前置，不退化成只看15m
     return (
         trend_4h in ("bull", "lean_bull")
         and trend_1h in ("bull", "lean_bull", "neutral")
         and trend_1d in ("bull", "lean_bull", "neutral")
         and not _down_pressure(k_1h)
+        and not _long_overheat(k_1h, prev_1h)
         and (
             k_1h["close"] >= k_1h["ema20"]
             or (k_1h["close"] >= k_1h["ema120"] and k_1h["ema20"] >= k_1h["ema120"])
@@ -188,16 +189,16 @@ def _b_long_htf_allowed(regime_long_state: str, trend_1d: str, trend_4h: str, tr
     )
 
 
-def _b_short_htf_allowed(regime_short_state: str, trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict) -> bool:
+def _b_short_htf_allowed(regime_short_state: str, trend_1d: str, trend_4h: str, trend_1h: str, k_4h: dict, k_1h: dict, prev_1h: dict) -> bool:
     if regime_short_state == "strong":
         return True
     if regime_short_state != "weak":
         return False
 
-    # B类空头也必须先有高周期转弱/允许，不能只要15m形态像空就发
     return (
         trend_1h in ("bear", "lean_bear")
         and _down_pressure(k_1h)
+        and not _short_exhausted(k_1h, prev_1h)
         and trend_4h not in ("bull",)
     ) or (
         trend_4h in ("bear", "lean_bear")
@@ -244,9 +245,10 @@ def detect_signals(
 
     k_4h = klines_4h[-1]
     k_1h = klines_1h[-1]
+    p_1h = klines_1h[-2]
 
-    regime_long_state = _long_regime_state(trend_1d, trend_4h, trend_1h, k_4h, k_1h)
-    regime_short_state = _short_regime_state(trend_1d, trend_4h, trend_1h, k_4h, k_1h)
+    regime_long_state = _long_regime_state(trend_1d, trend_4h, trend_1h, k_4h, k_1h, p_1h)
+    regime_short_state = _short_regime_state(trend_1d, trend_4h, trend_1h, k_4h, k_1h, p_1h)
 
     allow_long_strong = regime_long_state == "strong"
     allow_long_weak = regime_long_state in ("strong", "weak")
@@ -262,7 +264,6 @@ def detect_signals(
     tai_heat = _tai_heat_state(latest)
     tai_extreme_cold = tai_heat == "extreme_cold" and not latest["tai_rising"]
 
-
     piv_h, piv_l = find_pivots(klines_15m)
     bos_15 = detect_last_bos(klines_15m, piv_h, piv_l)
     mss_15 = detect_last_mss(klines_15m, piv_h, piv_l)
@@ -275,12 +276,8 @@ def detect_signals(
     bullish_fvg_recent = is_bullish_fvg(recent_6)
     bearish_fvg_recent = is_bearish_fvg(recent_6)
 
-    near_resistance = bool(
-        piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) < atr * 0.45
-    )
-    near_support = bool(
-        piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.45
-    )
+    near_resistance = bool(piv_h and abs(klines_15m[piv_h[-1]]["high"] - latest["close"]) < atr * 0.45)
+    near_support = bool(piv_l and abs(latest["close"] - klines_15m[piv_l[-1]]["low"]) < atr * 0.45)
 
     recent_6_lows = min(k["low"] for k in recent_6)
     recent_6_highs = max(k["high"] for k in recent_6)
@@ -312,25 +309,31 @@ def detect_signals(
     c_long_price_confirm = latest["close"] > prev["close"] or latest["low"] >= prev["low"]
     c_short_price_confirm = latest["close"] < prev["close"] or latest["high"] <= prev["high"]
 
-    b_long_htf_allowed = _b_long_htf_allowed(regime_long_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h)
-    b_short_htf_allowed = _b_short_htf_allowed(regime_short_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h)
+    b_long_htf_allowed = _b_long_htf_allowed(regime_long_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h, p_1h)
+    b_short_htf_allowed = _b_short_htf_allowed(regime_short_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h, p_1h)
+
+    long_m15_overheat = _long_overheat(latest, prev)
+    short_m15_exhausted = _short_exhausted(latest, prev)
+    long_h1_overheat = _long_overheat(k_1h, p_1h)
+    short_h1_exhausted = _short_exhausted(k_1h, p_1h)
 
     signals = []
     near_miss_signals = []
     blocked_counter: Counter = Counter()
 
-    # A 类：只在强方向环境下开放。弱多/弱空不再高频发 A。
+    # A 类：必须是“4h+1h 强方向 + 15m 突破”，不允许高位衰减也继续报 A。
     a_long_secondary_ok = _count_true(
         latest["fl_trend"] == 1 or latest["fl_buy_signal"],
         cm_long_supportive,
         not latest["sss_bear_div"],
         latest["rar_trend_strong"],
-    ) >= 2
+    ) >= 3
     a_long_strong_contra = _count_true(
         latest["sss_bear_div"],
         latest["sss_overbought_warning"],
         latest["cm_hist_down"],
         latest["fl_trend"] == -1,
+        long_h1_overheat,
     ) >= 2
 
     a_long_checks = {
@@ -338,7 +341,9 @@ def detect_signals(
         "15m_breakout_trigger": a_long_breakout,
         "bullish_structure": bullish_structure,
         "ema_supportive": latest["ema10"] >= latest["ema20"] and latest["close"] >= latest["ema10"],
-        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 1.6,
+        "h1_momentum_supportive": k_1h["close"] >= k_1h["ema20"] and k_1h["ema10"] >= k_1h["ema20"] and _momentum_up(k_1h),
+        "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
+        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 1.20,
         "secondary_pack_ok": a_long_secondary_ok,
         "no_strong_secondary_contradiction": not a_long_strong_contra,
     }
@@ -362,12 +367,13 @@ def detect_signals(
         cm_short_supportive,
         not latest["sss_bull_div"],
         latest["rar_trend_strong"],
-    ) >= 2
+    ) >= 3
     a_short_strong_contra = _count_true(
         latest["sss_bull_div"],
         latest["sss_oversold_warning"],
         latest["cm_hist_up"],
         latest["fl_trend"] == 1,
+        short_h1_exhausted,
     ) >= 2
 
     a_short_checks = {
@@ -375,7 +381,9 @@ def detect_signals(
         "15m_breakdown_trigger": a_short_breakdown,
         "bearish_structure": bearish_structure,
         "ema_supportive": latest["ema10"] <= latest["ema20"] and latest["close"] <= latest["ema10"],
-        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 1.6,
+        "h1_momentum_supportive": k_1h["close"] <= k_1h["ema20"] and k_1h["ema10"] <= k_1h["ema20"] and _momentum_down(k_1h),
+        "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
+        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 1.20,
         "secondary_pack_ok": a_short_secondary_ok,
         "no_strong_secondary_contradiction": not a_short_strong_contra,
     }
@@ -394,17 +402,18 @@ def detect_signals(
             }
         )
 
-    # B 类：顺方向接回。弱方向环境不再频繁给 long，short 允许更早打开。
+    # B 类：高周期允许 + 15m 回踩/反弹延续，但不再无脑顺着 4h 报多。
     b_long_secondary_ok = _count_true(
         latest["fl_trend"] >= 0,
         cm_long_not_bad,
         not latest["sss_bear_div"],
         latest["rar_trend_strong"],
-    ) >= 1
+    ) >= 2
     b_long_strong_contra = _count_true(
         latest["sss_bear_div"],
         latest["cm_hist_down"],
         latest["fl_trend"] == -1,
+        long_m15_overheat,
     ) >= 2
 
     b_long_checks = {
@@ -413,7 +422,8 @@ def detect_signals(
         "pullback_seen": b_long_pullback_seen,
         "pullback_then_reclaim": b_long_reclaim,
         "ema_not_lost": latest["close"] >= latest["ema20"] or (latest["ema10"] >= latest["ema20"] and latest["close"] >= latest["ema10"]),
-        "not_too_far_from_ema10": abs(latest["close"] - latest["ema10"]) <= atr * 1.15,
+        "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
+        "not_too_far_from_ema10": abs(latest["close"] - latest["ema10"]) <= atr * 1.10,
         "secondary_pack_ok": b_long_secondary_ok,
         "no_strong_secondary_contradiction": not b_long_strong_contra,
     }
@@ -437,11 +447,12 @@ def detect_signals(
         cm_short_not_bad,
         not latest["sss_bull_div"],
         latest["rar_trend_strong"],
-    ) >= 1
+    ) >= 2
     b_short_strong_contra = _count_true(
         latest["sss_bull_div"],
         latest["cm_hist_up"],
         latest["fl_trend"] == 1,
+        short_m15_exhausted,
     ) >= 2
 
     b_short_checks = {
@@ -450,7 +461,8 @@ def detect_signals(
         "pullback_seen": b_short_pullback_seen,
         "pullback_then_reject": b_short_reject,
         "ema_not_lost": latest["close"] <= latest["ema20"] or (latest["ema10"] <= latest["ema20"] and latest["close"] <= latest["ema10"]),
-        "not_too_far_from_ema10": abs(latest["ema10"] - latest["close"]) <= atr * 1.15,
+        "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
+        "not_too_far_from_ema10": abs(latest["ema10"] - latest["close"]) <= atr * 1.10,
         "secondary_pack_ok": b_short_secondary_ok,
         "no_strong_secondary_contradiction": not b_short_strong_contra,
     }
@@ -469,7 +481,7 @@ def detect_signals(
             }
         )
 
-    # C 类：只保留“强方向”或“弱但未被快周期反打”的观察单；EQ 仍是核心。
+    # C 类：必须真有 EQ 左侧核心，不再只靠计分就乱报；高位顶背离直接禁多。
     c_long_confirmation_ok = _count_true(
         c_long_price_confirm,
         latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
@@ -481,12 +493,14 @@ def detect_signals(
         latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
         latest["cm_hist_up"] or latest["cm_macd_above_signal"],
         bullish_structure or bullish_fvg_recent or mss_15 == "up",
-    ) >= 2
+    ) >= 3
 
     c_long_checks = {
         "htf_c_long_allowed": allow_long_weak,
         "tai_not_extreme_cold": not tai_extreme_cold,
         "15m_strategy_premise_long": c_long_strategy_premise,
+        "eq_core_long": c_long_eq_core,
+        "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
         "early_signal_long": c_long_early_signal_ok,
         "early_confirmation_long": c_long_confirmation_ok,
     }
@@ -510,12 +524,21 @@ def detect_signals(
         latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
         latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
     ) >= 2
+    c_short_early_signal_ok = _count_true(
+        c_short_eq_core,
+        c_short_price_confirm,
+        latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
+        latest["cm_hist_down"] or (not latest["cm_macd_above_signal"]),
+        bearish_structure or bearish_fvg_recent or mss_15 == "down",
+    ) >= 3
 
     c_short_checks = {
         "htf_c_short_allowed": allow_short_weak,
         "tai_not_extreme_cold": not tai_extreme_cold,
         "15m_strategy_premise_short": c_short_strategy_premise,
         "eq_core_short": c_short_eq_core,
+        "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
+        "early_signal_short": c_short_early_signal_ok,
         "early_confirmation_short": c_short_confirmation_ok,
     }
     if _evaluate_branch("C_LEFT_SHORT", c_short_checks, near_miss_signals, blocked_counter):
