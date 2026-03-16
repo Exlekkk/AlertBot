@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from config import BINANCE_SYMBOL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
 from services.logger import get_logger
 from services.telegram import send_telegram_message
@@ -24,26 +26,48 @@ class BihourlyReporter:
             f"错误信息: {brief}"
         )
 
-    def run_once(self):
+    def run_healthcheck(self) -> dict:
         try:
-            message = self.build_running_message()
-            result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
-            self.logger.info("bihourly_report_sent symbol=%s result=%s", self.symbol, result)
-            return {"ok": True, "message": message, "telegram_result": result}
+            scanner_module = import_module("engine.scanner")
+            scanner_cls = getattr(scanner_module, "SMCTScanner")
+            return scanner_cls.healthcheck(symbol=self.symbol)
         except Exception as exc:
-            self.logger.exception("bihourly_report_failed error=%s", exc)
-            failure_message = self.build_failure_message(str(exc))
-            try:
-                result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, failure_message)
+            self.logger.exception("bihourly_healthcheck_failed error=%s", exc)
+            return {"ok": False, "error": str(exc)}
+
+    def run_once(self):
+        health = self.run_healthcheck()
+        message = (
+            self.build_running_message()
+            if health.get("ok")
+            else self.build_failure_message(health.get("error", "unknown"))
+        )
+
+        try:
+            result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
+            if health.get("ok"):
                 self.logger.info(
-                    "bihourly_report_failure_notice_sent symbol=%s result=%s",
+                    "bihourly_report_sent symbol=%s health=%s result=%s",
                     self.symbol,
+                    health,
                     result,
                 )
-                return {"ok": False, "error": str(exc), "telegram_result": result}
-            except Exception as send_exc:
-                self.logger.exception("bihourly_report_failure_notice_send_failed error=%s", send_exc)
-                raise
+            else:
+                self.logger.info(
+                    "bihourly_report_failure_notice_sent symbol=%s health=%s result=%s",
+                    self.symbol,
+                    health,
+                    result,
+                )
+            return {
+                "ok": bool(health.get("ok")),
+                "health": health,
+                "message": message,
+                "telegram_result": result,
+            }
+        except Exception as exc:
+            self.logger.exception("bihourly_report_send_failed error=%s", exc)
+            raise
 
 
 if __name__ == "__main__":
