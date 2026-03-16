@@ -60,6 +60,48 @@ class SMCTScanner:
         if self.watch_state["quiet"] >= 3:
             self.watch_state = {"direction": None, "level": 0, "signature": "", "quiet": 0}
 
+    @classmethod
+    def health_check(cls, symbol: str = BINANCE_SYMBOL) -> dict:
+        scanner = cls(symbol=symbol)
+
+        klines_1d = scanner._fetch_enriched("1d")
+        klines_4h = scanner._fetch_enriched("4h")
+        klines_1h = scanner._fetch_enriched("1h")
+        klines_15m = scanner._fetch_enriched("15m")
+
+        signal_result = detect_signals(
+            symbol,
+            klines_1d,
+            klines_4h,
+            klines_1h,
+            klines_15m,
+        )
+
+        watch_result = detect_opening_watch(
+            symbol,
+            klines_1d,
+            klines_4h,
+            klines_1h,
+            klines_15m,
+        )
+
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "bars": {
+                "1d": len(klines_1d),
+                "4h": len(klines_4h),
+                "1h": len(klines_1h),
+                "15m": len(klines_15m),
+            },
+            "signals_checked": len(signal_result.get("signals", [])),
+            "watch_checked": len(watch_result or []),
+        }
+
+    @classmethod
+    def healthcheck(cls, symbol: str = BINANCE_SYMBOL) -> dict:
+        return cls.health_check(symbol=symbol)
+
     def scan_once(self) -> dict:
         try:
             klines_1d = self._fetch_enriched("1d")
