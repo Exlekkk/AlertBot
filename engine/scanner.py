@@ -27,6 +27,42 @@ class SMCTScanner:
         klines = self.market_data.get_klines(self.symbol, interval=interval, limit=300)
         return enrich_klines(klines[:-1])
 
+    @classmethod
+    def healthcheck(cls, symbol: str = BINANCE_SYMBOL) -> dict:
+        try:
+            scanner = cls(symbol=symbol)
+            klines_1d = scanner._fetch_enriched("1d")
+            klines_4h = scanner._fetch_enriched("4h")
+            klines_1h = scanner._fetch_enriched("1h")
+            klines_15m = scanner._fetch_enriched("15m")
+
+            if not klines_1d or not klines_4h or not klines_1h or not klines_15m:
+                raise RuntimeError("empty_klines")
+
+            signal_result = detect_signals(
+                symbol,
+                klines_1d,
+                klines_4h,
+                klines_1h,
+                klines_15m,
+            )
+            watch_result = detect_opening_watch(symbol, klines_4h, klines_1h, klines_15m)
+
+            return {
+                "ok": True,
+                "symbol": symbol,
+                "bars": {
+                    "1d": len(klines_1d),
+                    "4h": len(klines_4h),
+                    "1h": len(klines_1h),
+                    "15m": len(klines_15m),
+                },
+                "signals_checked": len(signal_result.get("signals", [])),
+                "watch_checked": len(watch_result or []),
+            }
+        except Exception as exc:
+            return {"ok": False, "symbol": symbol, "error": str(exc)}
+
     def _should_send_watch(self, signal: dict) -> bool:
         direction = signal["direction"]
         level = signal.get("level", 0)
