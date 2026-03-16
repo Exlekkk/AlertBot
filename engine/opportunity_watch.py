@@ -47,9 +47,9 @@ def _short_exhausted(k: dict, prev_k: dict) -> bool:
     )
 
 
-def _build_text(direction: str) -> str:
-    title = "🕶开单机会｜做多" if direction == "long" else "🕶开单机会｜做空"
-    return f"{title}\n请注意实盘，留意入场机会。"
+def _build_text(direction: str, level: int) -> str:
+    title = "🚨 开单机会｜做多" if direction == "long" else "🚨 开单机会｜做空"
+    return f"{title}\n机会等级：L{level}\n请注意实盘，留意入场机会。"
 
 
 def _m15_long_veto(m15_prev: dict, m15_last: dict) -> bool:
@@ -201,6 +201,6 @@ def detect_opening_watch(symbol: str, klines_4h: list[dict], klines_1h: list[dic
             "direction": direction,
             "level": level,
             "signature": signature,
-            "text": _build_text(direction),
+            "text": _build_text(direction, level),
         }
     ]
