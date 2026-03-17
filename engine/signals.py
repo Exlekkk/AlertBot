@@ -1,5 +1,7 @@
 from collections import Counter
 
+# Relaxed A/B continuation version: after a correct C, let A/B接力更容易成立，避免只报C不续报。
+
 from engine.structure import (
     detect_last_bos,
     detect_last_mss,
@@ -186,6 +188,12 @@ def _b_long_htf_allowed(regime_long_state: str, trend_1d: str, trend_4h: str, tr
             k_1h["close"] >= k_1h["ema20"]
             or (k_1h["close"] >= k_1h["ema120"] and k_1h["ema20"] >= k_1h["ema120"])
         )
+    ) or (
+        trend_1h in ("bull", "lean_bull")
+        and k_1h["close"] >= k_1h["ema10"]
+        and _momentum_up(k_1h)
+        and not _long_overheat(k_1h, prev_1h)
+        and not _down_pressure(k_4h)
     )
 
 
@@ -204,6 +212,12 @@ def _b_short_htf_allowed(regime_short_state: str, trend_1d: str, trend_4h: str, 
         trend_4h in ("bear", "lean_bear")
         and trend_1d in ("bear", "lean_bear", "neutral")
         and k_1h["close"] <= k_1h["ema20"]
+        and not _up_pressure(k_4h)
+    ) or (
+        trend_1h in ("bear", "lean_bear")
+        and k_1h["close"] <= k_1h["ema10"]
+        and _momentum_down(k_1h)
+        and not _short_exhausted(k_1h, prev_1h)
         and not _up_pressure(k_4h)
     )
 
@@ -342,6 +356,21 @@ def detect_signals(
     b_long_htf_allowed = _b_long_htf_allowed(regime_long_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h, p_1h)
     b_short_htf_allowed = _b_short_htf_allowed(regime_short_state, trend_1d, trend_4h, trend_1h, k_4h, k_1h, p_1h)
 
+    b_long_bridge_ok = (
+        allow_long_weak
+        and trend_1h in ("bull", "lean_bull")
+        and k_1h["close"] >= k_1h["ema10"]
+        and _momentum_up(k_1h)
+        and latest["close"] >= latest["ema10"] - atr * 0.12
+    )
+    b_short_bridge_ok = (
+        allow_short_weak
+        and trend_1h in ("bear", "lean_bear")
+        and k_1h["close"] <= k_1h["ema10"]
+        and _momentum_down(k_1h)
+        and latest["close"] <= latest["ema10"] + atr * 0.12
+    )
+
     long_m15_overheat = _long_overheat(latest, prev)
     short_m15_exhausted = _short_exhausted(latest, prev)
     long_h1_overheat = _long_overheat(k_1h, p_1h)
@@ -375,31 +404,39 @@ def detect_signals(
     blocked_counter: Counter = Counter()
 
     # A 类：只保留真正的强顺势突破，不能再让 FVG/BOS 一碰就报 A。
-    a_long_secondary_ok = (
-        cm_long_supportive
-        and latest["rar_trend_strong"]
-        and not latest["sss_bear_div"]
-        and not latest["sss_overbought_warning"]
-        and (latest["fl_trend"] >= 0 or latest["fl_buy_signal"])
-    )
+    a_long_secondary_ok = _count_true(
+        cm_long_supportive,
+        latest["rar_trend_strong"],
+        not latest["sss_bear_div"],
+        not latest["sss_overbought_warning"],
+        latest["fl_trend"] >= 0 or latest["fl_buy_signal"],
+    ) >= 4
     a_long_strong_contra = _count_true(
         latest["sss_bear_div"],
         latest["sss_overbought_warning"],
-        latest["cm_hist_down"],
+        latest["cm_hist_down"] and not latest["cm_macd_above_signal"],
         latest["fl_trend"] == -1,
         long_h1_overheat,
         long_h4_overheat,
-    ) >= 2
+    ) >= 3
+
+    a_long_htf_bridge = (
+        allow_long_weak
+        and trend_1h in ("bull", "lean_bull")
+        and k_1h["close"] >= k_1h["ema10"]
+        and _momentum_up(k_1h)
+        and latest["close"] >= latest["ema10"]
+    )
 
     a_long_checks = {
-        "htf_a_long_allowed": allow_long_strong,
+        "htf_a_long_allowed": allow_long_strong or a_long_htf_bridge,
         "15m_breakout_trigger": a_long_breakout,
         "bullish_structure": bullish_structure,
         "ema_supportive": latest["ema10"] >= latest["ema20"] and latest["close"] >= latest["ema10"],
-        "h1_momentum_supportive": k_1h["close"] >= k_1h["ema20"] and k_1h["ema10"] >= k_1h["ema20"] and _momentum_up(k_1h),
+        "h1_momentum_supportive": k_1h["close"] >= k_1h["ema10"] and (k_1h["ema10"] >= k_1h["ema20"] or _momentum_up(k_1h)),
         "h4_not_overheat": not long_h4_overheat,
         "not_eq_overheat_long": not long_m15_overheat and not long_h1_overheat,
-        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 0.95,
+        "not_too_far_from_ema20": (latest["close"] - latest["ema20"]) <= atr * 1.15,
         "secondary_pack_ok": a_long_secondary_ok,
         "no_strong_secondary_contradiction": not a_long_strong_contra,
     }
@@ -418,31 +455,39 @@ def detect_signals(
             }
         )
 
-    a_short_secondary_ok = (
-        cm_short_supportive
-        and latest["rar_trend_strong"]
-        and not latest["sss_bull_div"]
-        and not latest["sss_oversold_warning"]
-        and (latest["fl_trend"] <= 0 or latest["fl_sell_signal"])
-    )
+    a_short_secondary_ok = _count_true(
+        cm_short_supportive,
+        latest["rar_trend_strong"],
+        not latest["sss_bull_div"],
+        not latest["sss_oversold_warning"],
+        latest["fl_trend"] <= 0 or latest["fl_sell_signal"],
+    ) >= 4
     a_short_strong_contra = _count_true(
         latest["sss_bull_div"],
         latest["sss_oversold_warning"],
-        latest["cm_hist_up"],
+        latest["cm_hist_up"] and latest["cm_macd_above_signal"],
         latest["fl_trend"] == 1,
         short_h1_exhausted,
         short_h4_exhausted,
-    ) >= 2
+    ) >= 3
+
+    a_short_htf_bridge = (
+        allow_short_weak
+        and trend_1h in ("bear", "lean_bear")
+        and k_1h["close"] <= k_1h["ema10"]
+        and _momentum_down(k_1h)
+        and latest["close"] <= latest["ema10"]
+    )
 
     a_short_checks = {
-        "htf_a_short_allowed": allow_short_strong,
+        "htf_a_short_allowed": allow_short_strong or a_short_htf_bridge,
         "15m_breakdown_trigger": a_short_breakdown,
         "bearish_structure": bearish_structure,
         "ema_supportive": latest["ema10"] <= latest["ema20"] and latest["close"] <= latest["ema10"],
-        "h1_momentum_supportive": k_1h["close"] <= k_1h["ema20"] and k_1h["ema10"] <= k_1h["ema20"] and _momentum_down(k_1h),
+        "h1_momentum_supportive": k_1h["close"] <= k_1h["ema10"] and (k_1h["ema10"] <= k_1h["ema20"] or _momentum_down(k_1h)),
         "h4_not_exhausted": not short_h4_exhausted,
         "not_eq_exhausted_short": not short_m15_exhausted and not short_h1_exhausted,
-        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 0.95,
+        "not_too_far_from_ema20": (latest["ema20"] - latest["close"]) <= atr * 1.15,
         "secondary_pack_ok": a_short_secondary_ok,
         "no_strong_secondary_contradiction": not a_short_strong_contra,
     }
@@ -479,7 +524,7 @@ def detect_signals(
     )
 
     b_long_checks = {
-        "htf_b_long_allowed": b_long_htf_allowed,
+        "htf_b_long_allowed": b_long_htf_allowed or b_long_bridge_ok,
         "15m_smc_premise_long": bullish_structure or is_bullish_fvg(recent_8) or near_support,
         "pullback_seen": b_long_pullback_seen,
         "pullback_then_reclaim": b_long_reclaim,
@@ -521,7 +566,7 @@ def detect_signals(
     )
 
     b_short_checks = {
-        "htf_b_short_allowed": b_short_htf_allowed,
+        "htf_b_short_allowed": b_short_htf_allowed or b_short_bridge_ok,
         "15m_smc_premise_short": bearish_structure or is_bearish_fvg(recent_8) or near_resistance,
         "pullback_seen": b_short_pullback_seen,
         "pullback_then_reject": b_short_reject,
