@@ -4,41 +4,22 @@ import math
 def ema(values: list[float], period: int) -> list[float]:
     if not values:
         return []
-    alpha = 2 / (period + 1)
+    k = 2 / (period + 1)
     out = [values[0]]
-    for v in values[1:]:
-        out.append(alpha * v + (1 - alpha) * out[-1])
+    for value in values[1:]:
+        out.append(value * k + out[-1] * (1 - k))
     return out
 
 
 def sma(values: list[float], period: int) -> list[float]:
-    if not values:
-        return []
     out = []
-    rolling_sum = 0.0
+    s = 0.0
     for i, v in enumerate(values):
-        rolling_sum += v
+        s += v
         if i >= period:
-            rolling_sum -= values[i - period]
-        window = min(i + 1, period)
-        out.append(rolling_sum / window)
+            s -= values[i - period]
+        out.append(s / min(i + 1, period))
     return out
-
-
-def atr(klines: list[dict], period: int = 14) -> list[float]:
-    if not klines:
-        return []
-    trs = []
-    prev_close = klines[0]["close"]
-    for k in klines:
-        tr = max(
-            k["high"] - k["low"],
-            abs(k["high"] - prev_close),
-            abs(k["low"] - prev_close),
-        )
-        trs.append(tr)
-        prev_close = k["close"]
-    return sma(trs, period)
 
 
 def rolling_std(values: list[float], period: int) -> list[float]:
@@ -48,7 +29,27 @@ def rolling_std(values: list[float], period: int) -> list[float]:
         window = values[start : i + 1]
         mean = sum(window) / len(window)
         var = sum((x - mean) ** 2 for x in window) / len(window)
-        out.append(var**0.5)
+        out.append(math.sqrt(var))
+    return out
+
+
+def percentile_linear(values: list[float], period: int, percentile: float) -> list[float]:
+    out = []
+    p = percentile / 100.0
+    for i in range(len(values)):
+        start = max(0, i - period + 1)
+        window = sorted(values[start : i + 1])
+        if len(window) == 1:
+            out.append(window[0])
+            continue
+        idx = (len(window) - 1) * p
+        lo = int(math.floor(idx))
+        hi = int(math.ceil(idx))
+        if lo == hi:
+            out.append(window[lo])
+        else:
+            frac = idx - lo
+            out.append(window[lo] * (1 - frac) + window[hi] * frac)
     return out
 
 
@@ -60,21 +61,16 @@ def rolling_low(values: list[float], period: int) -> list[float]:
     return out
 
 
-def percentile_linear(values: list[float], lookback: int, pct: float) -> list[float]:
-    out = []
-    rank = pct / 100
-    for i in range(len(values)):
-        start = max(0, i - lookback + 1)
-        window = sorted(values[start : i + 1])
-        if len(window) == 1:
-            out.append(window[0])
-            continue
-        pos = rank * (len(window) - 1)
-        lo = int(pos)
-        hi = min(lo + 1, len(window) - 1)
-        frac = pos - lo
-        out.append(window[lo] * (1 - frac) + window[hi] * frac)
-    return out
+def atr(klines: list[dict], period: int = 14) -> list[float]:
+    if not klines:
+        return []
+    tr = [klines[0]["high"] - klines[0]["low"]]
+    for i in range(1, len(klines)):
+        high = klines[i]["high"]
+        low = klines[i]["low"]
+        prev_close = klines[i - 1]["close"]
+        tr.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return ema(tr, period)
 
 
 def macd_components(values: list[float], fast_len: int = 12, slow_len: int = 26, signal_len: int = 9):
@@ -257,16 +253,9 @@ def tai_components(klines: list[dict], len_form: int = 20, len_hist: int = 252):
     p80 = percentile_linear(vscale, len_hist, 80)
 
     tai_floor = rolling_low(vscale, len_hist)
-    tai_bottom30 = []
-    tai_is_icepoint = []
 
-    for floor_v, p20_v, v in zip(tai_floor, p20, vscale):
-        low = min(floor_v, p20_v)
-        high = max(floor_v, p20_v)
-        threshold = low + (high - low) * 0.3
-        tai_bottom30.append(threshold)
-        tai_is_icepoint.append(v <= threshold)
-
+    # 兼容旧逻辑保留
+    tai_is_icepoint = [v < p for v, p in zip(vscale, p20)]
     tai_rising = [False] + [vscale[i] > vscale[i - 1] for i in range(1, len(vscale))]
 
     return {
@@ -276,7 +265,6 @@ def tai_components(klines: list[dict], len_form: int = 20, len_hist: int = 252):
         "tai_p60": p60,
         "tai_p80": p80,
         "tai_floor": tai_floor,
-        "tai_bottom30": tai_bottom30,
         "tai_is_icepoint": tai_is_icepoint,
         "tai_rising": tai_rising,
     }
@@ -329,6 +317,7 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "ema169": ema169[i],
                 "atr": atr14[i],
                 "vol_sma20": vol20[i],
+
                 "sss_macd_line": sss["sss_macd_line"][i],
                 "sss_signal_line": sss["sss_signal_line"][i],
                 "sss_hist": sss["sss_hist"][i],
@@ -337,23 +326,26 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "sss_oversold_warning": sss["sss_oversold_warning"][i],
                 "sss_bull_div": sss["sss_bull_div"][i],
                 "sss_bear_div": sss["sss_bear_div"][i],
+
                 "fl_value": fl["fl_value"][i],
                 "fl_trend": fl["fl_trend"][i],
                 "fl_buy_signal": fl["fl_buy_signal"][i],
                 "fl_sell_signal": fl["fl_sell_signal"][i],
+
                 "rar_value": rar["rar_value"][i],
                 "rar_trigger": rar["rar_trigger"][i],
                 "rar_spread": rar["rar_spread"][i],
                 "rar_trend_strong": rar["rar_trend_strong"][i],
+
                 "tai_value": tai["tai_value"][i],
                 "tai_p20": tai["tai_p20"][i],
                 "tai_p40": tai["tai_p40"][i],
                 "tai_p60": tai["tai_p60"][i],
                 "tai_p80": tai["tai_p80"][i],
                 "tai_floor": tai["tai_floor"][i],
-                "tai_bottom30": tai["tai_bottom30"][i],
                 "tai_is_icepoint": tai["tai_is_icepoint"][i],
                 "tai_rising": tai["tai_rising"][i],
+
                 "cm_macd": cm["cm_macd"][i],
                 "cm_signal": cm["cm_signal"][i],
                 "cm_hist": cm["cm_hist"][i],
