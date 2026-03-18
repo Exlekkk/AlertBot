@@ -114,6 +114,227 @@ def _trend_value(label: str, direction: str) -> int:
     return value if direction == "long" else -value
 
 
+def _float_safe(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _round5(value: float) -> int:
+    return int(round(value / 5.0) * 5)
+
+
+def _clamp_minutes(value: float, low: int, high: int) -> int:
+    return max(low, min(high, _round5(value)))
+
+
+def _normalize_window(start_min: float, end_min: float, floor_start: int, ceil_end: int, min_gap: int = 25) -> tuple[int, int]:
+    start = _clamp_minutes(start_min, floor_start, ceil_end - min_gap)
+    end = _clamp_minutes(max(end_min, start + min_gap), start + min_gap, ceil_end)
+    return start, end
+
+
+def _volume_ratio(k: dict) -> float:
+    volume = _float_safe(k.get("volume"), 0.0)
+    baseline = max(_float_safe(k.get("vol_sma20"), 0.0), 1e-9)
+    return volume / baseline if baseline > 0 else 1.0
+
+
+def _distance_in_atr(price: float, anchor: float, atr: float) -> float:
+    return abs(price - anchor) / max(atr, 1e-9)
+
+
+def _zone_distance_in_atr(price: float, zone_low: float | None, zone_high: float | None, atr: float) -> float:
+    if zone_low is None or zone_high is None:
+        return 0.0
+    low = min(float(zone_low), float(zone_high))
+    high = max(float(zone_low), float(zone_high))
+    if low <= price <= high:
+        return 0.0
+    if price < low:
+        return (low - price) / max(atr, 1e-9)
+    return (price - high) / max(atr, 1e-9)
+
+
+def _event_age(last_index: int, event: dict[str, Any] | None, fallback: int = 8) -> int:
+    if not event:
+        return fallback
+    trigger_index = int(event.get("trigger_index", last_index))
+    return max(0, last_index - trigger_index)
+
+
+def _basis_age(last_index: int, *events: dict[str, Any] | None) -> int:
+    ages: list[int] = []
+    for event in events:
+        if not event:
+            continue
+        if "bars_ago" in event:
+            ages.append(int(event["bars_ago"]))
+        elif "trigger_index" in event:
+            ages.append(max(0, last_index - int(event["trigger_index"])))
+        elif "second_index" in event:
+            ages.append(max(0, last_index - int(event["second_index"])))
+        elif "index" in event:
+            ages.append(max(0, last_index - int(event["index"])))
+    return min(ages) if ages else 8
+
+
+def _estimate_a_window(
+    direction: str,
+    latest: dict,
+    prev: dict,
+    regime_score: int,
+    bos_event: dict[str, Any] | None,
+    last_index: int,
+) -> tuple[int, int]:
+    atr = _atr(latest)
+    price = float(latest["close"])
+    vol_ratio = _volume_ratio(latest)
+    ema10_dist = _distance_in_atr(price, float(latest["ema10"]), atr)
+    ema20_dist = _distance_in_atr(price, float(latest["ema20"]), atr)
+    bos_age = _event_age(last_index, bos_event, fallback=7)
+    recent_drive = abs(price - float(prev["close"])) / max(atr, 1e-9)
+
+    if direction == "long":
+        momentum_score = _count_true(
+            _momentum_up(latest),
+            bool(latest.get("cm_hist_up")),
+            float(latest.get("sss_hist", 0.0)) >= float(prev.get("sss_hist", 0.0)),
+            bool(latest.get("tai_rising")),
+            bool(latest.get("rar_trend_strong")),
+        )
+    else:
+        momentum_score = _count_true(
+            _momentum_down(latest),
+            bool(latest.get("cm_hist_down")),
+            float(latest.get("sss_hist", 0.0)) <= float(prev.get("sss_hist", 0.0)),
+            not bool(latest.get("tai_rising")),
+            bool(latest.get("rar_trend_strong")),
+        )
+
+    start = (
+        15
+        + ema10_dist * 7.5
+        + bos_age * 7.0
+        + max(0.0, 1.0 - vol_ratio) * 16.0
+        - max(0.0, vol_ratio - 1.0) * 11.0
+        - momentum_score * 4.5
+        - max(0, regime_score - 4) * 2.5
+        - recent_drive * 4.0
+    )
+    end = (
+        135
+        + ema20_dist * 26.0
+        + bos_age * 16.0
+        + max(0.0, 1.0 - vol_ratio) * 42.0
+        - max(0.0, vol_ratio - 1.0) * 18.0
+        - momentum_score * 8.0
+        - max(0, regime_score - 4) * 5.0
+        - recent_drive * 8.0
+    )
+    return _normalize_window(start, end, floor_start=10, ceil_end=210)
+
+
+def _estimate_b_window(
+    direction: str,
+    latest: dict,
+    prev: dict,
+    regime_score: int,
+    zone_low: float | None,
+    zone_high: float | None,
+    basis_count: int,
+    basis_age: int,
+    reclaim_or_reject_ready: bool,
+    near_ema10: bool,
+) -> tuple[int, int]:
+    atr = _atr(latest)
+    price = float(latest["close"])
+    vol_ratio = _volume_ratio(latest)
+    zone_distance = _zone_distance_in_atr(price, zone_low, zone_high, atr)
+    ema20_dist = _distance_in_atr(price, float(latest["ema20"]), atr)
+
+    if direction == "long":
+        momentum_score = _count_true(
+            _momentum_up(latest),
+            bool(latest.get("fl_buy_signal")) or float(latest.get("fl_trend", 0.0)) >= 0,
+            bool(latest.get("tai_rising")),
+            float(latest.get("sss_hist", 0.0)) >= float(prev.get("sss_hist", 0.0)),
+        )
+    else:
+        momentum_score = _count_true(
+            _momentum_down(latest),
+            bool(latest.get("fl_sell_signal")) or float(latest.get("fl_trend", 0.0)) <= 0,
+            not bool(latest.get("tai_rising")),
+            float(latest.get("sss_hist", 0.0)) <= float(prev.get("sss_hist", 0.0)),
+        )
+
+    start = (
+        20
+        + zone_distance * 12.0
+        + ema20_dist * 4.0
+        + basis_age * 9.0
+        + max(0.0, 1.0 - vol_ratio) * 15.0
+        - max(0.0, vol_ratio - 1.0) * 8.0
+        - basis_count * 5.5
+        - momentum_score * 4.0
+        - (7.0 if reclaim_or_reject_ready else 0.0)
+        - (6.0 if near_ema10 else 0.0)
+        - max(0, regime_score - 2) * 2.0
+    )
+    end = (
+        190
+        + zone_distance * 36.0
+        + basis_age * 22.0
+        + max(0.0, 1.0 - vol_ratio) * 48.0
+        - max(0.0, vol_ratio - 1.0) * 18.0
+        - basis_count * 10.0
+        - momentum_score * 8.0
+        - (14.0 if reclaim_or_reject_ready else 0.0)
+        - (10.0 if near_ema10 else 0.0)
+        - max(0, regime_score - 2) * 4.0
+    )
+    return _normalize_window(start, end, floor_start=15, ceil_end=300)
+
+
+def _estimate_c_window(
+    direction: str,
+    latest: dict,
+    prev: dict,
+    regime_score: int,
+    anchor_price: float | None,
+    basis_count: int,
+    basis_age: int,
+    confirmation_score: int,
+) -> tuple[int, int]:
+    atr = _atr(latest)
+    price = float(latest["close"])
+    vol_ratio = _volume_ratio(latest)
+    anchor_distance = _distance_in_atr(price, anchor_price, atr) if anchor_price is not None else 0.85
+
+    start = (
+        35
+        + anchor_distance * 10.0
+        + basis_age * 11.0
+        + max(0.0, 1.0 - vol_ratio) * 18.0
+        - max(0.0, vol_ratio - 1.0) * 7.0
+        - basis_count * 4.5
+        - confirmation_score * 4.5
+        - max(0, regime_score) * 2.0
+    )
+    end = (
+        245
+        + anchor_distance * 30.0
+        + basis_age * 24.0
+        + max(0.0, 1.0 - vol_ratio) * 52.0
+        - max(0.0, vol_ratio - 1.0) * 16.0
+        - basis_count * 10.0
+        - confirmation_score * 9.0
+        - max(0, regime_score) * 5.0
+    )
+    return _normalize_window(start, end, floor_start=25, ceil_end=360)
+
+
 # 4h/1h 仅做方向过滤，不允许辅助指标越级替代结构。
 def classify_trend(klines: list[dict], structure_len: int = 12) -> str:
     if len(klines) < max(structure_len, 25):
@@ -229,6 +450,8 @@ def _signal_dict(
     zone_low: float | None = None,
     zone_high: float | None = None,
     structure_basis: list[str] | None = None,
+    eta_min_minutes: int | None = None,
+    eta_max_minutes: int | None = None,
 ) -> dict[str, Any]:
     return {
         "signal": name,
@@ -242,6 +465,8 @@ def _signal_dict(
         "zone_low": zone_low,
         "zone_high": zone_high,
         "structure_basis": structure_basis or [],
+        "eta_min_minutes": eta_min_minutes,
+        "eta_max_minutes": eta_max_minutes,
     }
 
 
@@ -261,6 +486,7 @@ def detect_signals(
     latest, prev = klines_15m[-1], klines_15m[-2]
     atr = _atr(latest)
     price = float(latest["close"])
+    last_index_15m = len(klines_15m) - 1
 
     long_regime_score = _direction_regime_score("long", trend_1d, trend_4h, trend_1h, k_4h, p_4h, k_1h, p_1h)
     short_regime_score = _direction_regime_score("short", trend_1d, trend_4h, trend_1h, k_4h, p_4h, k_1h, p_1h)
@@ -356,7 +582,8 @@ def detect_signals(
         "not_too_far_from_ema20": not_far_from_ema20,
     }
     if _evaluate_branch("A_LONG", a_long_checks, near_miss_signals, blocked_counter):
-        signals.append(_signal_dict("A_LONG", symbol, "long", price, trend_display_long, "active"))
+        eta_min, eta_max = _estimate_a_window("long", latest, prev, long_regime_score, last_bos_up, last_index_15m)
+        signals.append(_signal_dict("A_LONG", symbol, "long", price, trend_display_long, "active", eta_min_minutes=eta_min, eta_max_minutes=eta_max))
 
     a_short_checks = {
         "htf_bias_short": short_regime_score >= 4 and long_regime_score < 7,
@@ -368,7 +595,8 @@ def detect_signals(
         "not_too_far_from_ema20": not_far_from_ema20,
     }
     if _evaluate_branch("A_SHORT", a_short_checks, near_miss_signals, blocked_counter):
-        signals.append(_signal_dict("A_SHORT", symbol, "short", price, trend_display_short, "active"))
+        eta_min, eta_max = _estimate_a_window("short", latest, prev, short_regime_score, last_bos_down, last_index_15m)
+        signals.append(_signal_dict("A_SHORT", symbol, "short", price, trend_display_short, "active", eta_min_minutes=eta_min, eta_max_minutes=eta_max))
 
     b_long_zone_low = None
     b_long_zone_high = None
@@ -398,6 +626,19 @@ def detect_signals(
         "near_working_area": near_ema10 or bool(bull_fvg_fill) or bool(bull_sweep),
     }
     if _evaluate_branch("B_PULLBACK_LONG", b_long_checks, near_miss_signals, blocked_counter):
+        b_long_age = _basis_age(last_index_15m, bull_fvg_fill, bull_sweep, last_mss_up, eql)
+        eta_min, eta_max = _estimate_b_window(
+            "long",
+            latest,
+            prev,
+            long_regime_score,
+            b_long_zone_low,
+            b_long_zone_high,
+            len(b_long_basis),
+            b_long_age,
+            long_reclaim,
+            near_ema10,
+        )
         signals.append(
             _signal_dict(
                 "B_PULLBACK_LONG",
@@ -409,6 +650,8 @@ def detect_signals(
                 zone_low=b_long_zone_low,
                 zone_high=b_long_zone_high,
                 structure_basis=b_long_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
             )
         )
 
@@ -422,6 +665,19 @@ def detect_signals(
         "near_working_area": near_ema10 or bool(bear_fvg_fill) or bool(bear_sweep),
     }
     if _evaluate_branch("B_PULLBACK_SHORT", b_short_checks, near_miss_signals, blocked_counter):
+        b_short_age = _basis_age(last_index_15m, bear_fvg_fill, bear_sweep, last_mss_down, eqh)
+        eta_min, eta_max = _estimate_b_window(
+            "short",
+            latest,
+            prev,
+            short_regime_score,
+            b_short_zone_low,
+            b_short_zone_high,
+            len(b_short_basis),
+            b_short_age,
+            short_reject,
+            near_ema10,
+        )
         signals.append(
             _signal_dict(
                 "B_PULLBACK_SHORT",
@@ -433,6 +689,8 @@ def detect_signals(
                 zone_low=b_short_zone_low,
                 zone_high=b_short_zone_high,
                 structure_basis=b_short_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
             )
         )
 
@@ -444,6 +702,15 @@ def detect_signals(
         "not_eq_overheat_long": not long_overheat,
     }
     if _evaluate_branch("C_LEFT_LONG", c_long_checks, near_miss_signals, blocked_counter):
+        c_long_anchor_candidates = [
+            _float_safe((bull_sweep or {}).get("level"), 0.0) if bull_sweep else None,
+            _float_safe((near_bull_pivot or {}).get("price"), 0.0) if near_bull_pivot else None,
+            _float_safe((eql or {}).get("price"), 0.0) if eql else None,
+        ]
+        c_long_anchor = next((v for v in c_long_anchor_candidates if v is not None), None)
+        c_long_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
+        c_long_confirm = _count_true(momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising")))
+        eta_min, eta_max = _estimate_c_window("long", latest, prev, long_regime_score, c_long_anchor, len(c_long_basis), c_long_age, c_long_confirm)
         signals.append(
             _signal_dict(
                 "C_LEFT_LONG",
@@ -453,6 +720,8 @@ def detect_signals(
                 trend_display_long,
                 "early",
                 structure_basis=c_long_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
             )
         )
 
@@ -464,6 +733,15 @@ def detect_signals(
         "not_eq_exhausted_short": not short_exhausted,
     }
     if _evaluate_branch("C_LEFT_SHORT", c_short_checks, near_miss_signals, blocked_counter):
+        c_short_anchor_candidates = [
+            _float_safe((bear_sweep or {}).get("level"), 0.0) if bear_sweep else None,
+            _float_safe((near_bear_pivot or {}).get("price"), 0.0) if near_bear_pivot else None,
+            _float_safe((eqh or {}).get("price"), 0.0) if eqh else None,
+        ]
+        c_short_anchor = next((v for v in c_short_anchor_candidates if v is not None), None)
+        c_short_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
+        c_short_confirm = _count_true(momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False)
+        eta_min, eta_max = _estimate_c_window("short", latest, prev, short_regime_score, c_short_anchor, len(c_short_basis), c_short_age, c_short_confirm)
         signals.append(
             _signal_dict(
                 "C_LEFT_SHORT",
@@ -473,6 +751,8 @@ def detect_signals(
                 trend_display_short,
                 "early",
                 structure_basis=c_short_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
             )
         )
 
