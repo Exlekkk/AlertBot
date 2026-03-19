@@ -9,7 +9,6 @@ from config import (
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
-from engine.opportunity_watch import detect_opening_watch
 from engine.signals import detect_signals
 from services.logger import get_logger
 from services.telegram import format_engine_message, send_telegram_message
@@ -21,7 +20,6 @@ class SMCTScanner:
         self.market_data = BinanceMarketDataClient()
         self.state_store = SignalStateStore()
         self.logger = get_logger("scanner", WEBHOOK_LOG_FILE)
-        self.watch_state = {"direction": None, "level": 0, "signature": "", "quiet": 0}
 
     def _fetch_enriched(self, interval: str) -> list[dict]:
         klines = self.market_data.get_klines(self.symbol, interval=interval, limit=300)
@@ -61,52 +59,37 @@ class SMCTScanner:
         signal_name = signal["signal"]
 
         if signal_name == "A_LONG":
-            return self._safe_band(min(ema10, ema20, price - atr * 0.22), max(ema10, ema20, price - atr * 0.05))
+            return self._safe_band(
+                min(ema10, ema20, price - atr * 0.22),
+                max(ema10, ema20, price - atr * 0.05),
+            )
         if signal_name == "A_SHORT":
-            return self._safe_band(min(ema10, ema20, price + atr * 0.05), max(ema10, ema20, price + atr * 0.22))
+            return self._safe_band(
+                min(ema10, ema20, price + atr * 0.05),
+                max(ema10, ema20, price + atr * 0.22),
+            )
         if signal_name == "B_PULLBACK_LONG":
-            return self._safe_band(min(ema10, ema20, recent_support) - atr * 0.10, max(ema10, ema20, local_reclaim) + atr * 0.10)
+            return self._safe_band(
+                min(ema10, ema20, recent_support) - atr * 0.10,
+                max(ema10, ema20, local_reclaim) + atr * 0.10,
+            )
         if signal_name == "B_PULLBACK_SHORT":
-            return self._safe_band(min(ema10, ema20, local_reject) - atr * 0.10, max(ema10, ema20, recent_resistance) + atr * 0.10)
+            return self._safe_band(
+                min(ema10, ema20, local_reject) - atr * 0.10,
+                max(ema10, ema20, recent_resistance) + atr * 0.10,
+            )
         if signal_name == "C_LEFT_LONG":
-            return self._safe_band(min(recent_support, ema20) - atr * 0.16, max(ema10, ema20) + atr * 0.08)
+            return self._safe_band(
+                min(recent_support, ema20) - atr * 0.16,
+                max(ema10, ema20) + atr * 0.08,
+            )
         if signal_name == "C_LEFT_SHORT":
-            return self._safe_band(min(ema10, ema20) - atr * 0.08, max(recent_resistance, ema20) + atr * 0.16)
+            return self._safe_band(
+                min(ema10, ema20) - atr * 0.08,
+                max(recent_resistance, ema20) + atr * 0.16,
+            )
 
         return self._safe_band(price - atr * 0.12, price + atr * 0.12)
-
-    def _should_send_watch(self, signal: dict) -> bool:
-        direction = signal["direction"]
-        level = signal.get("level", 0)
-        signature = signal.get("signature", "")
-
-        prev_direction = self.watch_state["direction"]
-        prev_level = self.watch_state["level"]
-        prev_signature = self.watch_state["signature"]
-
-        should_send = False
-        if prev_direction != direction:
-            should_send = True
-        elif level > prev_level:
-            should_send = True
-        elif level >= 3 and signature != prev_signature:
-            should_send = True
-
-        if should_send:
-            self.watch_state.update(
-                {
-                    "direction": direction,
-                    "level": level,
-                    "signature": signature,
-                    "quiet": 0,
-                }
-            )
-        return should_send
-
-    def _mark_watch_quiet(self):
-        self.watch_state["quiet"] += 1
-        if self.watch_state["quiet"] >= 3:
-            self.watch_state = {"direction": None, "level": 0, "signature": "", "quiet": 0}
 
     @classmethod
     def health_check(cls, symbol: str = BINANCE_SYMBOL) -> dict:
@@ -118,7 +101,6 @@ class SMCTScanner:
         klines_15m = scanner._fetch_enriched("15m")
 
         signal_result = detect_signals(symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-        watch_result = detect_opening_watch(symbol, klines_1d, klines_4h, klines_1h, klines_15m)
 
         return {
             "ok": True,
@@ -130,7 +112,6 @@ class SMCTScanner:
                 "15m": len(klines_15m),
             },
             "signals_checked": len(signal_result.get("signals", [])),
-            "watch_checked": len(watch_result or []),
         }
 
     @classmethod
@@ -194,30 +175,7 @@ class SMCTScanner:
                     signal.get("structure_basis", []),
                 )
 
-            watch_sent = []
-            watch_signals = []
-            if not sent_signals:
-                watch_signals = detect_opening_watch(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-                if watch_signals:
-                    for signal in watch_signals:
-                        if not self._should_send_watch(signal):
-                            continue
-                        telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal["text"])
-                        watch_sent.append({"signal": signal["signal"], "telegram_result": telegram_result})
-                        self.logger.info(
-                            "scan_watch_sent symbol=%s signal=%s direction=%s level=%s signature=%s",
-                            signal["symbol"],
-                            signal["signal"],
-                            signal["direction"],
-                            signal.get("level"),
-                            signal.get("signature"),
-                        )
-                else:
-                    self._mark_watch_quiet()
-            else:
-                self.watch_state = {"direction": None, "level": 0, "signature": "", "quiet": 0}
-
-            if not signals and not watch_sent:
+            if not signals:
                 self.logger.info(
                     "scan_no_signal symbol=%s near_miss_signals=%s blocked_reasons=%s",
                     self.symbol,
@@ -231,16 +189,14 @@ class SMCTScanner:
                     "blocked_reasons": blocked_reasons,
                 }
 
-            self.logger.info(
-                "scan_summary symbol=%s sent_signals=%s watch_sent=%s near_miss_signals=%s blocked_reasons=%s",
-                self.symbol,
-                sent_signals,
-                watch_sent,
-                near_miss_signals,
-                blocked_reasons,
-            )
-
-            if not sent_signals and not watch_sent:
+            if not sent_signals:
+                self.logger.info(
+                    "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
+                    self.symbol,
+                    sent_signals,
+                    near_miss_signals,
+                    blocked_reasons,
+                )
                 return {
                     "ok": True,
                     "signal": None,
@@ -249,10 +205,17 @@ class SMCTScanner:
                     "blocked_reasons": blocked_reasons,
                 }
 
+            self.logger.info(
+                "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
+                self.symbol,
+                sent_signals,
+                near_miss_signals,
+                blocked_reasons,
+            )
+
             return {
                 "ok": True,
                 "sent": sent_signals,
-                "watch_sent": watch_sent,
                 "near_miss_signals": near_miss_signals,
                 "blocked_reasons": blocked_reasons,
             }
