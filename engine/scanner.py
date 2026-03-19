@@ -112,6 +112,7 @@ class SMCTScanner:
                 "15m": len(klines_15m),
             },
             "signals_checked": len(signal_result.get("signals", [])),
+            "watch_checked": 0,
         }
 
     @classmethod
@@ -131,14 +132,15 @@ class SMCTScanner:
             blocked_reasons = signal_result["blocked_reasons"]
 
             sent_signals = []
+            watch_sent = []
+
             for signal in signals:
                 if not self.state_store.should_send(signal):
                     self.logger.info(
-                        "scan_state_skip symbol=%s signal=%s direction=%s signature=%s",
+                        "scan_state_skip symbol=%s signal=%s direction=%s",
                         signal["symbol"],
                         signal["signal"],
                         signal["direction"],
-                        signal.get("signature"),
                     )
                     continue
 
@@ -158,6 +160,7 @@ class SMCTScanner:
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
                 self.state_store.mark_sent(signal)
+
                 sent_signals.append(
                     {
                         "signal": signal["signal"],
@@ -166,6 +169,7 @@ class SMCTScanner:
                         "telegram_result": telegram_result,
                     }
                 )
+
                 self.logger.info(
                     "scan_signal_sent symbol=%s signal=%s entry_zone=[%.2f, %.2f] basis=%s",
                     signal["symbol"],
@@ -185,15 +189,17 @@ class SMCTScanner:
                 return {
                     "ok": True,
                     "signal": None,
+                    "watch_sent": watch_sent,
                     "near_miss_signals": near_miss_signals,
                     "blocked_reasons": blocked_reasons,
                 }
 
             if not sent_signals:
                 self.logger.info(
-                    "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
+                    "scan_summary symbol=%s sent_signals=%s watch_sent=%s near_miss_signals=%s blocked_reasons=%s",
                     self.symbol,
                     sent_signals,
+                    watch_sent,
                     near_miss_signals,
                     blocked_reasons,
                 )
@@ -201,14 +207,16 @@ class SMCTScanner:
                     "ok": True,
                     "signal": None,
                     "reason": "state_dedup",
+                    "watch_sent": watch_sent,
                     "near_miss_signals": near_miss_signals,
                     "blocked_reasons": blocked_reasons,
                 }
 
             self.logger.info(
-                "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
+                "scan_summary symbol=%s sent_signals=%s watch_sent=%s near_miss_signals=%s blocked_reasons=%s",
                 self.symbol,
                 sent_signals,
+                watch_sent,
                 near_miss_signals,
                 blocked_reasons,
             )
@@ -216,6 +224,7 @@ class SMCTScanner:
             return {
                 "ok": True,
                 "sent": sent_signals,
+                "watch_sent": watch_sent,
                 "near_miss_signals": near_miss_signals,
                 "blocked_reasons": blocked_reasons,
             }
