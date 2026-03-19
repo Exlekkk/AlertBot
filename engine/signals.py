@@ -102,6 +102,88 @@ def _short_exhausted(k: dict, prev_k: dict) -> bool:
     )
 
 
+def _short_exhausted_hard(
+    k: dict,
+    prev_k: dict,
+    *,
+    support_hint: bool = False,
+    deep_extension: bool = False,
+    h1_exhausted: bool = False,
+) -> bool:
+    eq_signal = bool(k.get("sss_bull_div")) or bool(k.get("sss_oversold_warning"))
+    momentum_rebound = float(k.get("sss_hist", 0.0)) >= float(prev_k.get("sss_hist", 0.0)) and float(
+        k.get("cm_hist", 0.0)
+    ) >= float(prev_k.get("cm_hist", 0.0))
+    return _count_true(eq_signal, momentum_rebound, support_hint, deep_extension, h1_exhausted) >= 3
+
+
+def _long_overheat_hard(
+    k: dict,
+    prev_k: dict,
+    *,
+    resistance_hint: bool = False,
+    deep_extension: bool = False,
+    h1_overheat: bool = False,
+) -> bool:
+    eq_signal = bool(k.get("sss_bear_div")) or bool(k.get("sss_overbought_warning"))
+    momentum_rollover = float(k.get("sss_hist", 0.0)) <= float(prev_k.get("sss_hist", 0.0)) and float(
+        k.get("cm_hist", 0.0)
+    ) <= float(prev_k.get("cm_hist", 0.0))
+    return _count_true(eq_signal, momentum_rollover, resistance_hint, deep_extension, h1_overheat) >= 3
+
+
+def _a_distance_ok(
+    direction: str,
+    *,
+    price: float,
+    ema20: float,
+    atr: float,
+    momentum_ok: bool,
+    hard_exhausted: bool,
+    liquidity_hint: bool,
+) -> bool:
+    distance = abs(price - ema20) / max(atr, 1e-9)
+    if distance <= 1.60:
+        return True
+    if distance <= 2.85 and momentum_ok and not hard_exhausted and not liquidity_hint:
+        return True
+    if distance <= 3.35 and direction == "short" and momentum_ok and not hard_exhausted:
+        return True
+    return False
+
+
+def _reclaim_confirmation_ready(
+    latest: dict,
+    prev: dict,
+    recent: list[dict],
+    atr: float,
+    base_ready: bool,
+    stack_ok: bool,
+    zone_hint: bool,
+) -> bool:
+    highs = [float(k["high"]) for k in recent[:-1]] or [float(prev["high"])]
+    lows = [float(k["low"]) for k in recent[:-1]] or [float(prev["low"])]
+    higher_low = float(latest["low"]) >= min(lows) - atr * 0.10
+    broke_minor_high = float(latest["high"]) >= max(highs) - atr * 0.08
+    return base_ready or (stack_ok and ((higher_low and float(latest["close"]) >= float(prev["close"])) or broke_minor_high or zone_hint))
+
+
+def _reject_confirmation_ready(
+    latest: dict,
+    prev: dict,
+    recent: list[dict],
+    atr: float,
+    base_ready: bool,
+    stack_ok: bool,
+    zone_hint: bool,
+) -> bool:
+    highs = [float(k["high"]) for k in recent[:-1]] or [float(prev["high"])]
+    lows = [float(k["low"]) for k in recent[:-1]] or [float(prev["low"])]
+    lower_high = float(latest["high"]) <= max(highs) + atr * 0.10
+    broke_minor_low = float(latest["low"]) <= min(lows) + atr * 0.08
+    return base_ready or (stack_ok and ((lower_high and float(latest["close"]) <= float(prev["close"])) or broke_minor_low or zone_hint))
+
+
 def _trend_value(label: str, direction: str) -> int:
     table = {
         "bull": 2,
@@ -453,6 +535,13 @@ def _signal_dict(
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
 ) -> dict[str, Any]:
+    basis = structure_basis or []
+    zone_low_v = zone_low if zone_low is not None else price
+    zone_high_v = zone_high if zone_high is not None else price
+    zone_key = f"{_round5(zone_low_v)}-{_round5(zone_high_v)}"
+    basis_key = ",".join(sorted(basis)) if basis else "na"
+    signature = f"{name}:{direction}:{zone_key}:{basis_key}"
+    cooldown_seconds = {1: 45 * 60, 2: 30 * 60, 3: 25 * 60}.get(SIGNAL_PRIORITY[name], 30 * 60)
     return {
         "signal": name,
         "symbol": symbol,
@@ -464,9 +553,11 @@ def _signal_dict(
         "status": status,
         "zone_low": zone_low,
         "zone_high": zone_high,
-        "structure_basis": structure_basis or [],
+        "structure_basis": basis,
         "eta_min_minutes": eta_min_minutes,
         "eta_max_minutes": eta_max_minutes,
+        "signature": signature,
+        "cooldown_seconds": cooldown_seconds,
     }
 
 
@@ -525,6 +616,41 @@ def detect_signals(
     near_ema10 = abs(price - float(latest["ema10"])) <= atr * 1.20
     not_far_from_ema20 = abs(price - float(latest["ema20"])) <= atr * 1.60
 
+    long_liquidity_hint = bool(bear_sweep) or bool(near_bear_pivot) or bool(eqh)
+    short_liquidity_hint = bool(bull_sweep) or bool(near_bull_pivot) or bool(eql)
+    long_overheat_hard = _long_overheat_hard(
+        latest,
+        prev,
+        resistance_hint=long_liquidity_hint,
+        deep_extension=(price - float(latest["ema20"])) >= atr * 2.20,
+        h1_overheat=_long_overheat(k_1h, p_1h),
+    )
+    short_exhausted_hard = _short_exhausted_hard(
+        latest,
+        prev,
+        support_hint=short_liquidity_hint,
+        deep_extension=(float(latest["ema20"]) - price) >= atr * 2.20,
+        h1_exhausted=_short_exhausted(k_1h, p_1h),
+    )
+    a_long_distance_ok = _a_distance_ok(
+        "long",
+        price=price,
+        ema20=float(latest["ema20"]),
+        atr=atr,
+        momentum_ok=momentum_up,
+        hard_exhausted=long_overheat_hard,
+        liquidity_hint=long_liquidity_hint,
+    )
+    a_short_distance_ok = _a_distance_ok(
+        "short",
+        price=price,
+        ema20=float(latest["ema20"]),
+        atr=atr,
+        momentum_ok=momentum_down,
+        hard_exhausted=short_exhausted_hard,
+        liquidity_hint=short_liquidity_hint,
+    )
+
     eqh_then_bos_short = bool(eqh and last_bos_down and int(last_bos_down["trigger_index"]) >= int(eqh["second_index"]))
     eql_then_bos_long = bool(eql and last_bos_up and int(last_bos_up["trigger_index"]) >= int(eql["second_index"]))
 
@@ -568,6 +694,47 @@ def detect_signals(
     if last_mss_down:
         c_short_basis.append("mss_down")
 
+    b_long_reclaim_ready = _reclaim_confirmation_ready(
+        latest,
+        prev,
+        klines_15m[-4:],
+        atr,
+        long_reclaim,
+        bullish_stack or price >= float(latest["ema10"]),
+        bool(bull_fvg_fill) or bool(bull_sweep) or bool(last_mss_up),
+    )
+    b_short_reject_ready = _reject_confirmation_ready(
+        latest,
+        prev,
+        klines_15m[-4:],
+        atr,
+        short_reject,
+        bearish_stack or price <= float(latest["ema10"]),
+        bool(bear_fvg_fill) or bool(bear_sweep) or bool(last_mss_down),
+    )
+    b_long_htf_allowed = long_regime_score >= 1 or (
+        long_regime_score >= -1 and trend_4h != "bear" and _count_true(bullish_stack, momentum_up, bool(last_bos_up), bool(last_mss_up)) >= 2
+    )
+    b_short_htf_allowed = short_regime_score >= 1 or (
+        short_regime_score >= -1 and trend_4h != "bull" and _count_true(bearish_stack, momentum_down, bool(last_bos_down), bool(last_mss_down)) >= 2
+    )
+    c_long_main_basis_ok = _count_true(bool(last_mss_up), bool(bull_sweep), bool(near_bull_pivot), bool(eql), bool(last_bos_up)) >= 1
+    c_short_main_basis_ok = _count_true(bool(last_mss_down), bool(bear_sweep), bool(near_bear_pivot), bool(eqh), bool(last_bos_down)) >= 1
+    c_long_aux_confirm_ok = _count_true(
+        eq_long,
+        momentum_up,
+        rar_support,
+        price >= float(prev["close"]),
+        bool(latest.get("fl_buy_signal")) or bool(latest.get("tai_rising")),
+    ) >= 2
+    c_short_aux_confirm_ok = _count_true(
+        eq_short,
+        momentum_down,
+        rar_support,
+        price <= float(prev["close"]),
+        bool(latest.get("fl_sell_signal")) or (not bool(latest.get("tai_rising"))),
+    ) >= 2
+
     signals: list[dict[str, Any]] = []
     near_miss_signals: list[dict[str, Any]] = []
     blocked_counter: Counter = Counter()
@@ -578,8 +745,8 @@ def detect_signals(
         "price_above_ema_stack": bullish_stack,
         "momentum_supportive": momentum_up,
         "rar_not_weak": rar_support,
-        "not_eq_overheat_long": not long_overheat,
-        "not_too_far_from_ema20": not_far_from_ema20,
+        "not_eq_overheat_long": not long_overheat_hard,
+        "not_too_far_from_ema20": a_long_distance_ok,
     }
     if _evaluate_branch("A_LONG", a_long_checks, near_miss_signals, blocked_counter):
         eta_min, eta_max = _estimate_a_window("long", latest, prev, long_regime_score, last_bos_up, last_index_15m)
@@ -591,8 +758,8 @@ def detect_signals(
         "price_below_ema_stack": bearish_stack,
         "momentum_supportive": momentum_down,
         "rar_not_weak": rar_support,
-        "not_eq_exhausted_short": not short_exhausted,
-        "not_too_far_from_ema20": not_far_from_ema20,
+        "not_eq_exhausted_short": not short_exhausted_hard,
+        "not_too_far_from_ema20": a_short_distance_ok,
     }
     if _evaluate_branch("A_SHORT", a_short_checks, near_miss_signals, blocked_counter):
         eta_min, eta_max = _estimate_a_window("short", latest, prev, short_regime_score, last_bos_down, last_index_15m)
@@ -617,12 +784,12 @@ def detect_signals(
         b_short_zone_high = float(bear_sweep["level"]) + atr * 0.10
 
     b_long_checks = {
-        "htf_b_long_allowed": long_regime_score >= 1 and short_regime_score < 8,
+        "htf_b_long_allowed": b_long_htf_allowed,
         "smc_ict_basis_long": bool(b_long_basis),
-        "reclaim_confirmation": long_reclaim,
+        "reclaim_confirmation": b_long_reclaim_ready,
         "ema_structure_intact": price >= float(latest["ema20"]) or float(latest["ema10"]) >= float(latest["ema20"]),
         "momentum_not_opposed": _count_true(momentum_up, bool(latest.get("fl_buy_signal")), bool(latest.get("tai_rising"))) >= 1,
-        "not_eq_overheat_long": not long_overheat,
+        "not_eq_overheat_long": not long_overheat_hard,
         "near_working_area": near_ema10 or bool(bull_fvg_fill) or bool(bull_sweep),
     }
     if _evaluate_branch("B_PULLBACK_LONG", b_long_checks, near_miss_signals, blocked_counter):
@@ -636,7 +803,7 @@ def detect_signals(
             b_long_zone_high,
             len(b_long_basis),
             b_long_age,
-            long_reclaim,
+            b_long_reclaim_ready,
             near_ema10,
         )
         signals.append(
@@ -656,12 +823,12 @@ def detect_signals(
         )
 
     b_short_checks = {
-        "htf_b_short_allowed": short_regime_score >= 1 and long_regime_score < 8,
+        "htf_b_short_allowed": b_short_htf_allowed,
         "smc_ict_basis_short": bool(b_short_basis),
-        "reject_confirmation": short_reject,
+        "reject_confirmation": b_short_reject_ready,
         "ema_structure_intact": price <= float(latest["ema20"]) or float(latest["ema10"]) <= float(latest["ema20"]),
         "momentum_not_opposed": _count_true(momentum_down, bool(latest.get("fl_sell_signal")), bool(latest.get("tai_rising")) is False) >= 1,
-        "not_eq_exhausted_short": not short_exhausted,
+        "not_eq_exhausted_short": not short_exhausted_hard,
         "near_working_area": near_ema10 or bool(bear_fvg_fill) or bool(bear_sweep),
     }
     if _evaluate_branch("B_PULLBACK_SHORT", b_short_checks, near_miss_signals, blocked_counter):
@@ -675,7 +842,7 @@ def detect_signals(
             b_short_zone_high,
             len(b_short_basis),
             b_short_age,
-            short_reject,
+            b_short_reject_ready,
             near_ema10,
         )
         signals.append(
@@ -699,7 +866,7 @@ def detect_signals(
         "ict_smc_early_basis": len(c_long_basis) >= 2,
         "eq_divergence_long": eq_long,
         "early_confirmation_long": _count_true(momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising"))) >= 2,
-        "not_eq_overheat_long": not long_overheat,
+        "not_eq_overheat_long": not long_overheat_hard,
     }
     if _evaluate_branch("C_LEFT_LONG", c_long_checks, near_miss_signals, blocked_counter):
         c_long_anchor_candidates = [
@@ -709,7 +876,7 @@ def detect_signals(
         ]
         c_long_anchor = next((v for v in c_long_anchor_candidates if v is not None), None)
         c_long_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
-        c_long_confirm = _count_true(momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising")))
+        c_long_confirm = _count_true(eq_long, momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising")))
         eta_min, eta_max = _estimate_c_window("long", latest, prev, long_regime_score, c_long_anchor, len(c_long_basis), c_long_age, c_long_confirm)
         signals.append(
             _signal_dict(
@@ -730,7 +897,7 @@ def detect_signals(
         "ict_smc_early_basis": len(c_short_basis) >= 2,
         "eq_divergence_short": eq_short,
         "early_confirmation_short": _count_true(momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False) >= 2,
-        "not_eq_exhausted_short": not short_exhausted,
+        "not_eq_exhausted_short": not short_exhausted_hard,
     }
     if _evaluate_branch("C_LEFT_SHORT", c_short_checks, near_miss_signals, blocked_counter):
         c_short_anchor_candidates = [
@@ -740,7 +907,7 @@ def detect_signals(
         ]
         c_short_anchor = next((v for v in c_short_anchor_candidates if v is not None), None)
         c_short_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
-        c_short_confirm = _count_true(momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False)
+        c_short_confirm = _count_true(eq_short, momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False)
         eta_min, eta_max = _estimate_c_window("short", latest, prev, short_regime_score, c_short_anchor, len(c_short_basis), c_short_age, c_short_confirm)
         signals.append(
             _signal_dict(
