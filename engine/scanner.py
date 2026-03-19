@@ -27,6 +27,54 @@ class SMCTScanner:
         klines = self.market_data.get_klines(self.symbol, interval=interval, limit=300)
         return enrich_klines(klines[:-1])
 
+    @staticmethod
+    def _safe_band(low: float, high: float) -> tuple[float, float]:
+        low = float(low)
+        high = float(high)
+        if low > high:
+            low, high = high, low
+        if abs(high - low) < max(abs(high) * 0.0008, 8.0):
+            pad = max(abs(high) * 0.0012, 12.0)
+            low -= pad * 0.5
+            high += pad * 0.5
+        return round(low, 2), round(high, 2)
+
+    def _build_entry_zone(self, signal: dict, klines_15m: list[dict]) -> tuple[float, float]:
+        zone_low = signal.get("zone_low")
+        zone_high = signal.get("zone_high")
+        if zone_low is not None and zone_high is not None:
+            return self._safe_band(zone_low, zone_high)
+
+        latest = klines_15m[-1]
+        recent_6 = klines_15m[-6:]
+        recent_8 = klines_15m[-8:]
+
+        price = float(signal["price"])
+        atr = max(float(latest.get("atr", 0.0)), price * 0.0015)
+        ema10 = float(latest["ema10"])
+        ema20 = float(latest["ema20"])
+        recent_support = min(float(k["low"]) for k in recent_8)
+        recent_resistance = max(float(k["high"]) for k in recent_8)
+        local_reclaim = max(float(k["close"]) for k in recent_6[:-1]) if len(recent_6) > 1 else price
+        local_reject = min(float(k["close"]) for k in recent_6[:-1]) if len(recent_6) > 1 else price
+
+        signal_name = signal["signal"]
+
+        if signal_name == "A_LONG":
+            return self._safe_band(min(ema10, ema20, price - atr * 0.22), max(ema10, ema20, price - atr * 0.05))
+        if signal_name == "A_SHORT":
+            return self._safe_band(min(ema10, ema20, price + atr * 0.05), max(ema10, ema20, price + atr * 0.22))
+        if signal_name == "B_PULLBACK_LONG":
+            return self._safe_band(min(ema10, ema20, recent_support) - atr * 0.10, max(ema10, ema20, local_reclaim) + atr * 0.10)
+        if signal_name == "B_PULLBACK_SHORT":
+            return self._safe_band(min(ema10, ema20, local_reject) - atr * 0.10, max(ema10, ema20, recent_resistance) + atr * 0.10)
+        if signal_name == "C_LEFT_LONG":
+            return self._safe_band(min(recent_support, ema20) - atr * 0.16, max(ema10, ema20) + atr * 0.08)
+        if signal_name == "C_LEFT_SHORT":
+            return self._safe_band(min(ema10, ema20) - atr * 0.08, max(recent_resistance, ema20) + atr * 0.16)
+
+        return self._safe_band(price - atr * 0.12, price + atr * 0.12)
+
     def _should_send_watch(self, signal: dict) -> bool:
         direction = signal["direction"]
         level = signal.get("level", 0)
@@ -41,7 +89,7 @@ class SMCTScanner:
             should_send = True
         elif level > prev_level:
             should_send = True
-        elif level == 4 and signature != prev_signature:
+        elif level >= 3 and signature != prev_signature:
             should_send = True
 
         if should_send:
@@ -69,21 +117,8 @@ class SMCTScanner:
         klines_1h = scanner._fetch_enriched("1h")
         klines_15m = scanner._fetch_enriched("15m")
 
-        signal_result = detect_signals(
-            symbol,
-            klines_1d,
-            klines_4h,
-            klines_1h,
-            klines_15m,
-        )
-
-        watch_result = detect_opening_watch(
-            symbol,
-            klines_1d,
-            klines_4h,
-            klines_1h,
-            klines_15m,
-        )
+        signal_result = detect_signals(symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+        watch_result = detect_opening_watch(symbol, klines_1d, klines_4h, klines_1h, klines_15m)
 
         return {
             "ok": True,
@@ -109,13 +144,7 @@ class SMCTScanner:
             klines_1h = self._fetch_enriched("1h")
             klines_15m = self._fetch_enriched("15m")
 
-            signal_result = detect_signals(
-                self.symbol,
-                klines_1d,
-                klines_4h,
-                klines_1h,
-                klines_15m,
-            )
+            signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
             signals = signal_result["signals"]
             near_miss_signals = signal_result["near_miss_signals"]
             blocked_reasons = signal_result["blocked_reasons"]
@@ -124,13 +153,15 @@ class SMCTScanner:
             for signal in signals:
                 if not self.state_store.should_send(signal):
                     self.logger.info(
-                        "scan_state_skip symbol=%s signal=%s direction=%s",
+                        "scan_state_skip symbol=%s signal=%s direction=%s signature=%s",
                         signal["symbol"],
                         signal["signal"],
                         signal["direction"],
+                        signal.get("signature"),
                     )
                     continue
 
+                entry_zone_low, entry_zone_high = self._build_entry_zone(signal, klines_15m)
                 text = format_engine_message(
                     signal=signal["signal"],
                     symbol=signal["symbol"],
@@ -139,25 +170,39 @@ class SMCTScanner:
                     price=signal["price"],
                     trend_1h=signal["trend_1h"],
                     status=signal["status"],
+                    entry_zone_low=entry_zone_low,
+                    entry_zone_high=entry_zone_high,
+                    eta_min_minutes=signal.get("eta_min_minutes"),
+                    eta_max_minutes=signal.get("eta_max_minutes"),
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
                 self.state_store.mark_sent(signal)
-                sent_signals.append({"signal": signal["signal"], "telegram_result": telegram_result})
-                self.logger.info("scan_signal_sent symbol=%s signal=%s", signal["symbol"], signal["signal"])
+                sent_signals.append(
+                    {
+                        "signal": signal["signal"],
+                        "entry_zone": [entry_zone_low, entry_zone_high],
+                        "basis": signal.get("structure_basis", []),
+                        "telegram_result": telegram_result,
+                    }
+                )
+                self.logger.info(
+                    "scan_signal_sent symbol=%s signal=%s entry_zone=[%.2f, %.2f] basis=%s",
+                    signal["symbol"],
+                    signal["signal"],
+                    entry_zone_low,
+                    entry_zone_high,
+                    signal.get("structure_basis", []),
+                )
 
             watch_sent = []
             watch_signals = []
-            if not signals:
+            if not sent_signals:
                 watch_signals = detect_opening_watch(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
                 if watch_signals:
                     for signal in watch_signals:
                         if not self._should_send_watch(signal):
                             continue
-                        telegram_result = send_telegram_message(
-                            TELEGRAM_BOT_TOKEN,
-                            TELEGRAM_CHAT_ID,
-                            signal["text"],
-                        )
+                        telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, signal["text"])
                         watch_sent.append({"signal": signal["signal"], "telegram_result": telegram_result})
                         self.logger.info(
                             "scan_watch_sent symbol=%s signal=%s direction=%s level=%s signature=%s",
