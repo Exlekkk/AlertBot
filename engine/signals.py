@@ -494,6 +494,61 @@ def _trend_display(direction: str, score: int) -> str:
     return "neutral"
 
 
+def _classify_tf_phase(
+    direction: str,
+    trend_label: str,
+    latest: dict,
+    prev: dict,
+    *,
+    bos_event: dict[str, Any] | None,
+    mss_event: dict[str, Any] | None,
+    support_fvg_fill: dict[str, Any] | None,
+    resistance_fvg_fill: dict[str, Any] | None,
+    support_sweep: dict[str, Any] | None,
+    resistance_sweep: dict[str, Any] | None,
+    near_support: dict[str, Any] | None,
+    near_resistance: dict[str, Any] | None,
+    eql: dict[str, Any] | None,
+    eqh: dict[str, Any] | None,
+) -> str:
+    close_pos = _close_position(latest)
+
+    if direction == "long":
+        trend_ok = trend_label in {"bull", "lean_bull"}
+        structure_ok = bool(bos_event or mss_event)
+        stack_ok = float(latest["close"]) >= float(latest["ema20"]) and float(latest["ema10"]) >= float(latest["ema20"])
+        momentum_ok = _momentum_up(latest)
+        support_working = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill))
+        overhead_pressure = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill))
+        reclaiming_back_down = _count_true(
+            float(latest["close"]) < float(latest["ema10"]),
+            float(latest["close"]) < float(prev["close"]),
+            close_pos < 0.48,
+        )
+        if trend_ok and structure_ok and stack_ok and momentum_ok and overhead_pressure == 0 and reclaiming_back_down == 0:
+            return "continuation"
+        if trend_ok and _count_true(structure_ok, stack_ok, momentum_ok, support_working >= 1) >= 2:
+            return "mixed"
+        return "counter"
+
+    trend_ok = trend_label in {"bear", "lean_bear"}
+    structure_ok = bool(bos_event or mss_event)
+    stack_ok = float(latest["close"]) <= float(latest["ema20"]) and float(latest["ema10"]) <= float(latest["ema20"])
+    momentum_ok = _momentum_down(latest)
+    support_absorption = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill))
+    overhead_pressure = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill))
+    reclaiming_back_up = _count_true(
+        float(latest["close"]) > float(latest["ema10"]),
+        float(latest["close"]) > float(prev["close"]),
+        close_pos > 0.52,
+    )
+    if trend_ok and structure_ok and stack_ok and momentum_ok and support_absorption == 0 and reclaiming_back_up == 0:
+        return "continuation"
+    if trend_ok and _count_true(structure_ok, stack_ok, momentum_ok, overhead_pressure >= 1) >= 2:
+        return "mixed"
+    return "counter"
+
+
 def _evaluate_branch(
     name: str,
     checks: dict[str, bool],
@@ -600,6 +655,99 @@ def detect_signals(
     near_bull_pivot = detect_near_pivot_level(klines_15m, "bull")
     near_bear_pivot = detect_near_pivot_level(klines_15m, "bear")
 
+    h1_equal_levels = detect_recent_equal_levels(klines_1h)
+    h1_eqh = h1_equal_levels.get("eqh")
+    h1_eql = h1_equal_levels.get("eql")
+    h1_bull_fvg_fill = detect_recent_fvg_fill(klines_1h, "bull")
+    h1_bear_fvg_fill = detect_recent_fvg_fill(klines_1h, "bear")
+    h1_bull_sweep = detect_recent_liquidity_sweep(klines_1h, "bull")
+    h1_bear_sweep = detect_recent_liquidity_sweep(klines_1h, "bear")
+    h1_near_bull_pivot = detect_near_pivot_level(klines_1h, "bull")
+    h1_near_bear_pivot = detect_near_pivot_level(klines_1h, "bear")
+    h1_last_bos_up = latest_structure_event(klines_1h, direction="up", kinds=("bos",), max_bars_ago=6)
+    h1_last_bos_down = latest_structure_event(klines_1h, direction="down", kinds=("bos",), max_bars_ago=6)
+    h1_last_mss_up = latest_structure_event(klines_1h, direction="up", kinds=("mss",), max_bars_ago=8)
+    h1_last_mss_down = latest_structure_event(klines_1h, direction="down", kinds=("mss",), max_bars_ago=8)
+
+    h4_equal_levels = detect_recent_equal_levels(klines_4h)
+    h4_eqh = h4_equal_levels.get("eqh")
+    h4_eql = h4_equal_levels.get("eql")
+    h4_bull_fvg_fill = detect_recent_fvg_fill(klines_4h, "bull")
+    h4_bear_fvg_fill = detect_recent_fvg_fill(klines_4h, "bear")
+    h4_bull_sweep = detect_recent_liquidity_sweep(klines_4h, "bull")
+    h4_bear_sweep = detect_recent_liquidity_sweep(klines_4h, "bear")
+    h4_near_bull_pivot = detect_near_pivot_level(klines_4h, "bull")
+    h4_near_bear_pivot = detect_near_pivot_level(klines_4h, "bear")
+    h4_last_bos_up = latest_structure_event(klines_4h, direction="up", kinds=("bos",), max_bars_ago=4)
+    h4_last_bos_down = latest_structure_event(klines_4h, direction="down", kinds=("bos",), max_bars_ago=4)
+    h4_last_mss_up = latest_structure_event(klines_4h, direction="up", kinds=("mss",), max_bars_ago=6)
+    h4_last_mss_down = latest_structure_event(klines_4h, direction="down", kinds=("mss",), max_bars_ago=6)
+
+    h1_long_phase = _classify_tf_phase(
+        "long",
+        trend_1h,
+        k_1h,
+        p_1h,
+        bos_event=h1_last_bos_up,
+        mss_event=h1_last_mss_up,
+        support_fvg_fill=h1_bull_fvg_fill,
+        resistance_fvg_fill=h1_bear_fvg_fill,
+        support_sweep=h1_bull_sweep,
+        resistance_sweep=h1_bear_sweep,
+        near_support=h1_near_bull_pivot,
+        near_resistance=h1_near_bear_pivot,
+        eql=h1_eql,
+        eqh=h1_eqh,
+    )
+    h1_short_phase = _classify_tf_phase(
+        "short",
+        trend_1h,
+        k_1h,
+        p_1h,
+        bos_event=h1_last_bos_down,
+        mss_event=h1_last_mss_down,
+        support_fvg_fill=h1_bull_fvg_fill,
+        resistance_fvg_fill=h1_bear_fvg_fill,
+        support_sweep=h1_bull_sweep,
+        resistance_sweep=h1_bear_sweep,
+        near_support=h1_near_bull_pivot,
+        near_resistance=h1_near_bear_pivot,
+        eql=h1_eql,
+        eqh=h1_eqh,
+    )
+    h4_long_phase = _classify_tf_phase(
+        "long",
+        trend_4h,
+        k_4h,
+        p_4h,
+        bos_event=h4_last_bos_up,
+        mss_event=h4_last_mss_up,
+        support_fvg_fill=h4_bull_fvg_fill,
+        resistance_fvg_fill=h4_bear_fvg_fill,
+        support_sweep=h4_bull_sweep,
+        resistance_sweep=h4_bear_sweep,
+        near_support=h4_near_bull_pivot,
+        near_resistance=h4_near_bear_pivot,
+        eql=h4_eql,
+        eqh=h4_eqh,
+    )
+    h4_short_phase = _classify_tf_phase(
+        "short",
+        trend_4h,
+        k_4h,
+        p_4h,
+        bos_event=h4_last_bos_down,
+        mss_event=h4_last_mss_down,
+        support_fvg_fill=h4_bull_fvg_fill,
+        resistance_fvg_fill=h4_bear_fvg_fill,
+        support_sweep=h4_bull_sweep,
+        resistance_sweep=h4_bear_sweep,
+        near_support=h4_near_bull_pivot,
+        near_resistance=h4_near_bear_pivot,
+        eql=h4_eql,
+        eqh=h4_eqh,
+    )
+
     bullish_stack = _price_above_stack(latest)
     bearish_stack = _price_below_stack(latest)
     momentum_up = _momentum_up(latest)
@@ -607,14 +755,6 @@ def detect_signals(
     rar_support = _rar_supportive(latest, prev)
     eq_long = _eq_div_long(latest, prev)
     eq_short = _eq_div_short(latest, prev)
-    long_overheat = _long_overheat(latest, prev) or _long_overheat(k_1h, p_1h)
-    short_exhausted = _short_exhausted(latest, prev) or _short_exhausted(k_1h, p_1h)
-
-    close_pos = _close_position(latest)
-    long_reclaim = price >= float(latest["ema10"]) and (price > float(prev["close"]) or close_pos >= 0.52)
-    short_reject = price <= float(latest["ema10"]) and (price < float(prev["close"]) or close_pos <= 0.48)
-    near_ema10 = abs(price - float(latest["ema10"])) <= atr * 1.20
-    not_far_from_ema20 = abs(price - float(latest["ema20"])) <= atr * 1.60
 
     long_liquidity_hint = bool(bear_sweep) or bool(near_bear_pivot) or bool(eqh)
     short_liquidity_hint = bool(bull_sweep) or bool(near_bull_pivot) or bool(eql)
@@ -650,6 +790,11 @@ def detect_signals(
         hard_exhausted=short_exhausted_hard,
         liquidity_hint=short_liquidity_hint,
     )
+
+    close_pos = _close_position(latest)
+    long_reclaim = price >= float(latest["ema10"]) and (price > float(prev["close"]) or close_pos >= 0.52)
+    short_reject = price <= float(latest["ema10"]) and (price < float(prev["close"]) or close_pos <= 0.48)
+    near_ema10 = abs(price - float(latest["ema10"])) <= atr * 1.20
 
     eqh_then_bos_short = bool(eqh and last_bos_down and int(last_bos_down["trigger_index"]) >= int(eqh["second_index"]))
     eql_then_bos_long = bool(eql and last_bos_up and int(last_bos_up["trigger_index"]) >= int(eql["second_index"]))
@@ -694,6 +839,18 @@ def detect_signals(
     if last_mss_down:
         c_short_basis.append("mss_down")
 
+    a_long_basis = ["h4_continuation", "h1_continuation"]
+    if last_bos_up:
+        a_long_basis.append("bos_up_15m")
+    if last_mss_up:
+        a_long_basis.append("mss_up_15m")
+
+    a_short_basis = ["h4_continuation", "h1_continuation"]
+    if last_bos_down:
+        a_short_basis.append("bos_down_15m")
+    if last_mss_down:
+        a_short_basis.append("mss_down_15m")
+
     b_long_reclaim_ready = _reclaim_confirmation_ready(
         latest,
         prev,
@@ -712,35 +869,16 @@ def detect_signals(
         bearish_stack or price <= float(latest["ema10"]),
         bool(bear_fvg_fill) or bool(bear_sweep) or bool(last_mss_down),
     )
-    b_long_htf_allowed = long_regime_score >= 1 or (
-        long_regime_score >= -1 and trend_4h != "bear" and _count_true(bullish_stack, momentum_up, bool(last_bos_up), bool(last_mss_up)) >= 2
-    )
-    b_short_htf_allowed = short_regime_score >= 1 or (
-        short_regime_score >= -1 and trend_4h != "bull" and _count_true(bearish_stack, momentum_down, bool(last_bos_down), bool(last_mss_down)) >= 2
-    )
-    c_long_main_basis_ok = _count_true(bool(last_mss_up), bool(bull_sweep), bool(near_bull_pivot), bool(eql), bool(last_bos_up)) >= 1
-    c_short_main_basis_ok = _count_true(bool(last_mss_down), bool(bear_sweep), bool(near_bear_pivot), bool(eqh), bool(last_bos_down)) >= 1
-    c_long_aux_confirm_ok = _count_true(
-        eq_long,
-        momentum_up,
-        rar_support,
-        price >= float(prev["close"]),
-        bool(latest.get("fl_buy_signal")) or bool(latest.get("tai_rising")),
-    ) >= 2
-    c_short_aux_confirm_ok = _count_true(
-        eq_short,
-        momentum_down,
-        rar_support,
-        price <= float(prev["close"]),
-        bool(latest.get("fl_sell_signal")) or (not bool(latest.get("tai_rising"))),
-    ) >= 2
+
+    b_long_htf_allowed = h4_long_phase != "counter" and h1_long_phase != "counter" and long_regime_score >= 0
+    b_short_htf_allowed = h4_short_phase != "counter" and h1_short_phase != "counter" and short_regime_score >= 0
 
     signals: list[dict[str, Any]] = []
     near_miss_signals: list[dict[str, Any]] = []
     blocked_counter: Counter = Counter()
 
     a_long_checks = {
-        "htf_bias_long": long_regime_score >= 4 and short_regime_score < 7,
+        "htf_phase_long": h4_long_phase == "continuation" and h1_long_phase == "continuation",
         "recent_bos_up": bool(last_bos_up),
         "price_above_ema_stack": bullish_stack,
         "momentum_supportive": momentum_up,
@@ -750,10 +888,22 @@ def detect_signals(
     }
     if _evaluate_branch("A_LONG", a_long_checks, near_miss_signals, blocked_counter):
         eta_min, eta_max = _estimate_a_window("long", latest, prev, long_regime_score, last_bos_up, last_index_15m)
-        signals.append(_signal_dict("A_LONG", symbol, "long", price, trend_display_long, "active", eta_min_minutes=eta_min, eta_max_minutes=eta_max))
+        signals.append(
+            _signal_dict(
+                "A_LONG",
+                symbol,
+                "long",
+                price,
+                trend_display_long,
+                "active",
+                structure_basis=a_long_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
+            )
+        )
 
     a_short_checks = {
-        "htf_bias_short": short_regime_score >= 4 and long_regime_score < 7,
+        "htf_phase_short": h4_short_phase == "continuation" and h1_short_phase == "continuation",
         "recent_bos_down": bool(last_bos_down),
         "price_below_ema_stack": bearish_stack,
         "momentum_supportive": momentum_down,
@@ -763,7 +913,19 @@ def detect_signals(
     }
     if _evaluate_branch("A_SHORT", a_short_checks, near_miss_signals, blocked_counter):
         eta_min, eta_max = _estimate_a_window("short", latest, prev, short_regime_score, last_bos_down, last_index_15m)
-        signals.append(_signal_dict("A_SHORT", symbol, "short", price, trend_display_short, "active", eta_min_minutes=eta_min, eta_max_minutes=eta_max))
+        signals.append(
+            _signal_dict(
+                "A_SHORT",
+                symbol,
+                "short",
+                price,
+                trend_display_short,
+                "active",
+                structure_basis=a_short_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
+            )
+        )
 
     b_long_zone_low = None
     b_long_zone_high = None
@@ -784,7 +946,7 @@ def detect_signals(
         b_short_zone_high = float(bear_sweep["level"]) + atr * 0.10
 
     b_long_checks = {
-        "htf_b_long_allowed": b_long_htf_allowed,
+        "htf_phase_long": b_long_htf_allowed,
         "smc_ict_basis_long": bool(b_long_basis),
         "reclaim_confirmation": b_long_reclaim_ready,
         "ema_structure_intact": price >= float(latest["ema20"]) or float(latest["ema10"]) >= float(latest["ema20"]),
@@ -823,7 +985,7 @@ def detect_signals(
         )
 
     b_short_checks = {
-        "htf_b_short_allowed": b_short_htf_allowed,
+        "htf_phase_short": b_short_htf_allowed,
         "smc_ict_basis_short": bool(b_short_basis),
         "reject_confirmation": b_short_reject_ready,
         "ema_structure_intact": price <= float(latest["ema20"]) or float(latest["ema10"]) <= float(latest["ema20"]),
