@@ -8,6 +8,7 @@ class SignalStateStore:
         self.price_change_threshold = price_change_threshold
         self.b_upgrade_atr_ratio = b_upgrade_atr_ratio
         self.c_upgrade_atr_ratio = c_upgrade_atr_ratio
+        # 改为按具体 signal 独立去重，不再按 direction 共用状态。
         self.last_sent: dict[tuple[str, str, str], dict] = {}
 
     def _price_change_ratio(self, previous_price: float, current_price: float) -> float:
@@ -25,6 +26,8 @@ class SignalStateStore:
         return mapping.get(trend_1h, 2)
 
     def _is_same_signal_family(self, previous_signal: str, current_signal: str) -> bool:
+        # 现在要求 A 就是 A，B 就是 B，C 就是 C。
+        # 这里直接只认“同一个具体 signal”。
         return previous_signal == current_signal
 
     def _has_trend_upgrade(self, previous: dict, current: dict) -> bool:
@@ -55,19 +58,22 @@ class SignalStateStore:
     def _is_b_or_c_signal(self, signal_name: str) -> bool:
         return signal_name.startswith("B_") or signal_name.startswith("C_")
 
+    def _signal_key(self, signal: dict) -> tuple[str, str, str]:
+        # 独立 key：symbol + timeframe + 具体 signal
+        # A_SHORT 不再压掉 B_PULLBACK_SHORT / C_LEFT_SHORT
+        return (signal["symbol"], signal["timeframe"], signal["signal"])
+
     def should_send(self, signal: dict) -> bool:
-        key = (signal["symbol"], signal["timeframe"], signal["direction"])
+        key = self._signal_key(signal)
         previous = self.last_sent.get(key)
         if not previous:
             return True
 
         same_signal = previous["signal"] == signal["signal"]
         same_status = previous["status"] == signal["status"]
-
-        upgraded_priority = signal["priority"] < previous["priority"]
         changed_status = signal["status"] != previous["status"]
 
-        if upgraded_priority or changed_status:
+        if changed_status:
             return True
 
         tiny_price_move = (
@@ -88,10 +94,10 @@ class SignalStateStore:
         return True
 
     def mark_sent(self, signal: dict):
-        key = (signal["symbol"], signal["timeframe"], signal["direction"])
+        key = self._signal_key(signal)
         self.last_sent[key] = {
             "signal": signal["signal"],
-            "priority": signal["priority"],
+            "priority": signal.get("priority", 0),
             "status": signal["status"],
             "price": signal["price"],
             "trend_1h": signal.get("trend_1h", "neutral"),
