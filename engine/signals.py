@@ -17,7 +17,8 @@ from engine.structure import (
 )
 
 
-SIGNAL_PRIORITY = {
+# 这里只用于信号类型标识与下游展示，不再做 A > B > C 互斥筛选。
+SIGNAL_CLASS = {
     "A_LONG": 1,
     "A_SHORT": 1,
     "B_PULLBACK_LONG": 2,
@@ -568,15 +569,6 @@ def _evaluate_branch(
     return False
 
 
-def _pick_best_per_direction(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    best_by_direction: dict[str, dict[str, Any]] = {}
-    for signal in signals:
-        previous = best_by_direction.get(signal["direction"])
-        if not previous or signal["priority"] < previous["priority"]:
-            best_by_direction[signal["direction"]] = signal
-    return sorted(best_by_direction.values(), key=lambda s: s["priority"])
-
-
 def _signal_dict(
     name: str,
     symbol: str,
@@ -596,12 +588,12 @@ def _signal_dict(
     zone_key = f"{_round5(zone_low_v)}-{_round5(zone_high_v)}"
     basis_key = ",".join(sorted(basis)) if basis else "na"
     signature = f"{name}:{direction}:{zone_key}:{basis_key}"
-    cooldown_seconds = {1: 45 * 60, 2: 30 * 60, 3: 25 * 60}.get(SIGNAL_PRIORITY[name], 30 * 60)
+    cooldown_seconds = {1: 45 * 60, 2: 30 * 60, 3: 25 * 60}.get(SIGNAL_CLASS[name], 30 * 60)
     return {
         "signal": name,
         "symbol": symbol,
         "timeframe": "15m",
-        "priority": SIGNAL_PRIORITY[name],
+        "priority": SIGNAL_CLASS[name],
         "direction": direction,
         "price": price,
         "trend_1h": trend_display,
@@ -1086,7 +1078,10 @@ def detect_signals(
         )
 
     return {
-        "signals": _pick_best_per_direction(signals),
+        # 不再做每个方向只保留一个“最佳信号”的筛选。
+        # A 就是 A，B 就是 B，C 就是 C，命中哪个就返回哪个。
+        "signals": signals,
         "near_miss_signals": near_miss_signals,
         "blocked_reasons": dict(blocked_counter),
     }
+
