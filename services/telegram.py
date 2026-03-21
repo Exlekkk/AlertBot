@@ -75,25 +75,14 @@ def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price
     return f"{low:.2f} - {high:.2f}"
 
 
-def _format_minutes_cn(total_minutes: int | None) -> str:
-    if total_minutes is None:
-        return "待定"
-    total_minutes = int(round(total_minutes))
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    if hours > 0 and minutes > 0:
-        return f"{hours}小时{minutes}分钟"
-    if hours > 0:
-        return f"{hours}小时"
-    return f"{minutes}分钟"
-
-
-def eta_window_text(eta_min_minutes: int | None, eta_max_minutes: int | None) -> str:
-    if eta_min_minutes is None or eta_max_minutes is None:
-        return "待判定"
-    start_text = _format_minutes_cn(eta_min_minutes)
-    end_text = _format_minutes_cn(eta_max_minutes)
-    return f"约{start_text}后 - {end_text}内"
+def startup_window_text(signal: str) -> str:
+    if signal.startswith("A_"):
+        return "未来1-3根K（约15-45分钟）"
+    if signal.startswith("B_"):
+        return "未来2-4根K（约30-60分钟）"
+    if signal.startswith("C_"):
+        return "未来1-3根K（约15-45分钟），先观察确认"
+    return "待判定"
 
 
 def format_engine_message(
@@ -106,8 +95,6 @@ def format_engine_message(
     status: str,
     entry_zone_low: float | None = None,
     entry_zone_high: float | None = None,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
 ) -> str:
     signal_type = type_label(priority)
     action_text = action_label(signal)
@@ -115,7 +102,7 @@ def format_engine_message(
     trend_text = trend_label(trend_1h)
     prefix = title_prefix(priority)
     entry_zone_text = zone_text(entry_zone_low, entry_zone_high, price)
-    eta_text = eta_window_text(eta_min_minutes, eta_max_minutes)
+    startup_text = startup_window_text(signal)
 
     return (
         f"{prefix} 盘面预警｜{signal_type}\n"
@@ -123,7 +110,7 @@ def format_engine_message(
         f"标的：{symbol}\n"
         f"参考价位区间：{entry_zone_text}\n"
         f"总体趋势方向：{trend_text}\n"
-        f"预计启动时段：{eta_text}\n"
+        f"预计启动窗口：{startup_text}\n"
         f"状态：{status_text}"
     )
 
