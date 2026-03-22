@@ -122,6 +122,8 @@ class SMCTScanner:
                     status=signal["status"],
                     entry_zone_low=entry_zone_low,
                     entry_zone_high=entry_zone_high,
+                    eta_min_minutes=signal.get("eta_min_minutes"),
+                    eta_max_minutes=signal.get("eta_max_minutes"),
                     start_window_text=signal.get("start_window_text"),
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
