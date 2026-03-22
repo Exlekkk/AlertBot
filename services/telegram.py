@@ -138,6 +138,9 @@ def format_engine_message(
     entry_zone_high: float | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
+    start_window_text_override: str | None = None,
+    start_window_text: str | None = None,
+    **_: object,
 ) -> str:
     signal_type = type_label(priority)
     action_text = action_label(signal)
@@ -145,7 +148,12 @@ def format_engine_message(
     trend_text = trend_label(trend_1h)
     prefix = title_prefix(priority)
     entry_zone_text = zone_text(entry_zone_low, entry_zone_high, price)
-    start_window = start_window_text(priority, eta_min_minutes, eta_max_minutes)
+
+    start_window = (
+        start_window_text_override
+        or start_window_text
+        or start_window_text_func(priority=priority, eta_min_minutes=eta_min_minutes, eta_max_minutes=eta_max_minutes)
+    )
     timeout_hint = timeout_text(priority)
 
     return (
@@ -158,6 +166,10 @@ def format_engine_message(
         f"时效说明：{timeout_hint}\n"
         f"状态：{status_text}"
     )
+
+
+# 避免形参与兼容变量同名冲突
+start_window_text_func = start_window_text
 
 
 
