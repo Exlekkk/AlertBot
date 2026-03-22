@@ -1,11 +1,8 @@
+from __future__ import annotations
+
 import time
 
-from config import (
-    BINANCE_SYMBOL,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHAT_ID,
-    WEBHOOK_LOG_FILE,
-)
+from config import BINANCE_SYMBOL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
@@ -59,52 +56,28 @@ class SMCTScanner:
         signal_name = signal["signal"]
 
         if signal_name == "A_LONG":
-            return self._safe_band(
-                min(ema10, ema20, price - atr * 0.22),
-                max(ema10, ema20, price - atr * 0.05),
-            )
+            return self._safe_band(min(ema10, ema20, price - atr * 0.35), max(ema10, ema20, price - atr * 0.05))
         if signal_name == "A_SHORT":
-            return self._safe_band(
-                min(ema10, ema20, price + atr * 0.05),
-                max(ema10, ema20, price + atr * 0.22),
-            )
+            return self._safe_band(min(ema10, ema20, price + atr * 0.05), max(ema10, ema20, price + atr * 0.35))
         if signal_name == "B_PULLBACK_LONG":
-            return self._safe_band(
-                min(ema10, ema20, recent_support) - atr * 0.10,
-                max(ema10, ema20, local_reclaim) + atr * 0.10,
-            )
+            return self._safe_band(min(ema10, ema20, recent_support) - atr * 0.10, max(ema10, ema20, local_reclaim) + atr * 0.08)
         if signal_name == "B_PULLBACK_SHORT":
-            return self._safe_band(
-                min(ema10, ema20, local_reject) - atr * 0.10,
-                max(ema10, ema20, recent_resistance) + atr * 0.10,
-            )
+            return self._safe_band(min(ema10, ema20, local_reject) - atr * 0.08, max(ema10, ema20, recent_resistance) + atr * 0.10)
         if signal_name == "C_LEFT_LONG":
-            return self._safe_band(
-                min(recent_support, ema20) - atr * 0.16,
-                max(ema10, ema20) + atr * 0.08,
-            )
+            return self._safe_band(min(recent_support, ema20) - atr * 0.18, max(ema10, ema20) + atr * 0.10)
         if signal_name == "C_LEFT_SHORT":
-            return self._safe_band(
-                min(ema10, ema20) - atr * 0.08,
-                max(recent_resistance, ema20) + atr * 0.16,
-            )
-
+            return self._safe_band(min(ema10, ema20) - atr * 0.10, max(recent_resistance, ema20) + atr * 0.18)
         return self._safe_band(price - atr * 0.12, price + atr * 0.12)
 
-    @classmethod
-    def health_check(cls, symbol: str = BINANCE_SYMBOL) -> dict:
-        scanner = cls(symbol=symbol)
-
-        klines_1d = scanner._fetch_enriched("1d")
-        klines_4h = scanner._fetch_enriched("4h")
-        klines_1h = scanner._fetch_enriched("1h")
-        klines_15m = scanner._fetch_enriched("15m")
-
-        signal_result = detect_signals(symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-
+    def health_check(self) -> dict:
+        klines_1d = self._fetch_enriched("1d")
+        klines_4h = self._fetch_enriched("4h")
+        klines_1h = self._fetch_enriched("1h")
+        klines_15m = self._fetch_enriched("15m")
+        signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
         return {
             "ok": True,
-            "symbol": symbol,
+            "symbol": self.symbol,
             "bars": {
                 "1d": len(klines_1d),
                 "4h": len(klines_4h),
@@ -114,10 +87,6 @@ class SMCTScanner:
             "signals_checked": len(signal_result.get("signals", [])),
             "watch_checked": 0,
         }
-
-    @classmethod
-    def healthcheck(cls, symbol: str = BINANCE_SYMBOL) -> dict:
-        return cls.health_check(symbol=symbol)
 
     def scan_once(self) -> dict:
         try:
@@ -132,8 +101,6 @@ class SMCTScanner:
             blocked_reasons = signal_result["blocked_reasons"]
 
             sent_signals = []
-            watch_sent = []
-
             for signal in signals:
                 if not self.state_store.should_send(signal):
                     self.logger.info(
@@ -155,31 +122,27 @@ class SMCTScanner:
                     status=signal["status"],
                     entry_zone_low=entry_zone_low,
                     entry_zone_high=entry_zone_high,
-                    eta_min_minutes=signal.get("eta_min_minutes"),
-                    eta_max_minutes=signal.get("eta_max_minutes"),
+                    start_window_text=signal.get("start_window_text"),
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
                 self.state_store.mark_sent(signal)
-
                 sent_signals.append(
                     {
                         "signal": signal["signal"],
                         "entry_zone": [entry_zone_low, entry_zone_high],
-                        "basis": signal.get("structure_basis", []),
                         "telegram_result": telegram_result,
                     }
                 )
-
                 self.logger.info(
                     "scan_signal_sent symbol=%s signal=%s entry_zone=[%.2f, %.2f] basis=%s",
                     signal["symbol"],
                     signal["signal"],
                     entry_zone_low,
                     entry_zone_high,
-                    signal.get("structure_basis", []),
+                    signal.get("structure_basis"),
                 )
 
-            if not signals:
+            if not sent_signals:
                 self.logger.info(
                     "scan_no_signal symbol=%s near_miss_signals=%s blocked_reasons=%s",
                     self.symbol,
@@ -189,46 +152,23 @@ class SMCTScanner:
                 return {
                     "ok": True,
                     "signal": None,
-                    "watch_sent": watch_sent,
-                    "near_miss_signals": near_miss_signals,
-                    "blocked_reasons": blocked_reasons,
-                }
-
-            if not sent_signals:
-                self.logger.info(
-                    "scan_summary symbol=%s sent_signals=%s watch_sent=%s near_miss_signals=%s blocked_reasons=%s",
-                    self.symbol,
-                    sent_signals,
-                    watch_sent,
-                    near_miss_signals,
-                    blocked_reasons,
-                )
-                return {
-                    "ok": True,
-                    "signal": None,
-                    "reason": "state_dedup",
-                    "watch_sent": watch_sent,
                     "near_miss_signals": near_miss_signals,
                     "blocked_reasons": blocked_reasons,
                 }
 
             self.logger.info(
-                "scan_summary symbol=%s sent_signals=%s watch_sent=%s near_miss_signals=%s blocked_reasons=%s",
+                "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
                 self.symbol,
                 sent_signals,
-                watch_sent,
                 near_miss_signals,
                 blocked_reasons,
             )
-
             return {
                 "ok": True,
                 "sent": sent_signals,
-                "watch_sent": watch_sent,
                 "near_miss_signals": near_miss_signals,
                 "blocked_reasons": blocked_reasons,
             }
-
         except Exception as exc:
             self.logger.exception("scan_failed error=%s", exc)
             return {"ok": False, "error": str(exc)}
