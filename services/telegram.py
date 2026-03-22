@@ -24,21 +24,36 @@ TREND_LABELS = {
     "bear": "偏空（强）",
 }
 
+START_WINDOW_LABELS = {
+    1: "未来1-3根K（约15-45分钟）",
+    2: "未来2-4根K（约30-60分钟）",
+    3: "未来1-3根K（约15-45分钟），先观察确认",
+}
+
 
 def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
+
 
 
 def action_label(signal: str) -> str:
     return ACTION_LABELS.get(signal, signal)
 
 
+
 def trend_label(trend_1h: str) -> str:
     return TREND_LABELS.get(trend_1h, trend_1h)
 
 
+
 def title_prefix(priority: int) -> str:
-    return "⚠️"
+    return "🚨"
+
+
+
+def start_window_text(priority: int) -> str:
+    return START_WINDOW_LABELS.get(priority, "未来1-3根K（约15-45分钟）")
+
 
 
 def build_status_text(signal: str, status: str) -> str:
@@ -60,6 +75,7 @@ def build_status_text(signal: str, status: str) -> str:
     return status
 
 
+
 def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
     if entry_zone_low is None or entry_zone_high is None:
         pad = max(abs(float(price)) * 0.0012, 12.0)
@@ -75,14 +91,6 @@ def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price
     return f"{low:.2f} - {high:.2f}"
 
 
-def window_text(start_window_text: str | None) -> str | None:
-    if start_window_text is None:
-        return None
-    text = str(start_window_text).strip()
-    if not text:
-        return None
-    return text
-
 
 def format_engine_message(
     signal: str,
@@ -94,7 +102,6 @@ def format_engine_message(
     status: str,
     entry_zone_low: float | None = None,
     entry_zone_high: float | None = None,
-    start_window_text: str | None = None,
 ) -> str:
     signal_type = type_label(priority)
     action_text = action_label(signal)
@@ -102,21 +109,18 @@ def format_engine_message(
     trend_text = trend_label(trend_1h)
     prefix = title_prefix(priority)
     entry_zone_text = zone_text(entry_zone_low, entry_zone_high, price)
-    startup_text = window_text(start_window_text)
+    start_window = start_window_text(priority)
 
-    lines = [
-        f"{prefix} 盘面预警｜{signal_type}",
-        f"操作建议：{action_text}",
-        f"标的：{symbol}",
-        f"参考价位区间：{entry_zone_text}",
-        f"总体趋势方向：{trend_text}",
-    ]
+    return (
+        f"{prefix} 盘面预警｜{signal_type}\n"
+        f"操作建议：{action_text}\n"
+        f"标的：{symbol}\n"
+        f"参考价位区间：{entry_zone_text}\n"
+        f"总体趋势方向：{trend_text}\n"
+        f"预计启动时段：{start_window}\n"
+        f"状态：{status_text}"
+    )
 
-    if startup_text:
-        lines.append(f"预计启动时段：{startup_text}")
-
-    lines.append(f"状态：{status_text}")
-    return "\n".join(lines)
 
 
 def send_telegram_message(token: str, chat_id: str, text: str):
