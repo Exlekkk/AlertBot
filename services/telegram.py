@@ -30,10 +30,10 @@ DEFAULT_START_WINDOWS = {
     3: (60, 360),
 }
 
-TIMEOUT_TEXT = {
-    1: "若 1 小时内仍未走出确认动作，本轮信号大概率转弱",
-    2: "若 2 小时内仍未出现延续确认，本轮反弹/回踩预期需下调",
-    3: "若 6 小时内仍未完成关键确认，该预警继续以观察为主，实战优先级下降",
+TIMEOUT_OUTCOME_TEXT = {
+    1: "则本轮信号大概率转弱",
+    2: "则反弹/回踩预期下调",
+    3: "则继续以观察为主，实战优先级下降",
 }
 
 
@@ -57,36 +57,57 @@ def title_prefix(priority: int) -> str:
 
 
 
-def _format_minutes(minutes: int | None) -> str:
+def _format_minutes_compact(minutes: int | None) -> str:
     if minutes is None:
         return ""
     minutes = max(0, int(minutes))
     if minutes < 60:
-        return f"{minutes} 分钟"
+        return f"{minutes}分钟"
     hours, remain = divmod(minutes, 60)
     if remain == 0:
-        return f"{hours} 小时"
-    return f"{hours} 小时 {remain} 分钟"
+        return f"{hours}小时"
+    return f"{hours}小时{remain}分钟"
 
 
 
-def start_window_text(
+def _get_window_minutes(
+    priority: int,
+    eta_min_minutes: int | None = None,
+    eta_max_minutes: int | None = None,
+) -> tuple[int, int]:
+    default_min, default_max = DEFAULT_START_WINDOWS.get(priority, (15, 45))
+    start_min = int(eta_min_minutes) if eta_min_minutes is not None else default_min
+    end_min = int(eta_max_minutes) if eta_max_minutes is not None else default_max
+
+    start_min = max(0, start_min)
+    end_min = max(start_min, end_min)
+    return start_min, end_min
+
+
+
+def build_start_window_text(
+    priority: int,
+    eta_min_minutes: int | None = None,
+    eta_max_minutes: int | None = None,
+    legacy_text: str | None = None,
+) -> str:
+    if legacy_text:
+        return legacy_text
+
+    start_min, end_min = _get_window_minutes(priority, eta_min_minutes, eta_max_minutes)
+    start_text = _format_minutes_compact(start_min)
+    end_text = _format_minutes_compact(end_min)
+    return f"此条播报发出后 {start_text}—{end_text}内"
+
+
+
+def timeout_text(
     priority: int,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
 ) -> str:
-    default_min, default_max = DEFAULT_START_WINDOWS.get(priority, (15, 45))
-    start_min = eta_min_minutes if eta_min_minutes is not None else default_min
-    end_min = eta_max_minutes if eta_max_minutes is not None else default_max
-
-    start_text = _format_minutes(start_min)
-    end_text = _format_minutes(end_min)
-    return f"此条播报发出后 {start_text} - {end_text} 内"
-
-
-
-def timeout_text(priority: int) -> str:
-    return TIMEOUT_TEXT.get(priority, "若超出预期时段仍未确认，则本轮信号参考价值下降")
+    outcome_text = TIMEOUT_OUTCOME_TEXT.get(priority, "则本轮信号参考价值下降")
+    return f"若超过预计启动时段仍未完成确认动作，{outcome_text}"
 
 
 
@@ -138,7 +159,7 @@ def format_engine_message(
     entry_zone_high: float | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
-    start_window_text_override: str | None = None,
+    start_window_text_value: str | None = None,
     start_window_text: str | None = None,
     **_: object,
 ) -> str:
@@ -148,13 +169,13 @@ def format_engine_message(
     trend_text = trend_label(trend_1h)
     prefix = title_prefix(priority)
     entry_zone_text = zone_text(entry_zone_low, entry_zone_high, price)
-
-    start_window = (
-        start_window_text_override
-        or start_window_text
-        or start_window_text_func(priority=priority, eta_min_minutes=eta_min_minutes, eta_max_minutes=eta_max_minutes)
+    start_window = build_start_window_text(
+        priority,
+        eta_min_minutes,
+        eta_max_minutes,
+        legacy_text=start_window_text_value or start_window_text,
     )
-    timeout_hint = timeout_text(priority)
+    timeout_hint = timeout_text(priority, eta_min_minutes, eta_max_minutes)
 
     return (
         f"{prefix} 交易提示｜{signal_type}\n"
@@ -166,10 +187,6 @@ def format_engine_message(
         f"时效说明：{timeout_hint}\n"
         f"状态：{status_text}"
     )
-
-
-# 避免形参与兼容变量同名冲突
-start_window_text_func = start_window_text
 
 
 
