@@ -131,7 +131,11 @@ def build_status_text(signal: str, status: str) -> str:
 
 
 
-def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
+def _normalized_zone(
+    entry_zone_low: float | None,
+    entry_zone_high: float | None,
+    price: float,
+) -> tuple[float, float]:
     if entry_zone_low is None or entry_zone_high is None:
         pad = max(abs(float(price)) * 0.0012, 12.0)
         low = float(price) - pad * 0.5
@@ -143,7 +147,65 @@ def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price
             pad = max(abs(float(price)) * 0.0012, 12.0)
             low -= pad * 0.5
             high += pad * 0.5
+    return low, high
+
+
+
+def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
+    low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
     return f"{low:.2f} - {high:.2f}"
+
+
+
+def _build_b_start_text(eta_min_minutes: int | None, eta_max_minutes: int | None) -> str:
+    start_min, end_min = _get_window_minutes(2, eta_min_minutes, eta_max_minutes)
+    start_text = _format_minutes_compact(start_min)
+    end_text = _format_minutes_compact(end_min)
+    return f"最早约在此条播报发出后 {start_text} 开始，最晚关注至 {end_text} 内"
+
+
+
+def _format_b_message(
+    signal: str,
+    symbol: str,
+    trend_text: str,
+    status_text: str,
+    entry_zone_low: float | None,
+    entry_zone_high: float | None,
+    price: float,
+    eta_min_minutes: int | None,
+    eta_max_minutes: int | None,
+) -> str:
+    prefix = title_prefix(2)
+    action_text = action_label(signal)
+    low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
+    range_text = f"{low:.2f} - {high:.2f}"
+    timing_text = _build_b_start_text(eta_min_minutes, eta_max_minutes)
+
+    if signal == "B_PULLBACK_SHORT":
+        zone_label = "预期反弹目标区"
+        key_level_label = "关键上沿参考"
+        key_level_value = f"{high:.2f}"
+        timeout_hint = "若超出预计反弹时段仍未进入目标区，则本轮反弹预期下调"
+        timing_label = "预期反弹启动"
+    else:
+        zone_label = "预期回踩承接区"
+        key_level_label = "关键下沿参考"
+        key_level_value = f"{low:.2f}"
+        timeout_hint = "若超出预计回踩时段仍未进入承接区，则本轮回踩预期下调"
+        timing_label = "预期回踩启动"
+
+    return (
+        f"{prefix} 交易提示｜B类\n"
+        f"操作建议：{action_text}\n"
+        f"标的：{symbol}\n"
+        f"{timing_label}：{timing_text}\n"
+        f"{zone_label}：{range_text}\n"
+        f"{key_level_label}：{key_level_value}\n"
+        f"总体趋势方向：{trend_text}\n"
+        f"时效说明：{timeout_hint}\n"
+        f"状态：{status_text}"
+    )
 
 
 
@@ -164,10 +226,24 @@ def format_engine_message(
     **_: object,
 ) -> str:
     signal_type = type_label(priority)
-    action_text = action_label(signal)
     status_text = build_status_text(signal, status)
     trend_text = trend_label(trend_1h)
+
+    if priority == 2 and signal in {"B_PULLBACK_LONG", "B_PULLBACK_SHORT"}:
+        return _format_b_message(
+            signal=signal,
+            symbol=symbol,
+            trend_text=trend_text,
+            status_text=status_text,
+            entry_zone_low=entry_zone_low,
+            entry_zone_high=entry_zone_high,
+            price=price,
+            eta_min_minutes=eta_min_minutes,
+            eta_max_minutes=eta_max_minutes,
+        )
+
     prefix = title_prefix(priority)
+    action_text = action_label(signal)
     entry_zone_text = zone_text(entry_zone_low, entry_zone_high, price)
     start_window = build_start_window_text(
         priority,
