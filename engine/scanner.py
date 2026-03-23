@@ -124,6 +124,7 @@ class SMCTScanner:
                     entry_zone_high=entry_zone_high,
                     eta_min_minutes=signal.get("eta_min_minutes"),
                     eta_max_minutes=signal.get("eta_max_minutes"),
+                    trigger_level=signal.get("trigger_level"),
                     burst_level=signal.get("burst_level"),
                     start_window_text=signal.get("start_window_text"),
                 )
