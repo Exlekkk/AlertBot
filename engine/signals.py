@@ -463,6 +463,46 @@ def _trigger_level_candidates(
     return candidates
 
 
+def _initial_trigger_candidates(
+    direction: str,
+    latest_tf: dict,
+    *,
+    support_fvg_fill: dict[str, Any] | None,
+    resistance_fvg_fill: dict[str, Any] | None,
+    support_pivot: dict[str, Any] | None,
+    resistance_pivot: dict[str, Any] | None,
+    support_sweep: dict[str, Any] | None,
+    resistance_sweep: dict[str, Any] | None,
+    eql: dict[str, Any] | None,
+    eqh: dict[str, Any] | None,
+    price: float,
+) -> list[dict[str, Any]]:
+    atr = _atr(latest_tf)
+    candidates = _trigger_level_candidates(
+        direction,
+        latest_tf,
+        support_fvg_fill=support_fvg_fill,
+        resistance_fvg_fill=resistance_fvg_fill,
+        support_pivot=support_pivot,
+        resistance_pivot=resistance_pivot,
+        support_sweep=support_sweep,
+        resistance_sweep=resistance_sweep,
+        eql=eql,
+        eqh=eqh,
+        price=price,
+    )
+
+    if direction == "short":
+        recent_low = _float_safe(latest_tf.get("low"))
+        if recent_low and recent_low <= price + atr * 0.18:
+            candidates.append({"source": "recent_struct_low", "level": recent_low, "score": 5})
+    else:
+        recent_high = _float_safe(latest_tf.get("high"))
+        if recent_high and recent_high >= price - atr * 0.18:
+            candidates.append({"source": "recent_struct_high", "level": recent_high, "score": 5})
+    return candidates
+
+
 def _pick_primary_trigger(direction: str, candidates: list[dict[str, Any]], price: float) -> dict[str, Any] | None:
     if not candidates:
         return None
@@ -478,6 +518,43 @@ def _pick_primary_trigger(direction: str, candidates: list[dict[str, Any]], pric
         return (wrong_side, distance, -int(item["score"]))
 
     return sorted(candidates, key=trigger_key)[0]
+
+
+def _pick_secondary_trigger(
+    direction: str,
+    candidates: list[dict[str, Any]],
+    price: float,
+    trigger_level: float | None,
+    min_gap: float,
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+
+    def valid(item: dict[str, Any]) -> bool:
+        level = float(item["level"])
+        if trigger_level is None:
+            return True
+        if direction == "short":
+            return level <= float(trigger_level) - min_gap
+        return level >= float(trigger_level) + min_gap
+
+    filtered = [item for item in candidates if valid(item)]
+    if not filtered:
+        return None
+
+    def secondary_key(item: dict[str, Any]) -> tuple[int, float, int]:
+        level = float(item["level"])
+        if trigger_level is None:
+            base_distance = abs(price - level)
+        else:
+            base_distance = abs(float(trigger_level) - level)
+        if direction == "short":
+            wrong_side = 1 if level > price else 0
+        else:
+            wrong_side = 1 if level < price else 0
+        return (wrong_side, base_distance, -int(item["score"]))
+
+    return sorted(filtered, key=secondary_key)[0]
 
 
 def _blend_trigger_level(
@@ -501,7 +578,7 @@ def _blend_trigger_level(
     return None
 
 
-def _select_burst_level(
+def _select_c_trigger_levels(
     direction: str,
     price: float,
     latest_1h: dict,
@@ -532,8 +609,63 @@ def _select_burst_level(
     d1_resistance_sweep: dict[str, Any] | None,
     d1_eql: dict[str, Any] | None,
     d1_eqh: dict[str, Any] | None,
-) -> float | None:
-    h1_primary = _pick_primary_trigger(
+) -> tuple[float | None, float | None]:
+    h1_initial = _pick_primary_trigger(
+        direction,
+        _initial_trigger_candidates(
+            direction,
+            latest_1h,
+            support_fvg_fill=h1_support_fvg_fill,
+            resistance_fvg_fill=h1_resistance_fvg_fill,
+            support_pivot=h1_support_pivot,
+            resistance_pivot=h1_resistance_pivot,
+            support_sweep=h1_support_sweep,
+            resistance_sweep=h1_resistance_sweep,
+            eql=h1_eql,
+            eqh=h1_eqh,
+            price=price,
+        ),
+        price,
+    )
+    h4_initial = _pick_primary_trigger(
+        direction,
+        _initial_trigger_candidates(
+            direction,
+            latest_4h,
+            support_fvg_fill=h4_support_fvg_fill,
+            resistance_fvg_fill=h4_resistance_fvg_fill,
+            support_pivot=h4_support_pivot,
+            resistance_pivot=h4_resistance_pivot,
+            support_sweep=h4_support_sweep,
+            resistance_sweep=h4_resistance_sweep,
+            eql=h4_eql,
+            eqh=h4_eqh,
+            price=price,
+        ),
+        price,
+    )
+    d1_initial = _pick_primary_trigger(
+        direction,
+        _initial_trigger_candidates(
+            direction,
+            latest_1d,
+            support_fvg_fill=d1_support_fvg_fill,
+            resistance_fvg_fill=d1_resistance_fvg_fill,
+            support_pivot=d1_support_pivot,
+            resistance_pivot=d1_resistance_pivot,
+            support_sweep=d1_support_sweep,
+            resistance_sweep=d1_resistance_sweep,
+            eql=d1_eql,
+            eqh=d1_eqh,
+            price=price,
+        ),
+        price,
+    )
+    trigger_level = _blend_trigger_level(h1_initial, h4_initial, d1_initial, _atr(latest_1h))
+
+    min_gap = max(_atr(latest_1h) * 0.40, abs(price) * 0.0016)
+
+    h1_accel = _pick_secondary_trigger(
         direction,
         _trigger_level_candidates(
             direction,
@@ -549,8 +681,10 @@ def _select_burst_level(
             price=price,
         ),
         price,
+        trigger_level,
+        min_gap,
     )
-    h4_reference = _pick_primary_trigger(
+    h4_accel = _pick_secondary_trigger(
         direction,
         _trigger_level_candidates(
             direction,
@@ -566,8 +700,10 @@ def _select_burst_level(
             price=price,
         ),
         price,
+        trigger_level,
+        min_gap,
     )
-    d1_fallback = _pick_primary_trigger(
+    d1_accel = _pick_secondary_trigger(
         direction,
         _trigger_level_candidates(
             direction,
@@ -583,8 +719,12 @@ def _select_burst_level(
             price=price,
         ),
         price,
+        trigger_level,
+        min_gap,
     )
-    return _blend_trigger_level(h1_primary, h4_reference, d1_fallback, _atr(latest_1h))
+    burst_level = _blend_trigger_level(h1_accel, h4_accel, d1_accel, _atr(latest_1h))
+
+    return trigger_level, burst_level
 
 
 def _event_age(last_index: int, event: dict[str, Any] | None, fallback: int = 8) -> int:
@@ -928,6 +1068,7 @@ def _signal_dict(
     structure_basis: list[str] | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
+    trigger_level: float | None = None,
     burst_level: float | None = None,
 ) -> dict[str, Any]:
     basis = structure_basis or []
@@ -951,6 +1092,7 @@ def _signal_dict(
         "structure_basis": basis,
         "eta_min_minutes": eta_min_minutes,
         "eta_max_minutes": eta_max_minutes,
+        "trigger_level": round(float(trigger_level), 2) if trigger_level is not None else None,
         "burst_level": round(float(burst_level), 2) if burst_level is not None else None,
         "signature": signature,
         "cooldown_seconds": cooldown_seconds,
@@ -1431,7 +1573,7 @@ def detect_signals(
         c_long_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
         c_long_confirm = _count_true(eq_long, momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising")))
         eta_min, eta_max = _estimate_c_window("long", latest, prev, long_regime_score, c_long_anchor, len(c_long_basis), c_long_age, c_long_confirm)
-        c_long_burst_level = _select_burst_level(
+        c_long_trigger_level, c_long_burst_level = _select_c_trigger_levels(
             "long",
             price,
             k_1h,
@@ -1473,6 +1615,7 @@ def detect_signals(
                 structure_basis=c_long_basis,
                 eta_min_minutes=eta_min,
                 eta_max_minutes=eta_max,
+                trigger_level=c_long_trigger_level,
                 burst_level=c_long_burst_level,
             )
         )
@@ -1494,7 +1637,7 @@ def detect_signals(
         c_short_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
         c_short_confirm = _count_true(eq_short, momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False)
         eta_min, eta_max = _estimate_c_window("short", latest, prev, short_regime_score, c_short_anchor, len(c_short_basis), c_short_age, c_short_confirm)
-        c_short_burst_level = _select_burst_level(
+        c_short_trigger_level, c_short_burst_level = _select_c_trigger_levels(
             "short",
             price,
             k_1h,
@@ -1536,6 +1679,7 @@ def detect_signals(
                 structure_basis=c_short_basis,
                 eta_min_minutes=eta_min,
                 eta_max_minutes=eta_max,
+                trigger_level=c_short_trigger_level,
                 burst_level=c_short_burst_level,
             )
         )
