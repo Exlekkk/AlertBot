@@ -146,14 +146,23 @@ def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price
     return f"{low:.2f} - {high:.2f}"
 
 
-def _burst_line(signal: str, burst_level: float | None) -> str:
-    if burst_level is None:
-        return ""
+def _c_level_lines(
+    signal: str,
+    trigger_level: float | None,
+    burst_level: float | None,
+) -> str:
+    lines: list[str] = []
     if signal == "C_LEFT_LONG":
-        return f"可能拉升位：{float(burst_level):.2f}\n"
-    if signal == "C_LEFT_SHORT":
-        return f"可能瀑布位：{float(burst_level):.2f}\n"
-    return ""
+        if trigger_level is not None:
+            lines.append(f"初始突破位：{float(trigger_level):.2f}")
+        if burst_level is not None:
+            lines.append(f"拉升加速位：{float(burst_level):.2f}")
+    elif signal == "C_LEFT_SHORT":
+        if trigger_level is not None:
+            lines.append(f"初始失守位：{float(trigger_level):.2f}")
+        if burst_level is not None:
+            lines.append(f"瀑布加速位：{float(burst_level):.2f}")
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def _build_b_start_text(eta_min_minutes: int | None, eta_max_minutes: int | None) -> str:
@@ -218,6 +227,7 @@ def format_engine_message(
     entry_zone_high: float | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
+    trigger_level: float | None = None,
     burst_level: float | None = None,
     start_window_text_value: str | None = None,
     start_window_text: str | None = None,
@@ -250,14 +260,14 @@ def format_engine_message(
         legacy_text=start_window_text_value or start_window_text,
     )
     timeout_hint = timeout_text(priority, eta_min_minutes, eta_max_minutes)
-    burst_line = _burst_line(signal, burst_level)
+    c_level_lines = _c_level_lines(signal, trigger_level, burst_level)
 
     return (
         f"{prefix} 交易提示｜{signal_type}\n"
         f"操作建议：{action_text}\n"
         f"标的：{symbol}\n"
         f"参考价位区间：{entry_zone_text}\n"
-        f"{burst_line}"
+        f"{c_level_lines}"
         f"总体趋势方向：{trend_text}\n"
         f"预计启动时段：{start_window}\n"
         f"时效说明：{timeout_hint}\n"
