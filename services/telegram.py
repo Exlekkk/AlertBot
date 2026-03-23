@@ -41,20 +41,16 @@ def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
 
 
-
 def action_label(signal: str) -> str:
     return ACTION_LABELS.get(signal, signal)
-
 
 
 def trend_label(trend_1h: str) -> str:
     return TREND_LABELS.get(trend_1h, trend_1h)
 
 
-
 def title_prefix(priority: int) -> str:
     return "🚨"
-
 
 
 def _format_minutes_compact(minutes: int | None) -> str:
@@ -69,7 +65,6 @@ def _format_minutes_compact(minutes: int | None) -> str:
     return f"{hours}小时{remain}分钟"
 
 
-
 def _get_window_minutes(
     priority: int,
     eta_min_minutes: int | None = None,
@@ -82,7 +77,6 @@ def _get_window_minutes(
     start_min = max(0, start_min)
     end_min = max(start_min, end_min)
     return start_min, end_min
-
 
 
 def build_start_window_text(
@@ -100,7 +94,6 @@ def build_start_window_text(
     return f"此条播报发出后 {start_text}—{end_text}内"
 
 
-
 def timeout_text(
     priority: int,
     eta_min_minutes: int | None = None,
@@ -108,7 +101,6 @@ def timeout_text(
 ) -> str:
     outcome_text = TIMEOUT_OUTCOME_TEXT.get(priority, "则本轮信号参考价值下降")
     return f"若超过预计启动时段仍未完成确认动作，{outcome_text}"
-
 
 
 def build_status_text(signal: str, status: str) -> str:
@@ -130,7 +122,6 @@ def build_status_text(signal: str, status: str) -> str:
     return status
 
 
-
 def _normalized_zone(
     entry_zone_low: float | None,
     entry_zone_high: float | None,
@@ -150,11 +141,19 @@ def _normalized_zone(
     return low, high
 
 
-
 def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
     low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
     return f"{low:.2f} - {high:.2f}"
 
+
+def _burst_line(signal: str, burst_level: float | None) -> str:
+    if burst_level is None:
+        return ""
+    if signal == "C_LEFT_LONG":
+        return f"可能拉升位：{float(burst_level):.2f}\n"
+    if signal == "C_LEFT_SHORT":
+        return f"可能瀑布位：{float(burst_level):.2f}\n"
+    return ""
 
 
 def _build_b_start_text(eta_min_minutes: int | None, eta_max_minutes: int | None) -> str:
@@ -162,7 +161,6 @@ def _build_b_start_text(eta_min_minutes: int | None, eta_max_minutes: int | None
     start_text = _format_minutes_compact(start_min)
     end_text = _format_minutes_compact(end_min)
     return f"最早约在此条播报发出后 {start_text} 开始，最晚关注至 {end_text} 内"
-
 
 
 def _format_b_message(
@@ -208,7 +206,6 @@ def _format_b_message(
     )
 
 
-
 def format_engine_message(
     signal: str,
     symbol: str,
@@ -221,6 +218,7 @@ def format_engine_message(
     entry_zone_high: float | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
+    burst_level: float | None = None,
     start_window_text_value: str | None = None,
     start_window_text: str | None = None,
     **_: object,
@@ -252,18 +250,19 @@ def format_engine_message(
         legacy_text=start_window_text_value or start_window_text,
     )
     timeout_hint = timeout_text(priority, eta_min_minutes, eta_max_minutes)
+    burst_line = _burst_line(signal, burst_level)
 
     return (
         f"{prefix} 交易提示｜{signal_type}\n"
         f"操作建议：{action_text}\n"
         f"标的：{symbol}\n"
         f"参考价位区间：{entry_zone_text}\n"
+        f"{burst_line}"
         f"总体趋势方向：{trend_text}\n"
         f"预计启动时段：{start_window}\n"
         f"时效说明：{timeout_hint}\n"
         f"状态：{status_text}"
     )
-
 
 
 def send_telegram_message(token: str, chat_id: str, text: str):
