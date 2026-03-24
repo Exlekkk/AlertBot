@@ -200,9 +200,19 @@ def detect_abnormal_signals(
     extension_short_atr = max(0.0, (ema20 - close) / max(atr, 1e-9))
 
     body = abs(close - open_)
-    body_ratio = body / max(high - low, 1e-9)
-    impulse_up = close > prev_close and high >= recent_high and body_ratio >= 0.52
-    impulse_down = close < prev_close and low <= recent_low and body_ratio >= 0.52
+    candle_range = max(high - low, 1e-9)
+    body_ratio = body / candle_range
+    prev_high = _float(prev.get("high"))
+    prev_low = _float(prev.get("low"))
+    prev_volume_ratio = _volume_ratio(prev)
+    range_ratio = candle_range / max(_atr(latest), 1e-9)
+
+    breakout_cross_up = prev_close < recent_high and close > recent_high
+    breakout_cross_down = prev_close > recent_low and close < recent_low
+    fresh_break_up = max(prev_high, open_) <= recent_high + atr * 0.10
+    fresh_break_down = min(prev_low, open_) >= recent_low - atr * 0.10
+    impulse_up = breakout_cross_up and fresh_break_up and body_ratio >= 0.58 and range_ratio >= 1.15
+    impulse_down = breakout_cross_down and fresh_break_down and body_ratio >= 0.58 and range_ratio >= 1.15
 
     stack_up = _price_above_stack(latest)
     stack_down = _price_below_stack(latest)
@@ -212,24 +222,23 @@ def detect_abnormal_signals(
     signals: list[dict[str, Any]] = []
 
     long_checks = {
-        "volume_expansion": vol_ratio >= 1.8,
-        "impulse_breakout": impulse_up or close >= recent_high,
+        "volume_expansion": vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
+        "impulse_breakout": impulse_up,
         "stack_or_reclaim": stack_up or (close >= ema20 and ema10 >= ema20),
         "momentum_confirm": momentum_up or bool(latest.get("fl_buy_signal")) or bool(latest.get("tai_rising")),
         "not_too_extended": extension_long_atr <= 4.8,
         "htf_not_hard_counter": trend_score_long >= 2,
     }
     if _count_true(*long_checks.values()) >= 5 and long_checks["volume_expansion"] and long_checks["impulse_breakout"]:
-        breakout_level = max(recent_high, _float(prev.get("high")))
-        zone_low = max(ema10, breakout_level - atr * 0.55)
-        zone_high = max(close, breakout_level + atr * 0.35)
+        breakout_level = recent_high
+        zone_low = max(ema10, breakout_level - atr * 0.45)
+        zone_high = max(close, breakout_level + atr * 0.25)
         zone_low, zone_high = _normalize_zone(zone_low, zone_high)
         eta_min, eta_max = _window_from_extension(extension_long_atr, vol_ratio)
         basis: list[str] = []
-        if vol_ratio >= 2.4:
+        if vol_ratio >= 2.6:
             basis.append("volume_spike")
-        if close >= recent_high:
-            basis.append("micro_bos_up")
+        basis.append("first_impulse_breakout_up")
         if momentum_up:
             basis.append("momentum_up")
         if trend_score_long >= 4:
@@ -245,31 +254,30 @@ def detect_abnormal_signals(
                 zone_low,
                 zone_high,
                 breakout_level,
-                "放量上破 / 可能空头回补",
+                "首根放量起爆 / 可能空头回补",
                 eta_min,
                 eta_max,
             )
         )
 
     short_checks = {
-        "volume_expansion": vol_ratio >= 1.8,
-        "impulse_breakdown": impulse_down or close <= recent_low,
+        "volume_expansion": vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
+        "impulse_breakdown": impulse_down,
         "stack_or_reject": stack_down or (close <= ema20 and ema10 <= ema20),
         "momentum_confirm": momentum_down or bool(latest.get("fl_sell_signal")) or (bool(latest.get("tai_rising")) is False),
         "not_too_extended": extension_short_atr <= 4.8,
         "htf_not_hard_counter": trend_score_short >= 2,
     }
     if _count_true(*short_checks.values()) >= 5 and short_checks["volume_expansion"] and short_checks["impulse_breakdown"]:
-        breakout_level = min(recent_low, _float(prev.get("low")))
-        zone_low = min(close, breakout_level - atr * 0.35)
-        zone_high = min(ema10, breakout_level + atr * 0.55)
+        breakout_level = recent_low
+        zone_low = min(close, breakout_level - atr * 0.25)
+        zone_high = min(ema10, breakout_level + atr * 0.45)
         zone_low, zone_high = _normalize_zone(zone_low, zone_high)
         eta_min, eta_max = _window_from_extension(extension_short_atr, vol_ratio)
         basis: list[str] = []
-        if vol_ratio >= 2.4:
+        if vol_ratio >= 2.6:
             basis.append("volume_spike")
-        if close <= recent_low:
-            basis.append("micro_bos_down")
+        basis.append("first_impulse_breakdown_down")
         if momentum_down:
             basis.append("momentum_down")
         if trend_score_short >= 4:
@@ -285,7 +293,7 @@ def detect_abnormal_signals(
                 zone_low,
                 zone_high,
                 breakout_level,
-                "放量下破 / 可能多头踩踏",
+                "首根放量起爆 / 可能多头踩踏",
                 eta_min,
                 eta_max,
             )
