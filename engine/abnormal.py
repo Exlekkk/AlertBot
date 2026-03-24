@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from engine.news_bias import get_news_bias
+
 
 def _float(value: Any, default: float = 0.0) -> float:
     try:
@@ -124,6 +126,10 @@ def _signal_dict(
     abnormal_type: str,
     eta_min_minutes: int,
     eta_max_minutes: int,
+    event_summary: str = "",
+    tech_score: int = 0,
+    news_score: int = 0,
+    x_score: int = 0,
 ) -> dict[str, Any]:
     return {
         "signal": signal,
@@ -141,6 +147,10 @@ def _signal_dict(
         "abnormal_type": abnormal_type,
         "eta_min_minutes": int(eta_min_minutes),
         "eta_max_minutes": int(eta_max_minutes),
+        "event_summary": event_summary,
+        "tech_score": int(tech_score),
+        "news_score": int(news_score),
+        "x_score": int(x_score),
     }
 
 
@@ -179,6 +189,12 @@ def detect_abnormal_signals(
     price = _float(latest.get("close"))
     atr = _atr(latest)
     vol_ratio = _volume_ratio(latest)
+
+    news_bias = get_news_bias(symbol)
+    news_score = int(news_bias.get("score", 0) or 0)
+    news_direction = str(news_bias.get("bias", "neutral") or "neutral")
+    event_type = str(news_bias.get("event_type", "general_event") or "general_event")
+    event_summary = str(news_bias.get("summary", "") or "")
 
     trend_score_long = _trend_score("long", latest_1h, latest_4h, latest_1d)
     trend_score_short = _trend_score("short", latest_1h, latest_4h, latest_1d)
@@ -234,22 +250,31 @@ def detect_abnormal_signals(
             basis.append("momentum_up")
         if trend_score_long >= 4:
             basis.append("h1_repairing_up")
-        signals.append(
-            _signal_dict(
-                "X_BREAKOUT_LONG",
-                symbol,
-                "long",
-                price,
-                trend_display_long,
-                basis or ["abnormal_long"],
-                zone_low,
-                zone_high,
-                breakout_level,
-                "放量上破 / 可能空头回补",
-                eta_min,
-                eta_max,
+        tech_score = max(0, min(100, int(42 + vol_ratio * 15 + max(0.0, 4.0 - extension_long_atr) * 4 + trend_score_long * 4)))
+        news_boost = news_score if news_direction == "long" else int(news_score * 0.25 if news_direction == "short" else news_score * 0.45)
+        x_score = max(0, min(100, int(round(tech_score * 0.68 + news_boost * 0.32))))
+        abnormal_type = f"放量上破 / {event_type}" if news_score > 0 else "放量上破 / 可能空头回补"
+        if x_score >= 55:
+            signals.append(
+                _signal_dict(
+                    "X_BREAKOUT_LONG",
+                    symbol,
+                    "long",
+                    price,
+                    trend_display_long,
+                    basis or ["abnormal_long"],
+                    zone_low,
+                    zone_high,
+                    breakout_level,
+                    abnormal_type,
+                    eta_min,
+                    eta_max,
+                    event_summary=event_summary,
+                    tech_score=tech_score,
+                    news_score=news_score,
+                    x_score=x_score,
+                )
             )
-        )
 
     short_checks = {
         "volume_expansion": vol_ratio >= 1.8,
@@ -274,21 +299,30 @@ def detect_abnormal_signals(
             basis.append("momentum_down")
         if trend_score_short >= 4:
             basis.append("h1_repairing_down")
-        signals.append(
-            _signal_dict(
-                "X_BREAKOUT_SHORT",
-                symbol,
-                "short",
-                price,
-                trend_display_short,
-                basis or ["abnormal_short"],
-                zone_low,
-                zone_high,
-                breakout_level,
-                "放量下破 / 可能多头踩踏",
-                eta_min,
-                eta_max,
+        tech_score = max(0, min(100, int(42 + vol_ratio * 15 + max(0.0, 4.0 - extension_short_atr) * 4 + trend_score_short * 4)))
+        news_boost = news_score if news_direction == "short" else int(news_score * 0.25 if news_direction == "long" else news_score * 0.45)
+        x_score = max(0, min(100, int(round(tech_score * 0.68 + news_boost * 0.32))))
+        abnormal_type = f"放量下破 / {event_type}" if news_score > 0 else "放量下破 / 可能多头踩踏"
+        if x_score >= 55:
+            signals.append(
+                _signal_dict(
+                    "X_BREAKOUT_SHORT",
+                    symbol,
+                    "short",
+                    price,
+                    trend_display_short,
+                    basis or ["abnormal_short"],
+                    zone_low,
+                    zone_high,
+                    breakout_level,
+                    abnormal_type,
+                    eta_min,
+                    eta_max,
+                    event_summary=event_summary,
+                    tech_score=tech_score,
+                    news_score=news_score,
+                    x_score=x_score,
+                )
             )
-        )
 
     return signals
