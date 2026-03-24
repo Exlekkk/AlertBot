@@ -67,6 +67,12 @@ class SMCTScanner:
             return self._safe_band(min(recent_support, ema20) - atr * 0.18, max(ema10, ema20) + atr * 0.10)
         if signal_name == "C_LEFT_SHORT":
             return self._safe_band(min(ema10, ema20) - atr * 0.10, max(recent_resistance, ema20) + atr * 0.18)
+        if signal_name == "X_BREAKOUT_LONG":
+            breakout_level = float(signal.get("breakout_level") or recent_resistance)
+            return self._safe_band(max(ema10, breakout_level - atr * 0.55), max(price, breakout_level + atr * 0.35))
+        if signal_name == "X_BREAKOUT_SHORT":
+            breakout_level = float(signal.get("breakout_level") or recent_support)
+            return self._safe_band(min(price, breakout_level - atr * 0.35), min(ema10, breakout_level + atr * 0.55))
         return self._safe_band(price - atr * 0.12, price + atr * 0.12)
 
     def health_check(self) -> dict:
@@ -122,10 +128,6 @@ class SMCTScanner:
                     status=signal["status"],
                     entry_zone_low=entry_zone_low,
                     entry_zone_high=entry_zone_high,
-                    eta_min_minutes=signal.get("eta_min_minutes"),
-                    eta_max_minutes=signal.get("eta_max_minutes"),
-                    trigger_level=signal.get("trigger_level"),
-                    burst_level=signal.get("burst_level"),
                     start_window_text=signal.get("start_window_text"),
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
