@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from engine.abnormal import detect_abnormal_signals
 from engine.structure import (
     detect_last_bos,
     detect_last_mss,
@@ -243,493 +242,6 @@ def _zone_distance_in_atr(price: float, zone_low: float | None, zone_high: float
     return (price - high) / max(atr, 1e-9)
 
 
-
-def _zone_mid(low: float, high: float) -> float:
-    return (float(low) + float(high)) * 0.5
-
-
-def _band_from_price(price: float | None, atr: float, lower_mult: float, upper_mult: float) -> tuple[float, float] | None:
-    if price is None:
-        return None
-    anchor = float(price)
-    pad_low = max(atr * lower_mult, abs(anchor) * 0.0010)
-    pad_high = max(atr * upper_mult, abs(anchor) * 0.0010)
-    return anchor - pad_low, anchor + pad_high
-
-
-def _decision_zone_candidates(
-    direction: str,
-    latest_tf: dict,
-    *,
-    fvg_fill: dict[str, Any] | None,
-    near_pivot: dict[str, Any] | None,
-    sweep: dict[str, Any] | None,
-    equal_level: dict[str, Any] | None,
-    price: float,
-) -> list[dict[str, Any]]:
-    atr = _atr(latest_tf)
-    candidates: list[dict[str, Any]] = []
-
-    def add(source: str, zone: tuple[float, float] | None, score: int) -> None:
-        if zone is None:
-            return
-        low, high = min(zone[0], zone[1]), max(zone[0], zone[1])
-        if direction == "short" and high < price - atr * 0.20:
-            return
-        if direction == "long" and low > price + atr * 0.20:
-            return
-        candidates.append({"source": source, "low": low, "high": high, "score": score})
-
-    if fvg_fill:
-        add("fvg_fill", (float(fvg_fill["zone_low"]), float(fvg_fill["zone_high"])), 4)
-
-    if near_pivot:
-        add("near_pivot", _band_from_price(_float_safe(near_pivot.get("price")), atr, 0.18, 0.18), 3)
-
-    if equal_level:
-        add("equal_level", _band_from_price(_float_safe(equal_level.get("price")), atr, 0.12, 0.12), 2)
-
-    if sweep:
-        if direction == "short":
-            zone = _band_from_price(_float_safe(sweep.get("level")), atr, 0.10, 0.18)
-        else:
-            zone = _band_from_price(_float_safe(sweep.get("level")), atr, 0.18, 0.10)
-        add("liquidity_sweep", zone, 1)
-
-    return candidates
-
-
-def _pick_primary_zone(
-    direction: str,
-    candidates: list[dict[str, Any]],
-    price: float,
-) -> dict[str, Any] | None:
-    if not candidates:
-        return None
-
-    def side_penalty(item: dict[str, Any]) -> tuple[int, float, int]:
-        low = float(item["low"])
-        high = float(item["high"])
-        mid = _zone_mid(low, high)
-        if direction == "short":
-            wrong_side = 1 if high < price else 0
-            distance = max(0.0, low - price) if low >= price else max(0.0, price - high)
-        else:
-            wrong_side = 1 if low > price else 0
-            distance = max(0.0, price - high) if high <= price else max(0.0, low - price)
-        return (wrong_side, distance, -int(item["score"]))
-
-    return sorted(candidates, key=side_penalty)[0]
-
-
-def _fuse_reference_zone(
-    direction: str,
-    primary_zone: dict[str, Any] | None,
-    reference_zone: dict[str, Any] | None,
-    primary_atr: float,
-) -> tuple[float | None, float | None]:
-    if not primary_zone and not reference_zone:
-        return None, None
-    if not primary_zone:
-        return float(reference_zone["low"]), float(reference_zone["high"])
-    if not reference_zone:
-        return float(primary_zone["low"]), float(primary_zone["high"])
-
-    p_low = float(primary_zone["low"])
-    p_high = float(primary_zone["high"])
-    r_low = float(reference_zone["low"])
-    r_high = float(reference_zone["high"])
-
-    p_mid = _zone_mid(p_low, p_high)
-    r_mid = _zone_mid(r_low, r_high)
-    merge_gap = max(primary_atr * 1.40, abs(p_mid) * 0.0035)
-
-    if abs(p_mid - r_mid) <= merge_gap:
-        return min(p_low, r_low), max(p_high, r_high)
-
-    if direction == "short" and r_mid >= p_mid and (r_low - p_high) <= merge_gap:
-        return min(p_low, r_low), max(p_high, r_high)
-
-    if direction == "long" and r_mid <= p_mid and (p_low - r_high) <= merge_gap:
-        return min(p_low, r_low), max(p_high, r_high)
-
-    return p_low, p_high
-
-
-def _select_htf_decision_zone(
-    direction: str,
-    price: float,
-    latest_1h: dict,
-    latest_4h: dict,
-    latest_1d: dict,
-    *,
-    h1_fvg_fill: dict[str, Any] | None,
-    h1_near_pivot: dict[str, Any] | None,
-    h1_sweep: dict[str, Any] | None,
-    h1_equal_level: dict[str, Any] | None,
-    h4_fvg_fill: dict[str, Any] | None,
-    h4_near_pivot: dict[str, Any] | None,
-    h4_sweep: dict[str, Any] | None,
-    h4_equal_level: dict[str, Any] | None,
-    d1_fvg_fill: dict[str, Any] | None,
-    d1_near_pivot: dict[str, Any] | None,
-    d1_sweep: dict[str, Any] | None,
-    d1_equal_level: dict[str, Any] | None,
-) -> tuple[float | None, float | None]:
-    h1_primary = _pick_primary_zone(
-        direction,
-        _decision_zone_candidates(
-            direction,
-            latest_1h,
-            fvg_fill=h1_fvg_fill,
-            near_pivot=h1_near_pivot,
-            sweep=h1_sweep,
-            equal_level=h1_equal_level,
-            price=price,
-        ),
-        price,
-    )
-    h4_ref = _pick_primary_zone(
-        direction,
-        _decision_zone_candidates(
-            direction,
-            latest_4h,
-            fvg_fill=h4_fvg_fill,
-            near_pivot=h4_near_pivot,
-            sweep=h4_sweep,
-            equal_level=h4_equal_level,
-            price=price,
-        ),
-        price,
-    )
-    if h1_primary:
-        return _fuse_reference_zone(direction, h1_primary, h4_ref, _atr(latest_1h))
-
-    h4_primary = h4_ref
-    d1_ref = _pick_primary_zone(
-        direction,
-        _decision_zone_candidates(
-            direction,
-            latest_1d,
-            fvg_fill=d1_fvg_fill,
-            near_pivot=d1_near_pivot,
-            sweep=d1_sweep,
-            equal_level=d1_equal_level,
-            price=price,
-        ),
-        price,
-    )
-    if h4_primary:
-        return _fuse_reference_zone(direction, h4_primary, d1_ref, _atr(latest_4h))
-    if d1_ref:
-        return float(d1_ref["low"]), float(d1_ref["high"])
-    return None, None
-
-
-def _trigger_level_candidates(
-    direction: str,
-    latest_tf: dict,
-    *,
-    support_fvg_fill: dict[str, Any] | None,
-    resistance_fvg_fill: dict[str, Any] | None,
-    support_pivot: dict[str, Any] | None,
-    resistance_pivot: dict[str, Any] | None,
-    support_sweep: dict[str, Any] | None,
-    resistance_sweep: dict[str, Any] | None,
-    eql: dict[str, Any] | None,
-    eqh: dict[str, Any] | None,
-    price: float,
-) -> list[dict[str, Any]]:
-    atr = _atr(latest_tf)
-    candidates: list[dict[str, Any]] = []
-
-    def add(source: str, level: float | None, score: int) -> None:
-        if level is None:
-            return
-        value = float(level)
-        if direction == "short" and value > price + atr * 0.30:
-            return
-        if direction == "long" and value < price - atr * 0.30:
-            return
-        candidates.append({"source": source, "level": value, "score": score})
-
-    if direction == "short":
-        add("equal_low", _float_safe((eql or {}).get("price")) if eql else None, 4)
-        add("support_pivot", _float_safe((support_pivot or {}).get("price")) if support_pivot else None, 3)
-        add("sellside_sweep", _float_safe((support_sweep or {}).get("level")) if support_sweep else None, 2)
-        add("bullish_fvg_floor", _float_safe((support_fvg_fill or {}).get("zone_low")) if support_fvg_fill else None, 1)
-    else:
-        add("equal_high", _float_safe((eqh or {}).get("price")) if eqh else None, 4)
-        add("resistance_pivot", _float_safe((resistance_pivot or {}).get("price")) if resistance_pivot else None, 3)
-        add("buyside_sweep", _float_safe((resistance_sweep or {}).get("level")) if resistance_sweep else None, 2)
-        add("bearish_fvg_ceiling", _float_safe((resistance_fvg_fill or {}).get("zone_high")) if resistance_fvg_fill else None, 1)
-    return candidates
-
-
-def _initial_trigger_candidates(
-    direction: str,
-    latest_tf: dict,
-    *,
-    support_fvg_fill: dict[str, Any] | None,
-    resistance_fvg_fill: dict[str, Any] | None,
-    support_pivot: dict[str, Any] | None,
-    resistance_pivot: dict[str, Any] | None,
-    support_sweep: dict[str, Any] | None,
-    resistance_sweep: dict[str, Any] | None,
-    eql: dict[str, Any] | None,
-    eqh: dict[str, Any] | None,
-    price: float,
-) -> list[dict[str, Any]]:
-    atr = _atr(latest_tf)
-    candidates = _trigger_level_candidates(
-        direction,
-        latest_tf,
-        support_fvg_fill=support_fvg_fill,
-        resistance_fvg_fill=resistance_fvg_fill,
-        support_pivot=support_pivot,
-        resistance_pivot=resistance_pivot,
-        support_sweep=support_sweep,
-        resistance_sweep=resistance_sweep,
-        eql=eql,
-        eqh=eqh,
-        price=price,
-    )
-
-    if direction == "short":
-        recent_low = _float_safe(latest_tf.get("low"))
-        if recent_low and recent_low <= price + atr * 0.18:
-            candidates.append({"source": "recent_struct_low", "level": recent_low, "score": 5})
-    else:
-        recent_high = _float_safe(latest_tf.get("high"))
-        if recent_high and recent_high >= price - atr * 0.18:
-            candidates.append({"source": "recent_struct_high", "level": recent_high, "score": 5})
-    return candidates
-
-
-def _pick_primary_trigger(direction: str, candidates: list[dict[str, Any]], price: float) -> dict[str, Any] | None:
-    if not candidates:
-        return None
-
-    def trigger_key(item: dict[str, Any]) -> tuple[int, float, int]:
-        level = float(item["level"])
-        if direction == "short":
-            wrong_side = 1 if level > price else 0
-            distance = abs(price - level)
-        else:
-            wrong_side = 1 if level < price else 0
-            distance = abs(level - price)
-        return (wrong_side, distance, -int(item["score"]))
-
-    return sorted(candidates, key=trigger_key)[0]
-
-
-def _pick_secondary_trigger(
-    direction: str,
-    candidates: list[dict[str, Any]],
-    price: float,
-    trigger_level: float | None,
-    min_gap: float,
-) -> dict[str, Any] | None:
-    if not candidates:
-        return None
-
-    def valid(item: dict[str, Any]) -> bool:
-        level = float(item["level"])
-        if trigger_level is None:
-            return True
-        if direction == "short":
-            return level <= float(trigger_level) - min_gap
-        return level >= float(trigger_level) + min_gap
-
-    filtered = [item for item in candidates if valid(item)]
-    if not filtered:
-        return None
-
-    def secondary_key(item: dict[str, Any]) -> tuple[int, float, int]:
-        level = float(item["level"])
-        if trigger_level is None:
-            base_distance = abs(price - level)
-        else:
-            base_distance = abs(float(trigger_level) - level)
-        if direction == "short":
-            wrong_side = 1 if level > price else 0
-        else:
-            wrong_side = 1 if level < price else 0
-        return (wrong_side, base_distance, -int(item["score"]))
-
-    return sorted(filtered, key=secondary_key)[0]
-
-
-def _blend_trigger_level(
-    primary: dict[str, Any] | None,
-    reference: dict[str, Any] | None,
-    fallback: dict[str, Any] | None,
-    atr: float,
-) -> float | None:
-    if primary:
-        level = float(primary["level"])
-        if reference and abs(level - float(reference["level"])) <= max(atr * 1.20, abs(level) * 0.0030):
-            level = level * 0.70 + float(reference["level"]) * 0.30
-        return level
-    if reference:
-        level = float(reference["level"])
-        if fallback and abs(level - float(fallback["level"])) <= max(atr * 1.40, abs(level) * 0.0035):
-            level = level * 0.75 + float(fallback["level"]) * 0.25
-        return level
-    if fallback:
-        return float(fallback["level"])
-    return None
-
-
-def _select_c_trigger_levels(
-    direction: str,
-    price: float,
-    latest_1h: dict,
-    latest_4h: dict,
-    latest_1d: dict,
-    *,
-    h1_support_fvg_fill: dict[str, Any] | None,
-    h1_resistance_fvg_fill: dict[str, Any] | None,
-    h1_support_pivot: dict[str, Any] | None,
-    h1_resistance_pivot: dict[str, Any] | None,
-    h1_support_sweep: dict[str, Any] | None,
-    h1_resistance_sweep: dict[str, Any] | None,
-    h1_eql: dict[str, Any] | None,
-    h1_eqh: dict[str, Any] | None,
-    h4_support_fvg_fill: dict[str, Any] | None,
-    h4_resistance_fvg_fill: dict[str, Any] | None,
-    h4_support_pivot: dict[str, Any] | None,
-    h4_resistance_pivot: dict[str, Any] | None,
-    h4_support_sweep: dict[str, Any] | None,
-    h4_resistance_sweep: dict[str, Any] | None,
-    h4_eql: dict[str, Any] | None,
-    h4_eqh: dict[str, Any] | None,
-    d1_support_fvg_fill: dict[str, Any] | None,
-    d1_resistance_fvg_fill: dict[str, Any] | None,
-    d1_support_pivot: dict[str, Any] | None,
-    d1_resistance_pivot: dict[str, Any] | None,
-    d1_support_sweep: dict[str, Any] | None,
-    d1_resistance_sweep: dict[str, Any] | None,
-    d1_eql: dict[str, Any] | None,
-    d1_eqh: dict[str, Any] | None,
-) -> tuple[float | None, float | None]:
-    h1_initial = _pick_primary_trigger(
-        direction,
-        _initial_trigger_candidates(
-            direction,
-            latest_1h,
-            support_fvg_fill=h1_support_fvg_fill,
-            resistance_fvg_fill=h1_resistance_fvg_fill,
-            support_pivot=h1_support_pivot,
-            resistance_pivot=h1_resistance_pivot,
-            support_sweep=h1_support_sweep,
-            resistance_sweep=h1_resistance_sweep,
-            eql=h1_eql,
-            eqh=h1_eqh,
-            price=price,
-        ),
-        price,
-    )
-    h4_initial = _pick_primary_trigger(
-        direction,
-        _initial_trigger_candidates(
-            direction,
-            latest_4h,
-            support_fvg_fill=h4_support_fvg_fill,
-            resistance_fvg_fill=h4_resistance_fvg_fill,
-            support_pivot=h4_support_pivot,
-            resistance_pivot=h4_resistance_pivot,
-            support_sweep=h4_support_sweep,
-            resistance_sweep=h4_resistance_sweep,
-            eql=h4_eql,
-            eqh=h4_eqh,
-            price=price,
-        ),
-        price,
-    )
-    d1_initial = _pick_primary_trigger(
-        direction,
-        _initial_trigger_candidates(
-            direction,
-            latest_1d,
-            support_fvg_fill=d1_support_fvg_fill,
-            resistance_fvg_fill=d1_resistance_fvg_fill,
-            support_pivot=d1_support_pivot,
-            resistance_pivot=d1_resistance_pivot,
-            support_sweep=d1_support_sweep,
-            resistance_sweep=d1_resistance_sweep,
-            eql=d1_eql,
-            eqh=d1_eqh,
-            price=price,
-        ),
-        price,
-    )
-    trigger_level = _blend_trigger_level(h1_initial, h4_initial, d1_initial, _atr(latest_1h))
-
-    min_gap = max(_atr(latest_1h) * 0.40, abs(price) * 0.0016)
-
-    h1_accel = _pick_secondary_trigger(
-        direction,
-        _trigger_level_candidates(
-            direction,
-            latest_1h,
-            support_fvg_fill=h1_support_fvg_fill,
-            resistance_fvg_fill=h1_resistance_fvg_fill,
-            support_pivot=h1_support_pivot,
-            resistance_pivot=h1_resistance_pivot,
-            support_sweep=h1_support_sweep,
-            resistance_sweep=h1_resistance_sweep,
-            eql=h1_eql,
-            eqh=h1_eqh,
-            price=price,
-        ),
-        price,
-        trigger_level,
-        min_gap,
-    )
-    h4_accel = _pick_secondary_trigger(
-        direction,
-        _trigger_level_candidates(
-            direction,
-            latest_4h,
-            support_fvg_fill=h4_support_fvg_fill,
-            resistance_fvg_fill=h4_resistance_fvg_fill,
-            support_pivot=h4_support_pivot,
-            resistance_pivot=h4_resistance_pivot,
-            support_sweep=h4_support_sweep,
-            resistance_sweep=h4_resistance_sweep,
-            eql=h4_eql,
-            eqh=h4_eqh,
-            price=price,
-        ),
-        price,
-        trigger_level,
-        min_gap,
-    )
-    d1_accel = _pick_secondary_trigger(
-        direction,
-        _trigger_level_candidates(
-            direction,
-            latest_1d,
-            support_fvg_fill=d1_support_fvg_fill,
-            resistance_fvg_fill=d1_resistance_fvg_fill,
-            support_pivot=d1_support_pivot,
-            resistance_pivot=d1_resistance_pivot,
-            support_sweep=d1_support_sweep,
-            resistance_sweep=d1_resistance_sweep,
-            eql=d1_eql,
-            eqh=d1_eqh,
-            price=price,
-        ),
-        price,
-        trigger_level,
-        min_gap,
-    )
-    burst_level = _blend_trigger_level(h1_accel, h4_accel, d1_accel, _atr(latest_1h))
-
-    return trigger_level, burst_level
-
-
 def _event_age(last_index: int, event: dict[str, Any] | None, fallback: int = 8) -> int:
     if not event:
         return fallback
@@ -908,6 +420,54 @@ def _estimate_c_window(
     return _normalize_window(start, end, floor_start=25, ceil_end=360)
 
 
+def _estimate_x_window(
+    direction: str,
+    latest: dict,
+    prev: dict,
+    trigger_level: float | None,
+    regime_score: int,
+) -> tuple[int, int]:
+    atr = _atr(latest)
+    price = float(latest["close"])
+    vol_ratio = _volume_ratio(latest)
+    trigger_distance = _distance_in_atr(price, trigger_level, atr) if trigger_level is not None else 0.45
+    impulse = abs(price - float(prev["close"])) / max(atr, 1e-9)
+    if direction == "long":
+        momentum_score = _count_true(
+            _momentum_up(latest),
+            bool(latest.get("cm_hist_up")),
+            bool(latest.get("tai_rising")),
+            float(latest.get("sss_hist", 0.0)) >= float(prev.get("sss_hist", 0.0)),
+        )
+    else:
+        momentum_score = _count_true(
+            _momentum_down(latest),
+            bool(latest.get("cm_hist_down")),
+            not bool(latest.get("tai_rising")),
+            float(latest.get("sss_hist", 0.0)) <= float(prev.get("sss_hist", 0.0)),
+        )
+
+    start = (
+        5
+        + trigger_distance * 6.0
+        + max(0.0, 2.0 - vol_ratio) * 8.0
+        - max(0.0, vol_ratio - 2.0) * 4.0
+        - impulse * 4.5
+        - momentum_score * 3.0
+        - max(0, regime_score) * 1.0
+    )
+    end = (
+        95
+        + trigger_distance * 18.0
+        + max(0.0, 2.0 - vol_ratio) * 20.0
+        - max(0.0, vol_ratio - 2.0) * 10.0
+        - impulse * 7.0
+        - momentum_score * 5.0
+        - max(0, regime_score) * 2.0
+    )
+    return _normalize_window(start, end, floor_start=5, ceil_end=120)
+
+
 # 4h/1h 仅做方向过滤，不允许辅助指标越级替代结构。
 def classify_trend(klines: list[dict], structure_len: int = 12) -> str:
     if len(klines) < max(structure_len, 25):
@@ -1071,8 +631,6 @@ def _signal_dict(
     structure_basis: list[str] | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
-    trigger_level: float | None = None,
-    burst_level: float | None = None,
 ) -> dict[str, Any]:
     basis = structure_basis or []
     zone_low_v = zone_low if zone_low is not None else price
@@ -1080,7 +638,7 @@ def _signal_dict(
     zone_key = f"{_round5(zone_low_v)}-{_round5(zone_high_v)}"
     basis_key = ",".join(sorted(basis)) if basis else "na"
     signature = f"{name}:{direction}:{zone_key}:{basis_key}"
-    cooldown_seconds = {1: 45 * 60, 2: 30 * 60, 3: 25 * 60}.get(SIGNAL_CLASS[name], 30 * 60)
+    cooldown_seconds = {1: 45 * 60, 2: 30 * 60, 3: 25 * 60, 4: 20 * 60}.get(SIGNAL_CLASS[name], 30 * 60)
     return {
         "signal": name,
         "symbol": symbol,
@@ -1095,8 +653,6 @@ def _signal_dict(
         "structure_basis": basis,
         "eta_min_minutes": eta_min_minutes,
         "eta_max_minutes": eta_max_minutes,
-        "trigger_level": round(float(trigger_level), 2) if trigger_level is not None else None,
-        "burst_level": round(float(burst_level), 2) if burst_level is not None else None,
         "signature": signature,
         "cooldown_seconds": cooldown_seconds,
     }
@@ -1168,16 +724,6 @@ def detect_signals(
     h4_last_bos_down = latest_structure_event(klines_4h, direction="down", kinds=("bos",), max_bars_ago=4)
     h4_last_mss_up = latest_structure_event(klines_4h, direction="up", kinds=("mss",), max_bars_ago=6)
     h4_last_mss_down = latest_structure_event(klines_4h, direction="down", kinds=("mss",), max_bars_ago=6)
-
-    d1_equal_levels = detect_recent_equal_levels(klines_1d)
-    d1_eqh = d1_equal_levels.get("eqh")
-    d1_eql = d1_equal_levels.get("eql")
-    d1_bull_fvg_fill = detect_recent_fvg_fill(klines_1d, "bull")
-    d1_bear_fvg_fill = detect_recent_fvg_fill(klines_1d, "bear")
-    d1_bull_sweep = detect_recent_liquidity_sweep(klines_1d, "bull")
-    d1_bear_sweep = detect_recent_liquidity_sweep(klines_1d, "bear")
-    d1_near_bull_pivot = detect_near_pivot_level(klines_1d, "bull")
-    d1_near_bear_pivot = detect_near_pivot_level(klines_1d, "bear")
 
     h1_long_phase = _classify_tf_phase(
         "long",
@@ -1423,63 +969,23 @@ def detect_signals(
             )
         )
 
-    b_exec_zone_low = None
-    b_exec_zone_high = None
+    b_long_zone_low = None
+    b_long_zone_high = None
     if bull_fvg_fill:
-        b_exec_zone_low = float(bull_fvg_fill["zone_low"])
-        b_exec_zone_high = float(bull_fvg_fill["zone_high"])
+        b_long_zone_low = float(bull_fvg_fill["zone_low"])
+        b_long_zone_high = float(bull_fvg_fill["zone_high"])
     elif bull_sweep:
-        b_exec_zone_low = float(bull_sweep["level"]) - atr * 0.10
-        b_exec_zone_high = float(latest["ema20"])
+        b_long_zone_low = float(bull_sweep["level"]) - atr * 0.10
+        b_long_zone_high = float(latest["ema20"])
 
-    b_short_exec_zone_low = None
-    b_short_exec_zone_high = None
+    b_short_zone_low = None
+    b_short_zone_high = None
     if bear_fvg_fill:
-        b_short_exec_zone_low = float(bear_fvg_fill["zone_low"])
-        b_short_exec_zone_high = float(bear_fvg_fill["zone_high"])
+        b_short_zone_low = float(bear_fvg_fill["zone_low"])
+        b_short_zone_high = float(bear_fvg_fill["zone_high"])
     elif bear_sweep:
-        b_short_exec_zone_low = float(latest["ema20"])
-        b_short_exec_zone_high = float(bear_sweep["level"]) + atr * 0.10
-
-    b_long_zone_low, b_long_zone_high = _select_htf_decision_zone(
-        "long",
-        price,
-        k_1h,
-        k_4h,
-        klines_1d[-1],
-        h1_fvg_fill=h1_bull_fvg_fill,
-        h1_near_pivot=h1_near_bull_pivot,
-        h1_sweep=h1_bull_sweep,
-        h1_equal_level=h1_eql,
-        h4_fvg_fill=h4_bull_fvg_fill,
-        h4_near_pivot=h4_near_bull_pivot,
-        h4_sweep=h4_bull_sweep,
-        h4_equal_level=h4_eql,
-        d1_fvg_fill=d1_bull_fvg_fill,
-        d1_near_pivot=d1_near_bull_pivot,
-        d1_sweep=d1_bull_sweep,
-        d1_equal_level=d1_eql,
-    )
-
-    b_short_zone_low, b_short_zone_high = _select_htf_decision_zone(
-        "short",
-        price,
-        k_1h,
-        k_4h,
-        klines_1d[-1],
-        h1_fvg_fill=h1_bear_fvg_fill,
-        h1_near_pivot=h1_near_bear_pivot,
-        h1_sweep=h1_bear_sweep,
-        h1_equal_level=h1_eqh,
-        h4_fvg_fill=h4_bear_fvg_fill,
-        h4_near_pivot=h4_near_bear_pivot,
-        h4_sweep=h4_bear_sweep,
-        h4_equal_level=h4_eqh,
-        d1_fvg_fill=d1_bear_fvg_fill,
-        d1_near_pivot=d1_near_bear_pivot,
-        d1_sweep=d1_bear_sweep,
-        d1_equal_level=d1_eqh,
-    )
+        b_short_zone_low = float(latest["ema20"])
+        b_short_zone_high = float(bear_sweep["level"]) + atr * 0.10
 
     b_long_checks = {
         "htf_phase_long": b_long_htf_allowed,
@@ -1497,8 +1003,8 @@ def detect_signals(
             latest,
             prev,
             long_regime_score,
-            b_exec_zone_low,
-            b_exec_zone_high,
+            b_long_zone_low,
+            b_long_zone_high,
             len(b_long_basis),
             b_long_age,
             b_long_reclaim_ready,
@@ -1512,8 +1018,8 @@ def detect_signals(
                 price,
                 trend_display_long,
                 "active",
-                zone_low=b_long_zone_low if b_long_zone_low is not None else b_exec_zone_low,
-                zone_high=b_long_zone_high if b_long_zone_high is not None else b_exec_zone_high,
+                zone_low=b_long_zone_low,
+                zone_high=b_long_zone_high,
                 structure_basis=b_long_basis,
                 eta_min_minutes=eta_min,
                 eta_max_minutes=eta_max,
@@ -1536,8 +1042,8 @@ def detect_signals(
             latest,
             prev,
             short_regime_score,
-            b_short_exec_zone_low,
-            b_short_exec_zone_high,
+            b_short_zone_low,
+            b_short_zone_high,
             len(b_short_basis),
             b_short_age,
             b_short_reject_ready,
@@ -1551,8 +1057,8 @@ def detect_signals(
                 price,
                 trend_display_short,
                 "active",
-                zone_low=b_short_zone_low if b_short_zone_low is not None else b_short_exec_zone_low,
-                zone_high=b_short_zone_high if b_short_zone_high is not None else b_short_exec_zone_high,
+                zone_low=b_short_zone_low,
+                zone_high=b_short_zone_high,
                 structure_basis=b_short_basis,
                 eta_min_minutes=eta_min,
                 eta_max_minutes=eta_max,
@@ -1576,37 +1082,6 @@ def detect_signals(
         c_long_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
         c_long_confirm = _count_true(eq_long, momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising")))
         eta_min, eta_max = _estimate_c_window("long", latest, prev, long_regime_score, c_long_anchor, len(c_long_basis), c_long_age, c_long_confirm)
-        c_long_trigger_level, c_long_burst_level = _select_c_trigger_levels(
-            "long",
-            price,
-            k_1h,
-            k_4h,
-            klines_1d[-1],
-            h1_support_fvg_fill=h1_bull_fvg_fill,
-            h1_resistance_fvg_fill=h1_bear_fvg_fill,
-            h1_support_pivot=h1_near_bull_pivot,
-            h1_resistance_pivot=h1_near_bear_pivot,
-            h1_support_sweep=h1_bull_sweep,
-            h1_resistance_sweep=h1_bear_sweep,
-            h1_eql=h1_eql,
-            h1_eqh=h1_eqh,
-            h4_support_fvg_fill=h4_bull_fvg_fill,
-            h4_resistance_fvg_fill=h4_bear_fvg_fill,
-            h4_support_pivot=h4_near_bull_pivot,
-            h4_resistance_pivot=h4_near_bear_pivot,
-            h4_support_sweep=h4_bull_sweep,
-            h4_resistance_sweep=h4_bear_sweep,
-            h4_eql=h4_eql,
-            h4_eqh=h4_eqh,
-            d1_support_fvg_fill=d1_bull_fvg_fill,
-            d1_resistance_fvg_fill=d1_bear_fvg_fill,
-            d1_support_pivot=d1_near_bull_pivot,
-            d1_resistance_pivot=d1_near_bear_pivot,
-            d1_support_sweep=d1_bull_sweep,
-            d1_resistance_sweep=d1_bear_sweep,
-            d1_eql=d1_eql,
-            d1_eqh=d1_eqh,
-        )
         signals.append(
             _signal_dict(
                 "C_LEFT_LONG",
@@ -1618,8 +1093,6 @@ def detect_signals(
                 structure_basis=c_long_basis,
                 eta_min_minutes=eta_min,
                 eta_max_minutes=eta_max,
-                trigger_level=c_long_trigger_level,
-                burst_level=c_long_burst_level,
             )
         )
 
@@ -1640,37 +1113,6 @@ def detect_signals(
         c_short_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
         c_short_confirm = _count_true(eq_short, momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False)
         eta_min, eta_max = _estimate_c_window("short", latest, prev, short_regime_score, c_short_anchor, len(c_short_basis), c_short_age, c_short_confirm)
-        c_short_trigger_level, c_short_burst_level = _select_c_trigger_levels(
-            "short",
-            price,
-            k_1h,
-            k_4h,
-            klines_1d[-1],
-            h1_support_fvg_fill=h1_bull_fvg_fill,
-            h1_resistance_fvg_fill=h1_bear_fvg_fill,
-            h1_support_pivot=h1_near_bull_pivot,
-            h1_resistance_pivot=h1_near_bear_pivot,
-            h1_support_sweep=h1_bull_sweep,
-            h1_resistance_sweep=h1_bear_sweep,
-            h1_eql=h1_eql,
-            h1_eqh=h1_eqh,
-            h4_support_fvg_fill=h4_bull_fvg_fill,
-            h4_resistance_fvg_fill=h4_bear_fvg_fill,
-            h4_support_pivot=h4_near_bull_pivot,
-            h4_resistance_pivot=h4_near_bear_pivot,
-            h4_support_sweep=h4_bull_sweep,
-            h4_resistance_sweep=h4_bear_sweep,
-            h4_eql=h4_eql,
-            h4_eqh=h4_eqh,
-            d1_support_fvg_fill=d1_bull_fvg_fill,
-            d1_resistance_fvg_fill=d1_bear_fvg_fill,
-            d1_support_pivot=d1_near_bull_pivot,
-            d1_resistance_pivot=d1_near_bear_pivot,
-            d1_support_sweep=d1_bull_sweep,
-            d1_resistance_sweep=d1_bear_sweep,
-            d1_eql=d1_eql,
-            d1_eqh=d1_eqh,
-        )
         signals.append(
             _signal_dict(
                 "C_LEFT_SHORT",
@@ -1682,17 +1124,109 @@ def detect_signals(
                 structure_basis=c_short_basis,
                 eta_min_minutes=eta_min,
                 eta_max_minutes=eta_max,
-                trigger_level=c_short_trigger_level,
-                burst_level=c_short_burst_level,
             )
         )
 
-    try:
-        abnormal_signals = detect_abnormal_signals(symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-        if abnormal_signals:
-            signals.extend(abnormal_signals)
-    except Exception:
-        pass
+
+    recent_high_8 = max(float(k["high"]) for k in klines_15m[-9:-1])
+    recent_low_8 = min(float(k["low"]) for k in klines_15m[-9:-1])
+    impulse_body = abs(price - float(prev["close"])) / max(atr, 1e-9)
+    strong_volume = _volume_ratio(latest) >= 2.2 or (_volume_ratio(latest) >= 1.8 and _volume_ratio(prev) >= 1.4)
+
+    x_long_trigger = max(
+        recent_high_8,
+        _float_safe((h1_eqh or {}).get("price"), 0.0) if h1_eqh else recent_high_8,
+        _float_safe((h1_near_bear_pivot or {}).get("price"), 0.0) if h1_near_bear_pivot else recent_high_8,
+    )
+    x_short_trigger = min(
+        recent_low_8,
+        _float_safe((h1_eql or {}).get("price"), 999999999.0) if h1_eql else recent_low_8,
+        _float_safe((h1_near_bull_pivot or {}).get("price"), 999999999.0) if h1_near_bull_pivot else recent_low_8,
+    )
+
+    x_long_zone_low = min(float(latest["ema10"]), float(latest["ema20"]), max(float(prev["low"]), price - atr * 1.35))
+    x_long_zone_high = max(float(latest["ema10"]), min(float(prev["high"]), x_long_trigger + atr * 0.25))
+    if x_long_zone_low > x_long_zone_high:
+        x_long_zone_low, x_long_zone_high = x_long_zone_high, x_long_zone_low
+
+    x_short_zone_low = min(float(latest["ema10"]), max(float(prev["low"]), x_short_trigger - atr * 0.25))
+    x_short_zone_high = max(float(latest["ema10"]), float(latest["ema20"]), min(float(prev["high"]), price + atr * 1.35))
+    if x_short_zone_low > x_short_zone_high:
+        x_short_zone_low, x_short_zone_high = x_short_zone_high, x_short_zone_low
+
+    x_long_basis: list[str] = []
+    if last_bos_up:
+        x_long_basis.append("15m_bos_up")
+    if last_mss_up:
+        x_long_basis.append("15m_mss_up")
+    if strong_volume:
+        x_long_basis.append("volume_expansion")
+    if h1_long_phase in {"mixed", "continuation"}:
+        x_long_basis.append("h1_repairing")
+
+    x_short_basis: list[str] = []
+    if last_bos_down:
+        x_short_basis.append("15m_bos_down")
+    if last_mss_down:
+        x_short_basis.append("15m_mss_down")
+    if strong_volume:
+        x_short_basis.append("volume_expansion")
+    if h1_short_phase in {"mixed", "continuation"}:
+        x_short_basis.append("h1_repairing")
+
+    x_long_checks = {
+        "volume_expansion": strong_volume,
+        "impulse_breakout": impulse_body >= 0.90,
+        "structure_break": bool(last_bos_up or last_mss_up) or float(latest["high"]) >= recent_high_8 + atr * 0.10,
+        "price_above_ema_stack": bullish_stack,
+        "htf_not_hard_counter": trend_1h != "bear" and h4_long_phase != "counter",
+        "distance_not_excessive": _distance_in_atr(price, float(latest["ema20"]), atr) <= 3.80,
+    }
+    if _evaluate_branch("X_BREAKOUT_LONG", x_long_checks, near_miss_signals, blocked_counter):
+        eta_min, eta_max = _estimate_x_window("long", latest, prev, x_long_trigger, long_regime_score)
+        signals.append(
+            _signal_dict(
+                "X_BREAKOUT_LONG",
+                symbol,
+                "long",
+                price,
+                trend_display_long,
+                "breakout",
+                zone_low=x_long_zone_low,
+                zone_high=x_long_zone_high,
+                structure_basis=x_long_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
+                trigger_level=x_long_trigger,
+            )
+        )
+
+    x_short_checks = {
+        "volume_expansion": strong_volume,
+        "impulse_breakdown": impulse_body >= 0.90,
+        "structure_break": bool(last_bos_down or last_mss_down) or float(latest["low"]) <= recent_low_8 - atr * 0.10,
+        "price_below_ema_stack": bearish_stack,
+        "htf_not_hard_counter": trend_1h != "bull" and h4_short_phase != "counter",
+        "distance_not_excessive": _distance_in_atr(price, float(latest["ema20"]), atr) <= 3.80,
+    }
+    if _evaluate_branch("X_BREAKOUT_SHORT", x_short_checks, near_miss_signals, blocked_counter):
+        eta_min, eta_max = _estimate_x_window("short", latest, prev, x_short_trigger, short_regime_score)
+        signals.append(
+            _signal_dict(
+                "X_BREAKOUT_SHORT",
+                symbol,
+                "short",
+                price,
+                trend_display_short,
+                "breakout",
+                zone_low=x_short_zone_low,
+                zone_high=x_short_zone_high,
+                structure_basis=x_short_basis,
+                eta_min_minutes=eta_min,
+                eta_max_minutes=eta_max,
+                trigger_level=x_short_trigger,
+            )
+        )
 
     return {
         # 不再做每个方向只保留一个“最佳信号”的筛选。
