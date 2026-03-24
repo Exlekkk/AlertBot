@@ -127,6 +127,10 @@ class SMCTScanner:
                     entry_zone_low=entry_zone_low,
                     entry_zone_high=entry_zone_high,
                     start_window_text=signal.get("start_window_text"),
+                    eta_min_minutes=signal.get("eta_min_minutes"),
+                    eta_max_minutes=signal.get("eta_max_minutes"),
+                    trigger_level=signal.get("breakout_level"),
+                    abnormal_type=signal.get("abnormal_type"),
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
                 self.state_store.mark_sent(signal)
