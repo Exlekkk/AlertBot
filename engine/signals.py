@@ -631,6 +631,7 @@ def _signal_dict(
     structure_basis: list[str] | None = None,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
+    trigger_level: float | None = None,
 ) -> dict[str, Any]:
     basis = structure_basis or []
     zone_low_v = zone_low if zone_low is not None else price
