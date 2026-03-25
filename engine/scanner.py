@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from config import BINANCE_SYMBOL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
+from engine.abnormal import detect_abnormal_signals
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
@@ -78,7 +79,11 @@ class SMCTScanner:
         klines_4h = self._fetch_enriched("4h")
         klines_1h = self._fetch_enriched("1h")
         klines_15m = self._fetch_enriched("15m")
+
         signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+        base_signals = [s for s in signal_result.get("signals", []) if not s["signal"].startswith("X_")]
+        x_signals = detect_abnormal_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+
         return {
             "ok": True,
             "symbol": self.symbol,
@@ -88,7 +93,7 @@ class SMCTScanner:
                 "1h": len(klines_1h),
                 "15m": len(klines_15m),
             },
-            "signals_checked": len(signal_result.get("signals", [])),
+            "signals_checked": len(base_signals) + len(x_signals),
             "watch_checked": 0,
         }
 
@@ -100,7 +105,12 @@ class SMCTScanner:
             klines_15m = self._fetch_enriched("15m")
 
             signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-            signals = signal_result["signals"]
+
+            base_signals = signal_result["signals"]
+            abc_signals = [s for s in base_signals if not s["signal"].startswith("X_")]
+            x_signals = detect_abnormal_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+
+            signals = abc_signals + x_signals
             near_miss_signals = signal_result["near_miss_signals"]
             blocked_reasons = signal_result["blocked_reasons"]
 
