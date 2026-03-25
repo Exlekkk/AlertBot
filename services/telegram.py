@@ -225,20 +225,23 @@ def _format_x_message(
     eta_min_minutes: int | None,
     eta_max_minutes: int | None,
     trigger_level: float | None,
+    abnormal_type: str | None = None,
 ) -> str:
     prefix = title_prefix(4)
     action_text = action_label(signal)
     start_window = build_start_window_text(4, eta_min_minutes, eta_max_minutes)
     timeout_hint = timeout_text(4, eta_min_minutes, eta_max_minutes)
     range_text = zone_text(entry_zone_low, entry_zone_high, price)
+
     if signal == "X_BREAKOUT_LONG":
-        anomaly_type = "放量上破 / 可能空头回补"
+        anomaly_type = abnormal_type or "放量上破 / 可能空头回补"
         trigger_label = "关键上破位"
         watch_label = "回踩观察区"
     else:
-        anomaly_type = "放量下破 / 可能多头踩踏"
+        anomaly_type = abnormal_type or "放量下破 / 可能多头踩踏"
         trigger_label = "关键下破位"
         watch_label = "反抽观察区"
+
     trigger_text = f"{float(trigger_level):.2f}" if trigger_level is not None else "-"
 
     return (
@@ -269,6 +272,7 @@ def format_engine_message(
     eta_max_minutes: int | None = None,
     trigger_level: float | None = None,
     burst_level: float | None = None,
+    abnormal_type: str | None = None,
     start_window_text_value: str | None = None,
     start_window_text: str | None = None,
     **_: object,
@@ -302,6 +306,7 @@ def format_engine_message(
             eta_min_minutes=eta_min_minutes,
             eta_max_minutes=eta_max_minutes,
             trigger_level=trigger_level,
+            abnormal_type=abnormal_type,
         )
 
     prefix = title_prefix(priority)
