@@ -178,6 +178,7 @@ def detect_abnormal_signals(
 
     price = _float(latest.get("close"))
     atr = _atr(latest)
+    volume = _float(latest.get("volume"))
     vol_ratio = _volume_ratio(latest)
 
     trend_score_long = _trend_score("long", latest_1h, latest_4h, latest_1d)
@@ -222,7 +223,7 @@ def detect_abnormal_signals(
     signals: list[dict[str, Any]] = []
 
     long_checks = {
-        "volume_expansion": vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
+        "volume_expansion": volume >= 8000 and vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
         "impulse_breakout": impulse_up,
         "stack_or_reclaim": stack_up or (close >= ema20 and ema10 >= ema20),
         "momentum_confirm": momentum_up or bool(latest.get("fl_buy_signal")) or bool(latest.get("tai_rising")),
@@ -261,7 +262,7 @@ def detect_abnormal_signals(
         )
 
     short_checks = {
-        "volume_expansion": vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
+        "volume_expansion": volume >= 8000 and vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
         "impulse_breakdown": impulse_down,
         "stack_or_reject": stack_down or (close <= ema20 and ema10 <= ema20),
         "momentum_confirm": momentum_down or bool(latest.get("fl_sell_signal")) or (bool(latest.get("tai_rising")) is False),
