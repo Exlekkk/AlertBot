@@ -178,7 +178,6 @@ def detect_abnormal_signals(
 
     price = _float(latest.get("close"))
     atr = _atr(latest)
-    volume = _float(latest.get("volume"))
     vol_ratio = _volume_ratio(latest)
 
     trend_score_long = _trend_score("long", latest_1h, latest_4h, latest_1d)
@@ -208,6 +207,10 @@ def detect_abnormal_signals(
     prev_volume_ratio = _volume_ratio(prev)
     range_ratio = candle_range / max(_atr(latest), 1e-9)
 
+    volume_gate_15m = volume_15m >= 8000
+    volume_gate_1h = volume_1h >= 10000
+    volume_expansion = volume_gate_15m or volume_gate_1h
+
     breakout_cross_up = prev_close < recent_high and close > recent_high
     breakout_cross_down = prev_close > recent_low and close < recent_low
     fresh_break_up = max(prev_high, open_) <= recent_high + atr * 0.10
@@ -223,7 +226,7 @@ def detect_abnormal_signals(
     signals: list[dict[str, Any]] = []
 
     long_checks = {
-        "volume_expansion": volume >= 8000 and vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
+        "volume_expansion": volume_expansion,
         "impulse_breakout": impulse_up,
         "stack_or_reclaim": stack_up or (close >= ema20 and ema10 >= ema20),
         "momentum_confirm": momentum_up or bool(latest.get("fl_buy_signal")) or bool(latest.get("tai_rising")),
@@ -237,13 +240,18 @@ def detect_abnormal_signals(
         zone_low, zone_high = _normalize_zone(zone_low, zone_high)
         eta_min, eta_max = _window_from_extension(extension_long_atr, vol_ratio)
         basis: list[str] = []
-        if vol_ratio >= 2.6:
+        if volume_gate_1h:
+            basis.append("h1_volume_confirm")
+        if volume_gate_15m and vol_ratio >= 2.6:
             basis.append("volume_spike")
+        elif volume_gate_15m:
+            basis.append("volume_gate_15m")
         basis.append("first_impulse_breakout_up")
         if momentum_up:
             basis.append("momentum_up")
         if trend_score_long >= 4:
             basis.append("h1_repairing_up")
+        abnormal_type = "1h收盘放量确认 / 可能空头回补" if volume_gate_1h and not volume_gate_15m else "首根放量起爆 / 可能空头回补"
         signals.append(
             _signal_dict(
                 "X_BREAKOUT_LONG",
@@ -255,14 +263,14 @@ def detect_abnormal_signals(
                 zone_low,
                 zone_high,
                 breakout_level,
-                "首根放量起爆 / 可能空头回补",
+                abnormal_type,
                 eta_min,
                 eta_max,
             )
         )
 
     short_checks = {
-        "volume_expansion": volume >= 8000 and vol_ratio >= 2.2 and vol_ratio >= prev_volume_ratio,
+        "volume_expansion": volume_expansion,
         "impulse_breakdown": impulse_down,
         "stack_or_reject": stack_down or (close <= ema20 and ema10 <= ema20),
         "momentum_confirm": momentum_down or bool(latest.get("fl_sell_signal")) or (bool(latest.get("tai_rising")) is False),
@@ -276,13 +284,18 @@ def detect_abnormal_signals(
         zone_low, zone_high = _normalize_zone(zone_low, zone_high)
         eta_min, eta_max = _window_from_extension(extension_short_atr, vol_ratio)
         basis: list[str] = []
-        if vol_ratio >= 2.6:
+        if volume_gate_1h:
+            basis.append("h1_volume_confirm")
+        if volume_gate_15m and vol_ratio >= 2.6:
             basis.append("volume_spike")
+        elif volume_gate_15m:
+            basis.append("volume_gate_15m")
         basis.append("first_impulse_breakdown_down")
         if momentum_down:
             basis.append("momentum_down")
         if trend_score_short >= 4:
             basis.append("h1_repairing_down")
+        abnormal_type = "1h收盘放量确认 / 可能多头踩踏" if volume_gate_1h and not volume_gate_15m else "首根放量起爆 / 可能多头踩踏"
         signals.append(
             _signal_dict(
                 "X_BREAKOUT_SHORT",
@@ -294,7 +307,7 @@ def detect_abnormal_signals(
                 zone_low,
                 zone_high,
                 breakout_level,
-                "首根放量起爆 / 可能多头踩踏",
+                abnormal_type,
                 eta_min,
                 eta_max,
             )
