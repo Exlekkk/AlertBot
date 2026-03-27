@@ -25,8 +25,6 @@ SIGNAL_CLASS = {
     "B_PULLBACK_SHORT": 2,
     "C_LEFT_LONG": 3,
     "C_LEFT_SHORT": 3,
-    "X_BREAKOUT_LONG": 4,
-    "X_BREAKOUT_SHORT": 4,
 }
 
 
@@ -1129,105 +1127,9 @@ def detect_signals(
         )
 
 
-    recent_high_8 = max(float(k["high"]) for k in klines_15m[-9:-1])
-    recent_low_8 = min(float(k["low"]) for k in klines_15m[-9:-1])
-    impulse_body = abs(price - float(prev["close"])) / max(atr, 1e-9)
-    strong_volume = _volume_ratio(latest) >= 2.2 or (_volume_ratio(latest) >= 1.8 and _volume_ratio(prev) >= 1.4)
+    # X 异动已完全迁移至 engine.abnormal.detect_abnormal_signals，
+    # 这里不再在 ABC 主信号链中内联生成 X。
 
-    x_long_trigger = max(
-        recent_high_8,
-        _float_safe((h1_eqh or {}).get("price"), 0.0) if h1_eqh else recent_high_8,
-        _float_safe((h1_near_bear_pivot or {}).get("price"), 0.0) if h1_near_bear_pivot else recent_high_8,
-    )
-    x_short_trigger = min(
-        recent_low_8,
-        _float_safe((h1_eql or {}).get("price"), 999999999.0) if h1_eql else recent_low_8,
-        _float_safe((h1_near_bull_pivot or {}).get("price"), 999999999.0) if h1_near_bull_pivot else recent_low_8,
-    )
-
-    x_long_zone_low = min(float(latest["ema10"]), float(latest["ema20"]), max(float(prev["low"]), price - atr * 1.35))
-    x_long_zone_high = max(float(latest["ema10"]), min(float(prev["high"]), x_long_trigger + atr * 0.25))
-    if x_long_zone_low > x_long_zone_high:
-        x_long_zone_low, x_long_zone_high = x_long_zone_high, x_long_zone_low
-
-    x_short_zone_low = min(float(latest["ema10"]), max(float(prev["low"]), x_short_trigger - atr * 0.25))
-    x_short_zone_high = max(float(latest["ema10"]), float(latest["ema20"]), min(float(prev["high"]), price + atr * 1.35))
-    if x_short_zone_low > x_short_zone_high:
-        x_short_zone_low, x_short_zone_high = x_short_zone_high, x_short_zone_low
-
-    x_long_basis: list[str] = []
-    if last_bos_up:
-        x_long_basis.append("15m_bos_up")
-    if last_mss_up:
-        x_long_basis.append("15m_mss_up")
-    if strong_volume:
-        x_long_basis.append("volume_expansion")
-    if h1_long_phase in {"mixed", "continuation"}:
-        x_long_basis.append("h1_repairing")
-
-    x_short_basis: list[str] = []
-    if last_bos_down:
-        x_short_basis.append("15m_bos_down")
-    if last_mss_down:
-        x_short_basis.append("15m_mss_down")
-    if strong_volume:
-        x_short_basis.append("volume_expansion")
-    if h1_short_phase in {"mixed", "continuation"}:
-        x_short_basis.append("h1_repairing")
-
-    x_long_checks = {
-        "volume_expansion": strong_volume,
-        "impulse_breakout": impulse_body >= 0.90,
-        "structure_break": bool(last_bos_up or last_mss_up) or float(latest["high"]) >= recent_high_8 + atr * 0.10,
-        "price_above_ema_stack": bullish_stack,
-        "htf_not_hard_counter": trend_1h != "bear" and h4_long_phase != "counter",
-        "distance_not_excessive": _distance_in_atr(price, float(latest["ema20"]), atr) <= 3.80,
-    }
-    if _evaluate_branch("X_BREAKOUT_LONG", x_long_checks, near_miss_signals, blocked_counter):
-        eta_min, eta_max = _estimate_x_window("long", latest, prev, x_long_trigger, long_regime_score)
-        signals.append(
-            _signal_dict(
-                "X_BREAKOUT_LONG",
-                symbol,
-                "long",
-                price,
-                trend_display_long,
-                "breakout",
-                zone_low=x_long_zone_low,
-                zone_high=x_long_zone_high,
-                structure_basis=x_long_basis,
-                eta_min_minutes=eta_min,
-                eta_max_minutes=eta_max,
-                trigger_level=x_long_trigger,
-            )
-        )
-
-    x_short_checks = {
-        "volume_expansion": strong_volume,
-        "impulse_breakdown": impulse_body >= 0.90,
-        "structure_break": bool(last_bos_down or last_mss_down) or float(latest["low"]) <= recent_low_8 - atr * 0.10,
-        "price_below_ema_stack": bearish_stack,
-        "htf_not_hard_counter": trend_1h != "bull" and h4_short_phase != "counter",
-        "distance_not_excessive": _distance_in_atr(price, float(latest["ema20"]), atr) <= 3.80,
-    }
-    if _evaluate_branch("X_BREAKOUT_SHORT", x_short_checks, near_miss_signals, blocked_counter):
-        eta_min, eta_max = _estimate_x_window("short", latest, prev, x_short_trigger, short_regime_score)
-        signals.append(
-            _signal_dict(
-                "X_BREAKOUT_SHORT",
-                symbol,
-                "short",
-                price,
-                trend_display_short,
-                "breakout",
-                zone_low=x_short_zone_low,
-                zone_high=x_short_zone_high,
-                structure_basis=x_short_basis,
-                eta_min_minutes=eta_min,
-                eta_max_minutes=eta_max,
-                trigger_level=x_short_trigger,
-            )
-        )
 
     return {
         # 不再做每个方向只保留一个“最佳信号”的筛选。
