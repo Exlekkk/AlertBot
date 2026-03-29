@@ -545,6 +545,41 @@ def _trend_display(direction: str, score: int) -> str:
     return "neutral"
 
 
+def _tai_profile(k: dict) -> dict[str, Any]:
+    value = _float_safe(k.get("tai_value"), 0.0)
+    p20 = _float_safe(k.get("tai_p20"), value)
+    p40 = _float_safe(k.get("tai_p40"), value)
+    p60 = _float_safe(k.get("tai_p60"), value)
+    p80 = _float_safe(k.get("tai_p80"), value)
+    rising = bool(k.get("tai_rising"))
+
+    if value >= p80:
+        score = 4
+        bucket = "hot"
+    elif value >= p60:
+        score = 3
+        bucket = "active"
+    elif value >= p40:
+        score = 2
+        bucket = "normal"
+    elif value >= p20:
+        score = 1
+        bucket = "cool"
+    else:
+        score = 0
+        bucket = "cold"
+
+    return {
+        "score": score,
+        "bucket": bucket,
+        "rising": rising,
+        "fire_ready": score >= 3 or (score >= 2 and rising),
+        "allow_b": score >= 2 or rising,
+        "allow_c": score >= 1 or rising,
+        "repeat_multiplier": 0.75 if score >= 4 and rising else 0.9 if score >= 3 else 1.0 if score >= 2 else 1.35 if rising else 1.9,
+    }
+
+
 def _classify_tf_phase(
     direction: str,
     trend_label: str,
@@ -632,6 +667,8 @@ def _signal_dict(
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
     trigger_level: float | None = None,
+    atr_value: float | None = None,
+    h1_tai_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     basis = structure_basis or []
     zone_low_v = zone_low if zone_low is not None else price
@@ -640,6 +677,7 @@ def _signal_dict(
     basis_key = ",".join(sorted(basis)) if basis else "na"
     signature = f"{name}:{direction}:{zone_key}:{basis_key}"
     cooldown_seconds = {1: 45 * 60, 2: 30 * 60, 3: 25 * 60, 4: 20 * 60}.get(SIGNAL_CLASS[name], 30 * 60)
+    tai_profile = h1_tai_profile or {}
     return {
         "signal": name,
         "symbol": symbol,
@@ -656,6 +694,11 @@ def _signal_dict(
         "eta_max_minutes": eta_max_minutes,
         "signature": signature,
         "cooldown_seconds": cooldown_seconds,
+        "atr": float(atr_value or 0.0),
+        "h1_tai_score": int(tai_profile.get("score", 0)),
+        "h1_tai_bucket": tai_profile.get("bucket", "normal"),
+        "h1_tai_rising": bool(tai_profile.get("rising", False)),
+        "h1_tai_repeat_multiplier": float(tai_profile.get("repeat_multiplier", 1.0)),
     }
 
 
@@ -765,6 +808,7 @@ def _h1_state(
     ema10 = float(k_1h["ema10"])
     ema20 = float(k_1h["ema20"])
     prev_close = float(p_1h["close"])
+    tai_profile = _tai_profile(k_1h)
 
     if direction == "long":
         overheat_hard = _long_overheat_hard(
@@ -798,11 +842,12 @@ def _h1_state(
         bias_score = max(continuation_score + 1, repair_score, early_score)
         bias_score += 1 if background["direction"] == "long" else 0
         bias_score -= 2 if background["hard_counter_long"] else 0
-        if continuation_score >= 5 and not background["hard_counter_long"]:
+        bias_score += 1 if tai_profile["fire_ready"] else 0
+        if continuation_score >= 5 and tai_profile["fire_ready"] and not background["hard_counter_long"]:
             phase = "continuation"
-        elif repair_score >= 4 and not background["hard_counter_long"]:
+        elif repair_score >= 4 and tai_profile["allow_b"] and not background["hard_counter_long"]:
             phase = "repair"
-        elif early_score >= 3 and (background["direction"] != "short" or repair_score >= 5):
+        elif early_score >= 3 and tai_profile["allow_c"] and (background["direction"] != "short" or repair_score >= 5):
             phase = "early"
         else:
             phase = "blocked"
@@ -814,6 +859,13 @@ def _h1_state(
             "repair_score": repair_score,
             "early_score": early_score,
             "blocked_by_background": background["hard_counter_long"],
+            "tai_score": tai_profile["score"],
+            "tai_bucket": tai_profile["bucket"],
+            "tai_rising": tai_profile["rising"],
+            "tai_fire_ready": tai_profile["fire_ready"],
+            "tai_allow_b": tai_profile["allow_b"],
+            "tai_allow_c": tai_profile["allow_c"],
+            "tai_repeat_multiplier": tai_profile["repeat_multiplier"],
         }
 
     exhausted_hard = _short_exhausted_hard(
@@ -847,11 +899,12 @@ def _h1_state(
     bias_score = max(continuation_score + 1, repair_score, early_score)
     bias_score += 1 if background["direction"] == "short" else 0
     bias_score -= 2 if background["hard_counter_short"] else 0
-    if continuation_score >= 5 and not background["hard_counter_short"]:
+    bias_score += 1 if tai_profile["fire_ready"] else 0
+    if continuation_score >= 5 and tai_profile["fire_ready"] and not background["hard_counter_short"]:
         phase = "continuation"
-    elif repair_score >= 4 and not background["hard_counter_short"]:
+    elif repair_score >= 4 and tai_profile["allow_b"] and not background["hard_counter_short"]:
         phase = "repair"
-    elif early_score >= 3 and (background["direction"] != "long" or repair_score >= 5):
+    elif early_score >= 3 and tai_profile["allow_c"] and (background["direction"] != "long" or repair_score >= 5):
         phase = "early"
     else:
         phase = "blocked"
@@ -863,6 +916,13 @@ def _h1_state(
         "repair_score": repair_score,
         "early_score": early_score,
         "blocked_by_background": background["hard_counter_short"],
+        "tai_score": tai_profile["score"],
+        "tai_bucket": tai_profile["bucket"],
+        "tai_rising": tai_profile["rising"],
+        "tai_fire_ready": tai_profile["fire_ready"],
+        "tai_allow_b": tai_profile["allow_b"],
+        "tai_allow_c": tai_profile["allow_c"],
+        "tai_repeat_multiplier": tai_profile["repeat_multiplier"],
     }
 
 
@@ -1085,55 +1145,60 @@ def detect_signals(
             _price_above_stack(latest) or (price >= float(latest["ema10"]) and float(latest["ema10"]) >= float(latest["ema20"])),
             _momentum_up(latest),
             bool(last_bos_up or last_mss_up),
-            vol_ratio_15m >= 0.90 or bool(latest.get("tai_rising")) or bool(latest.get("fl_buy_signal")),
+            vol_ratio_15m >= 0.90 or active_state["tai_fire_ready"] or bool(latest.get("fl_buy_signal")),
             not hard_block,
+            active_state["tai_fire_ready"],
         ) >= 4
         b_ready = _count_true(
             bool(b_basis) >= 1,
             reclaim_ready,
             price >= float(latest["ema20"]) or float(latest["ema10"]) >= float(latest["ema20"]),
-            _momentum_up(latest) or bool(latest.get("tai_rising")) or bool(latest.get("fl_buy_signal")),
+            _momentum_up(latest) or active_state["tai_allow_b"] or bool(latest.get("fl_buy_signal")),
             not hard_block,
+            active_state["tai_allow_b"],
         ) >= 4
         c_ready = _count_true(
             bool(c_basis) >= 2,
             eq_div or bool(last_mss_up),
-            _rar_supportive(latest, prev) or bool(latest.get("tai_rising")) or price >= float(prev["close"]),
+            _rar_supportive(latest, prev) or active_state["tai_allow_c"] or price >= float(prev["close"]),
             not background["hard_counter_long"],
+            active_state["tai_allow_c"],
         ) >= 3
 
         if active_state["phase"] == "continuation":
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_long"],
                 "h1_continuation_locked": active_state["continuation_score"] >= 5,
+                "h1_tai_ready": active_state["tai_fire_ready"],
                 "m15_trigger_ready": a_ready,
                 "not_overheated": not hard_block,
             }
             if _evaluate_branch("A_LONG", checks, near_miss_signals, blocked_counter):
                 eta_min, eta_max = _estimate_a_window("long", latest, prev, regime_score, last_bos_up or last_mss_up, last_index_15m)
-                sig = _signal_dict("A_LONG", symbol, "long", price, trend_display, "active", structure_basis=a_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("A_LONG", symbol, "long", price, trend_display, "active", structure_basis=a_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "long_continuation"
                 signals.append(sig)
         elif active_state["phase"] == "repair":
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_long"],
                 "h1_repair_locked": active_state["repair_score"] >= 4,
+                "h1_tai_ready": active_state["tai_allow_b"],
                 "m15_reclaim_ready": b_ready,
                 "not_overheated": not hard_block,
             }
             if _evaluate_branch("B_PULLBACK_LONG", checks, near_miss_signals, blocked_counter):
                 b_age = _basis_age(last_index_15m, bull_fvg_fill, bull_sweep, near_bull_pivot, last_mss_up, eql)
                 eta_min, eta_max = _estimate_b_window("long", latest, prev, regime_score, b_zone_low, b_zone_high, len(b_basis), b_age, reclaim_ready, abs(price - float(latest["ema10"])) <= atr * 1.20)
-                sig = _signal_dict("B_PULLBACK_LONG", symbol, "long", price, trend_display, "active", zone_low=b_zone_low, zone_high=b_zone_high, structure_basis=b_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("B_PULLBACK_LONG", symbol, "long", price, trend_display, "active", zone_low=b_zone_low, zone_high=b_zone_high, structure_basis=b_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "long_repair"
                 signals.append(sig)
             elif c_ready:
                 anchor = next((v for v in [float((bull_sweep or {}).get("level", 0.0)) if bull_sweep else None, float((near_bull_pivot or {}).get("price", 0.0)) if near_bull_pivot else None, float((eql or {}).get("price", 0.0)) if eql else None] if v is not None), None)
                 c_zone_low, c_zone_high = _build_c_zone("long", price, atr, anchor, float(latest["ema20"]))
                 c_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
-                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), bool(latest.get("tai_rising")))
+                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), active_state["tai_allow_c"])
                 eta_min, eta_max = _estimate_c_window("long", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
-                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "long_repair"
                 signals.append(sig)
             else:
@@ -1147,15 +1212,16 @@ def detect_signals(
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_long"],
                 "left_basis_ready": len(c_basis) >= 2,
+                "h1_tai_ready": active_state["tai_allow_c"],
                 "left_confirm_ready": c_ready,
             }
             if _evaluate_branch("C_LEFT_LONG", checks, near_miss_signals, blocked_counter):
                 anchor = next((v for v in [float((bull_sweep or {}).get("level", 0.0)) if bull_sweep else None, float((near_bull_pivot or {}).get("price", 0.0)) if near_bull_pivot else None, float((eql or {}).get("price", 0.0)) if eql else None] if v is not None), None)
                 c_zone_low, c_zone_high = _build_c_zone("long", price, atr, anchor, float(latest["ema20"]))
                 c_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
-                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), bool(latest.get("tai_rising")))
+                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), active_state["tai_allow_c"])
                 eta_min, eta_max = _estimate_c_window("long", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
-                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "long_early"
                 signals.append(sig)
     else:
@@ -1214,55 +1280,60 @@ def detect_signals(
             _price_below_stack(latest) or (price <= float(latest["ema10"]) and float(latest["ema10"]) <= float(latest["ema20"])),
             _momentum_down(latest),
             bool(last_bos_down or last_mss_down),
-            vol_ratio_15m >= 0.90 or (not bool(latest.get("tai_rising"))) or bool(latest.get("fl_sell_signal")),
+            vol_ratio_15m >= 0.90 or active_state["tai_fire_ready"] or bool(latest.get("fl_sell_signal")),
             not hard_block,
+            active_state["tai_fire_ready"],
         ) >= 4
         b_ready = _count_true(
             bool(b_basis) >= 1,
             reject_ready,
             price <= float(latest["ema20"]) or float(latest["ema10"]) <= float(latest["ema20"]),
-            _momentum_down(latest) or (not bool(latest.get("tai_rising"))) or bool(latest.get("fl_sell_signal")),
+            _momentum_down(latest) or active_state["tai_allow_b"] or bool(latest.get("fl_sell_signal")),
             not hard_block,
+            active_state["tai_allow_b"],
         ) >= 4
         c_ready = _count_true(
             bool(c_basis) >= 2,
             eq_div or bool(last_mss_down),
-            _rar_supportive(latest, prev) or (not bool(latest.get("tai_rising"))) or price <= float(prev["close"]),
+            _rar_supportive(latest, prev) or active_state["tai_allow_c"] or price <= float(prev["close"]),
             not background["hard_counter_short"],
+            active_state["tai_allow_c"],
         ) >= 3
 
         if active_state["phase"] == "continuation":
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_short"],
                 "h1_continuation_locked": active_state["continuation_score"] >= 5,
+                "h1_tai_ready": active_state["tai_fire_ready"],
                 "m15_trigger_ready": a_ready,
                 "not_exhausted": not hard_block,
             }
             if _evaluate_branch("A_SHORT", checks, near_miss_signals, blocked_counter):
                 eta_min, eta_max = _estimate_a_window("short", latest, prev, regime_score, last_bos_down or last_mss_down, last_index_15m)
-                sig = _signal_dict("A_SHORT", symbol, "short", price, trend_display, "active", structure_basis=a_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("A_SHORT", symbol, "short", price, trend_display, "active", structure_basis=a_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "short_continuation"
                 signals.append(sig)
         elif active_state["phase"] == "repair":
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_short"],
                 "h1_repair_locked": active_state["repair_score"] >= 4,
+                "h1_tai_ready": active_state["tai_allow_b"],
                 "m15_reject_ready": b_ready,
                 "not_exhausted": not hard_block,
             }
             if _evaluate_branch("B_PULLBACK_SHORT", checks, near_miss_signals, blocked_counter):
                 b_age = _basis_age(last_index_15m, bear_fvg_fill, bear_sweep, near_bear_pivot, last_mss_down, eqh)
                 eta_min, eta_max = _estimate_b_window("short", latest, prev, regime_score, b_zone_low, b_zone_high, len(b_basis), b_age, reject_ready, abs(price - float(latest["ema10"])) <= atr * 1.20)
-                sig = _signal_dict("B_PULLBACK_SHORT", symbol, "short", price, trend_display, "active", zone_low=b_zone_low, zone_high=b_zone_high, structure_basis=b_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("B_PULLBACK_SHORT", symbol, "short", price, trend_display, "active", zone_low=b_zone_low, zone_high=b_zone_high, structure_basis=b_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "short_repair"
                 signals.append(sig)
             elif c_ready:
                 anchor = next((v for v in [float((bear_sweep or {}).get("level", 0.0)) if bear_sweep else None, float((near_bear_pivot or {}).get("price", 0.0)) if near_bear_pivot else None, float((eqh or {}).get("price", 0.0)) if eqh else None] if v is not None), None)
                 c_zone_low, c_zone_high = _build_c_zone("short", price, atr, anchor, float(latest["ema20"]))
                 c_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
-                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), not bool(latest.get("tai_rising")))
+                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), active_state["tai_allow_c"])
                 eta_min, eta_max = _estimate_c_window("short", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
-                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "short_repair"
                 signals.append(sig)
             else:
@@ -1276,15 +1347,16 @@ def detect_signals(
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_short"],
                 "left_basis_ready": len(c_basis) >= 2,
+                "h1_tai_ready": active_state["tai_allow_c"],
                 "left_confirm_ready": c_ready,
             }
             if _evaluate_branch("C_LEFT_SHORT", checks, near_miss_signals, blocked_counter):
                 anchor = next((v for v in [float((bear_sweep or {}).get("level", 0.0)) if bear_sweep else None, float((near_bear_pivot or {}).get("price", 0.0)) if near_bear_pivot else None, float((eqh or {}).get("price", 0.0)) if eqh else None] if v is not None), None)
                 c_zone_low, c_zone_high = _build_c_zone("short", price, atr, anchor, float(latest["ema20"]))
                 c_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
-                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), not bool(latest.get("tai_rising")))
+                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), active_state["tai_allow_c"])
                 eta_min, eta_max = _estimate_c_window("short", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
-                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=active_state)
                 sig["phase_group"] = "short_early"
                 signals.append(sig)
 
