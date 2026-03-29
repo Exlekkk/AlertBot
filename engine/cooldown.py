@@ -58,6 +58,22 @@ class SignalStateStore:
             return self.c_min_repeat_seconds
         return 45 * 60
 
+    def _effective_min_repeat_seconds(self, stage_name: str, signal: dict) -> int:
+        base = self._min_repeat_seconds(stage_name)
+        score = int(signal.get("h1_tai_score", 2))
+        rising = bool(signal.get("h1_tai_rising", False))
+        multiplier = float(signal.get("h1_tai_repeat_multiplier", 1.0))
+        if score <= 1 and not rising:
+            multiplier = max(multiplier, 1.8)
+        elif score >= 4 and rising:
+            multiplier = min(multiplier, 0.75)
+        return max(15 * 60, int(base * multiplier))
+
+    def _tai_allows_upgrade(self, signal: dict) -> bool:
+        score = int(signal.get("h1_tai_score", 2))
+        rising = bool(signal.get("h1_tai_rising", False))
+        return score >= 3 or (score >= 2 and rising)
+
     def _zone_changed_enough(self, previous: dict, current: dict) -> bool:
         prev_low = previous.get("zone_low")
         prev_high = previous.get("zone_high")
@@ -112,16 +128,20 @@ class SignalStateStore:
 
         # 同方向同阶段：必须满足最小重发间隔，并且出现趋势/区间升级。
         if rank_now == rank_prev:
-            if elapsed < self._min_repeat_seconds(stage_now):
+            if elapsed < self._effective_min_repeat_seconds(stage_now, signal):
                 return False
             if same_phase and same_signal and tiny_price_move and not trend_upgrade and not zone_upgrade:
                 return False
             if same_phase and not trend_upgrade and not zone_upgrade:
                 return False
+            if not self._tai_allows_upgrade(signal) and not trend_upgrade and not zone_upgrade:
+                return False
             return True
 
-        # 同方向升阶：允许，但必须不是紧贴上一条的抖动切换。
+        # 同方向升阶：必须先经过 1h TAI 节奏放行。
         if rank_now > rank_prev:
+            if not self._tai_allows_upgrade(signal):
+                return False
             if elapsed < 15 * 60 and same_phase and not trend_upgrade and not zone_upgrade:
                 return False
             return True
