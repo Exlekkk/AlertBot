@@ -660,6 +660,238 @@ def _signal_dict(
 
 
 
+def _stage_rank(signal_name: str) -> int:
+    if signal_name.startswith("A_"):
+        return 3
+    if signal_name.startswith("B_"):
+        return 2
+    if signal_name.startswith("C_"):
+        return 1
+    return 0
+
+
+def _background_context_4h(
+    trend_4h: str,
+    k_4h: dict,
+    p_4h: dict,
+    *,
+    bos_up: dict[str, Any] | None,
+    bos_down: dict[str, Any] | None,
+    mss_up: dict[str, Any] | None,
+    mss_down: dict[str, Any] | None,
+    bull_fvg_fill: dict[str, Any] | None,
+    bear_fvg_fill: dict[str, Any] | None,
+    bull_sweep: dict[str, Any] | None,
+    bear_sweep: dict[str, Any] | None,
+    eql: dict[str, Any] | None,
+    eqh: dict[str, Any] | None,
+) -> dict[str, Any]:
+    atr = _atr(k_4h)
+    close = float(k_4h["close"])
+    ema20 = float(k_4h["ema20"])
+
+    resistance_hint = bool(near for near in (bear_sweep, bear_fvg_fill, eqh))
+    support_hint = bool(near for near in (bull_sweep, bull_fvg_fill, eql))
+
+    long_overheat = _long_overheat_hard(
+        k_4h,
+        p_4h,
+        resistance_hint=resistance_hint,
+        deep_extension=(close - ema20) >= atr * 2.3,
+        h1_overheat=False,
+    )
+    short_exhausted = _short_exhausted_hard(
+        k_4h,
+        p_4h,
+        support_hint=support_hint,
+        deep_extension=(ema20 - close) >= atr * 2.3,
+        h1_exhausted=False,
+    )
+
+    long_score = _count_true(
+        trend_4h in {"bull", "lean_bull"},
+        _price_above_stack(k_4h),
+        close >= ema20,
+        _momentum_up(k_4h),
+        bool(bos_up or mss_up),
+        not long_overheat,
+    )
+    short_score = _count_true(
+        trend_4h in {"bear", "lean_bear"},
+        _price_below_stack(k_4h),
+        close <= ema20,
+        _momentum_down(k_4h),
+        bool(bos_down or mss_down),
+        not short_exhausted,
+    )
+
+    if short_score >= long_score + 2 and short_score >= 4:
+        direction = "short"
+    elif long_score >= short_score + 2 and long_score >= 4:
+        direction = "long"
+    else:
+        direction = "neutral"
+
+    return {
+        "direction": direction,
+        "long_score": long_score,
+        "short_score": short_score,
+        "hard_counter_long": direction == "short" and short_score >= 5,
+        "hard_counter_short": direction == "long" and long_score >= 5,
+        "trend_label": trend_4h,
+    }
+
+
+def _h1_state(
+    direction: str,
+    trend_1h: str,
+    k_1h: dict,
+    p_1h: dict,
+    *,
+    bos_event: dict[str, Any] | None,
+    mss_event: dict[str, Any] | None,
+    bull_fvg_fill: dict[str, Any] | None,
+    bear_fvg_fill: dict[str, Any] | None,
+    bull_sweep: dict[str, Any] | None,
+    bear_sweep: dict[str, Any] | None,
+    near_bull_pivot: dict[str, Any] | None,
+    near_bear_pivot: dict[str, Any] | None,
+    eql: dict[str, Any] | None,
+    eqh: dict[str, Any] | None,
+    background: dict[str, Any],
+) -> dict[str, Any]:
+    atr = _atr(k_1h)
+    close = float(k_1h["close"])
+    ema10 = float(k_1h["ema10"])
+    ema20 = float(k_1h["ema20"])
+    prev_close = float(p_1h["close"])
+
+    if direction == "long":
+        overheat_hard = _long_overheat_hard(
+            k_1h,
+            p_1h,
+            resistance_hint=bool(near_bear_pivot or bear_sweep or eqh),
+            deep_extension=(close - ema20) >= atr * 2.2,
+            h1_overheat=False,
+        )
+        continuation_score = _count_true(
+            trend_1h in {"bull", "lean_bull"},
+            _price_above_stack(k_1h),
+            close >= ema20,
+            _momentum_up(k_1h),
+            bool(bos_event or mss_event),
+            not overheat_hard,
+        )
+        repair_score = _count_true(
+            bool(mss_event),
+            bool(bull_fvg_fill or bull_sweep or near_bull_pivot or eql),
+            close >= ema10 or close >= ema20 - atr * 0.30,
+            _momentum_up(k_1h) or bool(k_1h.get("tai_rising")) or bool(k_1h.get("cm_hist_up")),
+            _eq_div_long(k_1h, p_1h) or _rar_supportive(k_1h, p_1h) or close >= prev_close,
+            not overheat_hard,
+        )
+        early_score = _count_true(
+            bool(bull_sweep or near_bull_pivot or bull_fvg_fill or eql or mss_event),
+            _eq_div_long(k_1h, p_1h) or bool(k_1h.get("sss_oversold_warning")),
+            _rar_supportive(k_1h, p_1h) or bool(k_1h.get("tai_rising")) or close >= prev_close,
+        )
+        bias_score = max(continuation_score + 1, repair_score, early_score)
+        bias_score += 1 if background["direction"] == "long" else 0
+        bias_score -= 2 if background["hard_counter_long"] else 0
+        if continuation_score >= 5 and not background["hard_counter_long"]:
+            phase = "continuation"
+        elif repair_score >= 4 and not background["hard_counter_long"]:
+            phase = "repair"
+        elif early_score >= 3 and (background["direction"] != "short" or repair_score >= 5):
+            phase = "early"
+        else:
+            phase = "blocked"
+        return {
+            "direction": "long",
+            "phase": phase,
+            "bias_score": bias_score,
+            "continuation_score": continuation_score,
+            "repair_score": repair_score,
+            "early_score": early_score,
+            "blocked_by_background": background["hard_counter_long"],
+        }
+
+    exhausted_hard = _short_exhausted_hard(
+        k_1h,
+        p_1h,
+        support_hint=bool(near_bull_pivot or bull_sweep or eql),
+        deep_extension=(ema20 - close) >= atr * 2.2,
+        h1_exhausted=False,
+    )
+    continuation_score = _count_true(
+        trend_1h in {"bear", "lean_bear"},
+        _price_below_stack(k_1h),
+        close <= ema20,
+        _momentum_down(k_1h),
+        bool(bos_event or mss_event),
+        not exhausted_hard,
+    )
+    repair_score = _count_true(
+        bool(mss_event),
+        bool(bear_fvg_fill or bear_sweep or near_bear_pivot or eqh),
+        close <= ema10 or close <= ema20 + atr * 0.30,
+        _momentum_down(k_1h) or (not bool(k_1h.get("tai_rising"))) or bool(k_1h.get("cm_hist_down")),
+        _eq_div_short(k_1h, p_1h) or _rar_supportive(k_1h, p_1h) or close <= prev_close,
+        not exhausted_hard,
+    )
+    early_score = _count_true(
+        bool(bear_sweep or near_bear_pivot or bear_fvg_fill or eqh or mss_event),
+        _eq_div_short(k_1h, p_1h) or bool(k_1h.get("sss_overbought_warning")),
+        _rar_supportive(k_1h, p_1h) or (not bool(k_1h.get("tai_rising"))) or close <= prev_close,
+    )
+    bias_score = max(continuation_score + 1, repair_score, early_score)
+    bias_score += 1 if background["direction"] == "short" else 0
+    bias_score -= 2 if background["hard_counter_short"] else 0
+    if continuation_score >= 5 and not background["hard_counter_short"]:
+        phase = "continuation"
+    elif repair_score >= 4 and not background["hard_counter_short"]:
+        phase = "repair"
+    elif early_score >= 3 and (background["direction"] != "long" or repair_score >= 5):
+        phase = "early"
+    else:
+        phase = "blocked"
+    return {
+        "direction": "short",
+        "phase": phase,
+        "bias_score": bias_score,
+        "continuation_score": continuation_score,
+        "repair_score": repair_score,
+        "early_score": early_score,
+        "blocked_by_background": background["hard_counter_short"],
+    }
+
+
+def _pick_active_h1_state(long_state: dict[str, Any], short_state: dict[str, Any]) -> dict[str, Any]:
+    if long_state["phase"] != "blocked" and long_state["bias_score"] >= short_state["bias_score"] + 2:
+        return long_state
+    if short_state["phase"] != "blocked" and short_state["bias_score"] >= long_state["bias_score"] + 2:
+        return short_state
+
+    if long_state["phase"] == "repair" and short_state["phase"] != "continuation" and long_state["bias_score"] >= short_state["bias_score"] + 1:
+        return long_state
+    if short_state["phase"] == "repair" and long_state["phase"] != "continuation" and short_state["bias_score"] >= long_state["bias_score"] + 1:
+        return short_state
+
+    if long_state["phase"] == "early" and short_state["phase"] == "blocked":
+        return long_state
+    if short_state["phase"] == "early" and long_state["phase"] == "blocked":
+        return short_state
+
+    return {"direction": "neutral", "phase": "blocked", "bias_score": 0}
+
+
+def _build_c_zone(direction: str, price: float, atr: float, anchor: float | None, ema20: float) -> tuple[float, float]:
+    base = anchor if anchor is not None else ema20
+    if direction == "long":
+        return (min(base - atr * 0.35, ema20 - atr * 0.10), max(price, ema20 + atr * 0.20))
+    return (min(price, ema20 - atr * 0.20), max(base + atr * 0.35, ema20 + atr * 0.10))
+
+
 def detect_signals(
     symbol: str,
     klines_1d: list[dict],
@@ -683,6 +915,7 @@ def detect_signals(
     trend_display_long = _trend_display("long", long_regime_score)
     trend_display_short = _trend_display("short", short_regime_score)
 
+    # 15m structure
     last_bos_up = latest_structure_event(klines_15m, direction="up", kinds=("bos",), max_bars_ago=6)
     last_bos_down = latest_structure_event(klines_15m, direction="down", kinds=("bos",), max_bars_ago=6)
     last_mss_up = latest_structure_event(klines_15m, direction="up", kinds=("mss",), max_bars_ago=8)
@@ -691,7 +924,6 @@ def detect_signals(
     equal_levels = detect_recent_equal_levels(klines_15m)
     eqh = equal_levels.get("eqh")
     eql = equal_levels.get("eql")
-
     bull_fvg_fill = detect_recent_fvg_fill(klines_15m, "bull")
     bear_fvg_fill = detect_recent_fvg_fill(klines_15m, "bear")
     bull_sweep = detect_recent_liquidity_sweep(klines_15m, "bull")
@@ -699,6 +931,7 @@ def detect_signals(
     near_bull_pivot = detect_near_pivot_level(klines_15m, "bull")
     near_bear_pivot = detect_near_pivot_level(klines_15m, "bear")
 
+    # 1h structure
     h1_equal_levels = detect_recent_equal_levels(klines_1h)
     h1_eqh = h1_equal_levels.get("eqh")
     h1_eql = h1_equal_levels.get("eql")
@@ -713,6 +946,7 @@ def detect_signals(
     h1_last_mss_up = latest_structure_event(klines_1h, direction="up", kinds=("mss",), max_bars_ago=8)
     h1_last_mss_down = latest_structure_event(klines_1h, direction="down", kinds=("mss",), max_bars_ago=8)
 
+    # 4h structure
     h4_equal_levels = detect_recent_equal_levels(klines_4h)
     h4_eqh = h4_equal_levels.get("eqh")
     h4_eql = h4_equal_levels.get("eql")
@@ -720,393 +954,342 @@ def detect_signals(
     h4_bear_fvg_fill = detect_recent_fvg_fill(klines_4h, "bear")
     h4_bull_sweep = detect_recent_liquidity_sweep(klines_4h, "bull")
     h4_bear_sweep = detect_recent_liquidity_sweep(klines_4h, "bear")
-    h4_near_bull_pivot = detect_near_pivot_level(klines_4h, "bull")
-    h4_near_bear_pivot = detect_near_pivot_level(klines_4h, "bear")
     h4_last_bos_up = latest_structure_event(klines_4h, direction="up", kinds=("bos",), max_bars_ago=4)
     h4_last_bos_down = latest_structure_event(klines_4h, direction="down", kinds=("bos",), max_bars_ago=4)
     h4_last_mss_up = latest_structure_event(klines_4h, direction="up", kinds=("mss",), max_bars_ago=6)
     h4_last_mss_down = latest_structure_event(klines_4h, direction="down", kinds=("mss",), max_bars_ago=6)
 
-    h1_long_phase = _classify_tf_phase(
+    background = _background_context_4h(
+        trend_4h,
+        k_4h,
+        p_4h,
+        bos_up=h4_last_bos_up,
+        bos_down=h4_last_bos_down,
+        mss_up=h4_last_mss_up,
+        mss_down=h4_last_mss_down,
+        bull_fvg_fill=h4_bull_fvg_fill,
+        bear_fvg_fill=h4_bear_fvg_fill,
+        bull_sweep=h4_bull_sweep,
+        bear_sweep=h4_bear_sweep,
+        eql=h4_eql,
+        eqh=h4_eqh,
+    )
+
+    long_state = _h1_state(
         "long",
         trend_1h,
         k_1h,
         p_1h,
         bos_event=h1_last_bos_up,
         mss_event=h1_last_mss_up,
-        support_fvg_fill=h1_bull_fvg_fill,
-        resistance_fvg_fill=h1_bear_fvg_fill,
-        support_sweep=h1_bull_sweep,
-        resistance_sweep=h1_bear_sweep,
-        near_support=h1_near_bull_pivot,
-        near_resistance=h1_near_bear_pivot,
+        bull_fvg_fill=h1_bull_fvg_fill,
+        bear_fvg_fill=h1_bear_fvg_fill,
+        bull_sweep=h1_bull_sweep,
+        bear_sweep=h1_bear_sweep,
+        near_bull_pivot=h1_near_bull_pivot,
+        near_bear_pivot=h1_near_bear_pivot,
         eql=h1_eql,
         eqh=h1_eqh,
+        background=background,
     )
-    h1_short_phase = _classify_tf_phase(
+    short_state = _h1_state(
         "short",
         trend_1h,
         k_1h,
         p_1h,
         bos_event=h1_last_bos_down,
         mss_event=h1_last_mss_down,
-        support_fvg_fill=h1_bull_fvg_fill,
-        resistance_fvg_fill=h1_bear_fvg_fill,
-        support_sweep=h1_bull_sweep,
-        resistance_sweep=h1_bear_sweep,
-        near_support=h1_near_bull_pivot,
-        near_resistance=h1_near_bear_pivot,
+        bull_fvg_fill=h1_bull_fvg_fill,
+        bear_fvg_fill=h1_bear_fvg_fill,
+        bull_sweep=h1_bull_sweep,
+        bear_sweep=h1_bear_sweep,
+        near_bull_pivot=h1_near_bull_pivot,
+        near_bear_pivot=h1_near_bear_pivot,
         eql=h1_eql,
         eqh=h1_eqh,
+        background=background,
     )
-    h4_long_phase = _classify_tf_phase(
-        "long",
-        trend_4h,
-        k_4h,
-        p_4h,
-        bos_event=h4_last_bos_up,
-        mss_event=h4_last_mss_up,
-        support_fvg_fill=h4_bull_fvg_fill,
-        resistance_fvg_fill=h4_bear_fvg_fill,
-        support_sweep=h4_bull_sweep,
-        resistance_sweep=h4_bear_sweep,
-        near_support=h4_near_bull_pivot,
-        near_resistance=h4_near_bear_pivot,
-        eql=h4_eql,
-        eqh=h4_eqh,
-    )
-    h4_short_phase = _classify_tf_phase(
-        "short",
-        trend_4h,
-        k_4h,
-        p_4h,
-        bos_event=h4_last_bos_down,
-        mss_event=h4_last_mss_down,
-        support_fvg_fill=h4_bull_fvg_fill,
-        resistance_fvg_fill=h4_bear_fvg_fill,
-        support_sweep=h4_bull_sweep,
-        resistance_sweep=h4_bear_sweep,
-        near_support=h4_near_bull_pivot,
-        near_resistance=h4_near_bear_pivot,
-        eql=h4_eql,
-        eqh=h4_eqh,
-    )
+    active_state = _pick_active_h1_state(long_state, short_state)
 
-    bullish_stack = _price_above_stack(latest)
-    bearish_stack = _price_below_stack(latest)
-    momentum_up = _momentum_up(latest)
-    momentum_down = _momentum_down(latest)
-    rar_support = _rar_supportive(latest, prev)
-    eq_long = _eq_div_long(latest, prev)
-    eq_short = _eq_div_short(latest, prev)
-
-    vol_ratio_15m = _volume_ratio(latest)
-    near_ema10 = abs(price - float(latest["ema10"])) <= atr * 1.20
-
-    long_liquidity_hint = bool(bear_sweep) or bool(near_bear_pivot) or bool(eqh)
-    short_liquidity_hint = bool(bull_sweep) or bool(near_bull_pivot) or bool(eql)
-    long_overheat_hard = _long_overheat_hard(
-        latest,
-        prev,
-        resistance_hint=long_liquidity_hint,
-        deep_extension=(price - float(latest["ema20"])) >= atr * 2.20,
-        h1_overheat=_long_overheat(k_1h, p_1h),
-    )
-    short_exhausted_hard = _short_exhausted_hard(
-        latest,
-        prev,
-        support_hint=short_liquidity_hint,
-        deep_extension=(float(latest["ema20"]) - price) >= atr * 2.20,
-        h1_exhausted=_short_exhausted(k_1h, p_1h),
-    )
-
-    a_long_distance_ok = _a_distance_ok(
-        "long",
-        price=price,
-        ema20=float(latest["ema20"]),
-        atr=atr,
-        momentum_ok=momentum_up,
-        hard_exhausted=long_overheat_hard,
-        liquidity_hint=long_liquidity_hint,
-    )
-    a_short_distance_ok = _a_distance_ok(
-        "short",
-        price=price,
-        ema20=float(latest["ema20"]),
-        atr=atr,
-        momentum_ok=momentum_down,
-        hard_exhausted=short_exhausted_hard,
-        liquidity_hint=short_liquidity_hint,
-    )
-
-    close_pos = _close_position(latest)
-    long_reclaim = price >= float(latest["ema10"]) and (price > float(prev["close"]) or close_pos >= 0.52)
-    short_reject = price <= float(latest["ema10"]) and (price < float(prev["close"]) or close_pos <= 0.48)
-
-    eql_then_bos_long = bool(eql and last_bos_up and int(last_bos_up["trigger_index"]) >= int(eql["second_index"]))
-    eqh_then_bos_short = bool(eqh and last_bos_down and int(last_bos_down["trigger_index"]) >= int(eqh["second_index"]))
-
-    b_long_basis: list[str] = []
-    if eql_then_bos_long:
-        b_long_basis.append("eql_then_bos")
-    if bull_fvg_fill:
-        b_long_basis.append("bullish_fvg_fill")
-    if bull_sweep:
-        b_long_basis.append("sellside_sweep")
-    if last_mss_up:
-        b_long_basis.append("mss_up")
-
-    b_short_basis: list[str] = []
-    if eqh_then_bos_short:
-        b_short_basis.append("eqh_then_bos")
-    if bear_fvg_fill:
-        b_short_basis.append("bearish_fvg_fill")
-    if bear_sweep:
-        b_short_basis.append("buyside_sweep")
-    if last_mss_down:
-        b_short_basis.append("mss_down")
-
-    c_long_basis: list[str] = []
-    if eq_long:
-        c_long_basis.append("eq_div_long")
-    if bull_sweep:
-        c_long_basis.append("sellside_sweep")
-    if near_bull_pivot:
-        c_long_basis.append("near_support")
-    if last_mss_up:
-        c_long_basis.append("mss_up")
-
-    c_short_basis: list[str] = []
-    if eq_short:
-        c_short_basis.append("eq_div_short")
-    if bear_sweep:
-        c_short_basis.append("buyside_sweep")
-    if near_bear_pivot:
-        c_short_basis.append("near_resistance")
-    if last_mss_down:
-        c_short_basis.append("mss_down")
-
-    a_long_basis = ["h1_stage_long"]
-    if last_bos_up:
-        a_long_basis.append("bos_up_15m")
-    if last_mss_up:
-        a_long_basis.append("mss_up_15m")
-
-    a_short_basis = ["h1_stage_short"]
-    if last_bos_down:
-        a_short_basis.append("bos_down_15m")
-    if last_mss_down:
-        a_short_basis.append("mss_down_15m")
-
-    b_long_reclaim_ready = _reclaim_confirmation_ready(
-        latest,
-        prev,
-        klines_15m[-4:],
-        atr,
-        long_reclaim,
-        bullish_stack or price >= float(latest["ema10"]),
-        bool(bull_fvg_fill) or bool(bull_sweep) or bool(last_mss_up),
-    )
-    b_short_reject_ready = _reject_confirmation_ready(
-        latest,
-        prev,
-        klines_15m[-4:],
-        atr,
-        short_reject,
-        bearish_stack or price <= float(latest["ema10"]),
-        bool(bear_fvg_fill) or bool(bear_sweep) or bool(last_mss_down),
-    )
-
-    signals: list[dict[str, Any]] = []
     near_miss_signals: list[dict[str, Any]] = []
     blocked_counter: Counter = Counter()
+    signals: list[dict[str, Any]] = []
 
-    def _record_near_miss(name: str, checks: dict[str, bool]) -> None:
-        failed = [k for k, ok in checks.items() if not ok]
-        if not failed:
-            return
-        near_miss_signals.append({"candidate": name, "failed_checks": failed[:3]})
-        for reason in failed:
-            blocked_counter[f"{name}:{reason}"] += 1
-
-    def _stage_context(direction: str) -> dict[str, Any]:
-        if direction == "long":
-            return {
-                "hard_counter": h4_long_phase == "counter" and trend_4h == "bear" and long_regime_score < 0,
-                "h1_ready": h1_long_phase in {"continuation", "mixed"} and trend_1h != "bear",
-                "h1_cont": h1_long_phase == "continuation",
-                "structure": bool(last_bos_up or last_mss_up),
-                "stack": bullish_stack or (price >= float(latest["ema10"]) and float(latest["ema10"]) >= float(latest["ema20"])),
-                "momentum": momentum_up,
-                "rar": rar_support or (momentum_up and vol_ratio_15m >= 1.05),
-                "eq_ok": not long_overheat_hard,
-                "distance_ok": a_long_distance_ok,
-                "basis": b_long_basis,
-                "confirm": b_long_reclaim_ready,
-                "zone_low": float(bull_fvg_fill["zone_low"]) if bull_fvg_fill else (float(bull_sweep["level"]) - atr * 0.10 if bull_sweep else None),
-                "zone_high": float(bull_fvg_fill["zone_high"]) if bull_fvg_fill else (float(latest["ema20"]) if bull_sweep else None),
-                "c_basis": c_long_basis,
-                "c_confirm": _count_true(eq_long, momentum_up, rar_support, price >= float(prev["close"]), bool(latest.get("tai_rising"))) >= 2,
-                "c_anchor": (
-                    _float_safe((bull_sweep or {}).get("level"), 0.0) if bull_sweep else
-                    _float_safe((near_bull_pivot or {}).get("price"), 0.0) if near_bull_pivot else
-                    (_float_safe((eql or {}).get("price"), 0.0) if eql else None)
-                ),
-                "trend_display": trend_display_long,
-                "a_basis": a_long_basis,
-                "regime_score": long_regime_score,
-                "a_event": last_bos_up or last_mss_up,
-                "b_age": _basis_age(last_index_15m, bull_fvg_fill, bull_sweep, last_mss_up, eql),
-                "c_age": _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql),
-            }
+    if active_state["direction"] == "neutral":
         return {
-            "hard_counter": h4_short_phase == "counter" and trend_4h == "bull" and short_regime_score < 0,
-            "h1_ready": h1_short_phase in {"continuation", "mixed"} and trend_1h != "bull",
-            "h1_cont": h1_short_phase == "continuation",
-            "structure": bool(last_bos_down or last_mss_down),
-            "stack": bearish_stack or (price <= float(latest["ema10"]) and float(latest["ema10"]) <= float(latest["ema20"])),
-            "momentum": momentum_down,
-            "rar": rar_support or (momentum_down and vol_ratio_15m >= 1.05),
-            "eq_ok": not short_exhausted_hard,
-            "distance_ok": a_short_distance_ok,
-            "basis": b_short_basis,
-            "confirm": b_short_reject_ready,
-            "zone_low": float(bear_fvg_fill["zone_low"]) if bear_fvg_fill else (float(latest["ema20"]) if bear_sweep else None),
-            "zone_high": float(bear_fvg_fill["zone_high"]) if bear_fvg_fill else (float(bear_sweep["level"]) + atr * 0.10 if bear_sweep else None),
-            "c_basis": c_short_basis,
-            "c_confirm": _count_true(eq_short, momentum_down, rar_support, price <= float(prev["close"]), bool(latest.get("tai_rising")) is False) >= 2,
-            "c_anchor": (
-                _float_safe((bear_sweep or {}).get("level"), 0.0) if bear_sweep else
-                _float_safe((near_bear_pivot or {}).get("price"), 0.0) if near_bear_pivot else
-                (_float_safe((eqh or {}).get("price"), 0.0) if eqh else None)
-            ),
-            "trend_display": trend_display_short,
-            "a_basis": a_short_basis,
-            "regime_score": short_regime_score,
-            "a_event": last_bos_down or last_mss_down,
-            "b_age": _basis_age(last_index_15m, bear_fvg_fill, bear_sweep, last_mss_down, eqh),
-            "c_age": _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh),
+            "signals": [],
+            "near_miss_signals": [{"candidate": "NO_STAGE", "failed_checks": ["h1_bias_not_locked"]}],
+            "blocked_reasons": {"NO_STAGE:h1_bias_not_locked": 1},
         }
 
-    def _append_direction_stage(direction: str) -> None:
-        ctx = _stage_context(direction)
-        if direction == "long":
-            a_name, b_name, c_name = "A_LONG", "B_PULLBACK_LONG", "C_LEFT_LONG"
+    direction = active_state["direction"]
+    trend_display = trend_display_long if direction == "long" else trend_display_short
+    regime_score = long_regime_score if direction == "long" else short_regime_score
+    latest_trend_score = long_regime_score if direction == "long" else short_regime_score
+    vol_ratio_15m = _volume_ratio(latest)
+    close_pos = _close_position(latest)
+
+    if direction == "long":
+        eq_div = _eq_div_long(latest, prev)
+        hard_block = _long_overheat_hard(
+            latest,
+            prev,
+            resistance_hint=bool(near_bear_pivot or bear_sweep or eqh),
+            deep_extension=(price - float(latest["ema20"])) >= atr * 2.2,
+            h1_overheat=active_state["phase"] == "blocked",
+        )
+        a_basis = [item for item in ("h1_long_continuation", "m15_bos_up" if last_bos_up else None, "m15_mss_up" if last_mss_up else None) if item]
+        b_basis = [
+            item for item in (
+                "h1_long_repair",
+                "bullish_fvg_fill" if bull_fvg_fill else None,
+                "sellside_sweep" if bull_sweep else None,
+                "near_support" if near_bull_pivot else None,
+                "eql" if eql else None,
+                "mss_up" if last_mss_up else None,
+            ) if item
+        ]
+        c_basis = [
+            item for item in (
+                "left_long_watch",
+                "eq_div_long" if eq_div else None,
+                "sellside_sweep" if bull_sweep else None,
+                "near_support" if near_bull_pivot else None,
+                "eql" if eql else None,
+                "mss_up" if last_mss_up else None,
+            ) if item
+        ]
+
+        b_zone_low = None
+        b_zone_high = None
+        if bull_fvg_fill:
+            b_zone_low = float(bull_fvg_fill["zone_low"])
+            b_zone_high = float(bull_fvg_fill["zone_high"])
+        elif bull_sweep:
+            b_zone_low = float(bull_sweep["level"]) - atr * 0.10
+            b_zone_high = float(latest["ema20"])
+        elif near_bull_pivot:
+            b_zone_low = float(near_bull_pivot["price"]) - atr * 0.10
+            b_zone_high = float(latest["ema20"])
+
+        reclaim_ready = _reclaim_confirmation_ready(
+            latest,
+            prev,
+            klines_15m[-4:],
+            atr,
+            price >= float(latest["ema10"]) and (price > float(prev["close"]) or close_pos >= 0.52),
+            _price_above_stack(latest) or price >= float(latest["ema10"]),
+            bool(bull_fvg_fill or bull_sweep or near_bull_pivot or last_mss_up),
+        )
+        a_ready = _count_true(
+            _price_above_stack(latest) or (price >= float(latest["ema10"]) and float(latest["ema10"]) >= float(latest["ema20"])),
+            _momentum_up(latest),
+            bool(last_bos_up or last_mss_up),
+            vol_ratio_15m >= 0.90 or bool(latest.get("tai_rising")) or bool(latest.get("fl_buy_signal")),
+            not hard_block,
+        ) >= 4
+        b_ready = _count_true(
+            bool(b_basis) >= 1,
+            reclaim_ready,
+            price >= float(latest["ema20"]) or float(latest["ema10"]) >= float(latest["ema20"]),
+            _momentum_up(latest) or bool(latest.get("tai_rising")) or bool(latest.get("fl_buy_signal")),
+            not hard_block,
+        ) >= 4
+        c_ready = _count_true(
+            bool(c_basis) >= 2,
+            eq_div or bool(last_mss_up),
+            _rar_supportive(latest, prev) or bool(latest.get("tai_rising")) or price >= float(prev["close"]),
+            not background["hard_counter_long"],
+        ) >= 3
+
+        if active_state["phase"] == "continuation":
+            checks = {
+                "bg_not_hard_counter": not background["hard_counter_long"],
+                "h1_continuation_locked": active_state["continuation_score"] >= 5,
+                "m15_trigger_ready": a_ready,
+                "not_overheated": not hard_block,
+            }
+            if _evaluate_branch("A_LONG", checks, near_miss_signals, blocked_counter):
+                eta_min, eta_max = _estimate_a_window("long", latest, prev, regime_score, last_bos_up or last_mss_up, last_index_15m)
+                sig = _signal_dict("A_LONG", symbol, "long", price, trend_display, "active", structure_basis=a_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "long_continuation"
+                signals.append(sig)
+        elif active_state["phase"] == "repair":
+            checks = {
+                "bg_not_hard_counter": not background["hard_counter_long"],
+                "h1_repair_locked": active_state["repair_score"] >= 4,
+                "m15_reclaim_ready": b_ready,
+                "not_overheated": not hard_block,
+            }
+            if _evaluate_branch("B_PULLBACK_LONG", checks, near_miss_signals, blocked_counter):
+                b_age = _basis_age(last_index_15m, bull_fvg_fill, bull_sweep, near_bull_pivot, last_mss_up, eql)
+                eta_min, eta_max = _estimate_b_window("long", latest, prev, regime_score, b_zone_low, b_zone_high, len(b_basis), b_age, reclaim_ready, abs(price - float(latest["ema10"])) <= atr * 1.20)
+                sig = _signal_dict("B_PULLBACK_LONG", symbol, "long", price, trend_display, "active", zone_low=b_zone_low, zone_high=b_zone_high, structure_basis=b_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "long_repair"
+                signals.append(sig)
+            elif c_ready:
+                anchor = next((v for v in [float((bull_sweep or {}).get("level", 0.0)) if bull_sweep else None, float((near_bull_pivot or {}).get("price", 0.0)) if near_bull_pivot else None, float((eql or {}).get("price", 0.0)) if eql else None] if v is not None), None)
+                c_zone_low, c_zone_high = _build_c_zone("long", price, atr, anchor, float(latest["ema20"]))
+                c_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
+                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), bool(latest.get("tai_rising")))
+                eta_min, eta_max = _estimate_c_window("long", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
+                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "long_repair"
+                signals.append(sig)
+            else:
+                _evaluate_branch("B_PULLBACK_LONG", {
+                    "bg_not_hard_counter": not background["hard_counter_long"],
+                    "h1_repair_locked": active_state["repair_score"] >= 4,
+                    "m15_reclaim_ready": b_ready,
+                    "left_watch_ready": c_ready,
+                }, near_miss_signals, blocked_counter)
         else:
-            a_name, b_name, c_name = "A_SHORT", "B_PULLBACK_SHORT", "C_LEFT_SHORT"
+            checks = {
+                "bg_not_hard_counter": not background["hard_counter_long"],
+                "left_basis_ready": len(c_basis) >= 2,
+                "left_confirm_ready": c_ready,
+            }
+            if _evaluate_branch("C_LEFT_LONG", checks, near_miss_signals, blocked_counter):
+                anchor = next((v for v in [float((bull_sweep or {}).get("level", 0.0)) if bull_sweep else None, float((near_bull_pivot or {}).get("price", 0.0)) if near_bull_pivot else None, float((eql or {}).get("price", 0.0)) if eql else None] if v is not None), None)
+                c_zone_low, c_zone_high = _build_c_zone("long", price, atr, anchor, float(latest["ema20"]))
+                c_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
+                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), bool(latest.get("tai_rising")))
+                eta_min, eta_max = _estimate_c_window("long", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
+                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "long_early"
+                signals.append(sig)
+    else:
+        eq_div = _eq_div_short(latest, prev)
+        hard_block = _short_exhausted_hard(
+            latest,
+            prev,
+            support_hint=bool(near_bull_pivot or bull_sweep or eql),
+            deep_extension=(float(latest["ema20"]) - price) >= atr * 2.2,
+            h1_exhausted=active_state["phase"] == "blocked",
+        )
+        a_basis = [item for item in ("h1_short_continuation", "m15_bos_down" if last_bos_down else None, "m15_mss_down" if last_mss_down else None) if item]
+        b_basis = [
+            item for item in (
+                "h1_short_repair",
+                "bearish_fvg_fill" if bear_fvg_fill else None,
+                "buyside_sweep" if bear_sweep else None,
+                "near_resistance" if near_bear_pivot else None,
+                "eqh" if eqh else None,
+                "mss_down" if last_mss_down else None,
+            ) if item
+        ]
+        c_basis = [
+            item for item in (
+                "left_short_watch",
+                "eq_div_short" if eq_div else None,
+                "buyside_sweep" if bear_sweep else None,
+                "near_resistance" if near_bear_pivot else None,
+                "eqh" if eqh else None,
+                "mss_down" if last_mss_down else None,
+            ) if item
+        ]
 
-        a_checks = {
-            "not_hard_counter": not ctx["hard_counter"],
-            "h1_stage_ready": ctx["h1_ready"],
-            "structure_ready": ctx["structure"],
-            "stack_ready": ctx["stack"],
-            "momentum_supportive": ctx["momentum"],
-            "rar_not_weak": ctx["rar"],
-            "distance_ok": ctx["distance_ok"],
-            "eq_ok": ctx["eq_ok"],
-        }
-        if all(a_checks.values()) and ctx["h1_cont"]:
-            eta_min, eta_max = _estimate_a_window(direction, latest, prev, ctx["regime_score"], ctx["a_event"], last_index_15m)
-            signals.append(
-                _signal_dict(
-                    a_name,
-                    symbol,
-                    direction,
-                    price,
-                    ctx["trend_display"],
-                    "active",
-                    structure_basis=ctx["a_basis"],
-                    eta_min_minutes=eta_min,
-                    eta_max_minutes=eta_max,
-                )
-            )
-            return
+        b_zone_low = None
+        b_zone_high = None
+        if bear_fvg_fill:
+            b_zone_low = float(bear_fvg_fill["zone_low"])
+            b_zone_high = float(bear_fvg_fill["zone_high"])
+        elif bear_sweep:
+            b_zone_low = float(latest["ema20"])
+            b_zone_high = float(bear_sweep["level"]) + atr * 0.10
+        elif near_bear_pivot:
+            b_zone_low = float(latest["ema20"])
+            b_zone_high = float(near_bear_pivot["price"]) + atr * 0.10
 
-        b_checks = {
-            "not_hard_counter": not ctx["hard_counter"],
-            "h1_stage_ready": ctx["h1_ready"],
-            "basis_ready": bool(ctx["basis"]),
-            "confirm_ready": ctx["confirm"],
-            "stack_ready": price >= float(latest["ema20"]) if direction == "long" else price <= float(latest["ema20"]),
-            "momentum_ok": ctx["momentum"] or near_ema10,
-            "eq_ok": ctx["eq_ok"],
-        }
-        if all(b_checks.values()):
-            eta_min, eta_max = _estimate_b_window(
-                direction,
-                latest,
-                prev,
-                ctx["regime_score"],
-                ctx["zone_low"],
-                ctx["zone_high"],
-                len(ctx["basis"]),
-                ctx["b_age"],
-                ctx["confirm"],
-                near_ema10,
-            )
-            signals.append(
-                _signal_dict(
-                    b_name,
-                    symbol,
-                    direction,
-                    price,
-                    ctx["trend_display"],
-                    "active",
-                    zone_low=ctx["zone_low"],
-                    zone_high=ctx["zone_high"],
-                    structure_basis=ctx["basis"],
-                    eta_min_minutes=eta_min,
-                    eta_max_minutes=eta_max,
-                )
-            )
-            return
+        reject_ready = _reject_confirmation_ready(
+            latest,
+            prev,
+            klines_15m[-4:],
+            atr,
+            price <= float(latest["ema10"]) and (price < float(prev["close"]) or close_pos <= 0.48),
+            _price_below_stack(latest) or price <= float(latest["ema10"]),
+            bool(bear_fvg_fill or bear_sweep or near_bear_pivot or last_mss_down),
+        )
+        a_ready = _count_true(
+            _price_below_stack(latest) or (price <= float(latest["ema10"]) and float(latest["ema10"]) <= float(latest["ema20"])),
+            _momentum_down(latest),
+            bool(last_bos_down or last_mss_down),
+            vol_ratio_15m >= 0.90 or (not bool(latest.get("tai_rising"))) or bool(latest.get("fl_sell_signal")),
+            not hard_block,
+        ) >= 4
+        b_ready = _count_true(
+            bool(b_basis) >= 1,
+            reject_ready,
+            price <= float(latest["ema20"]) or float(latest["ema10"]) <= float(latest["ema20"]),
+            _momentum_down(latest) or (not bool(latest.get("tai_rising"))) or bool(latest.get("fl_sell_signal")),
+            not hard_block,
+        ) >= 4
+        c_ready = _count_true(
+            bool(c_basis) >= 2,
+            eq_div or bool(last_mss_down),
+            _rar_supportive(latest, prev) or (not bool(latest.get("tai_rising"))) or price <= float(prev["close"]),
+            not background["hard_counter_short"],
+        ) >= 3
 
-        c_checks = {
-            "not_hard_counter": not ctx["hard_counter"],
-            "left_basis_ready": len(ctx["c_basis"]) >= 1,
-            "left_confirm_ready": ctx["c_confirm"],
-            "not_forced_against_h1": ctx["h1_ready"] or ctx["regime_score"] >= -1,
-        }
-        if all(c_checks.values()):
-            c_confirm_score = _count_true(ctx["c_confirm"], ctx["momentum"], ctx["rar"], ctx["h1_ready"])
-            eta_min, eta_max = _estimate_c_window(
-                direction,
-                latest,
-                prev,
-                ctx["regime_score"],
-                ctx["c_anchor"],
-                len(ctx["c_basis"]),
-                ctx["c_age"],
-                c_confirm_score,
-            )
-            signals.append(
-                _signal_dict(
-                    c_name,
-                    symbol,
-                    direction,
-                    price,
-                    ctx["trend_display"],
-                    "early",
-                    structure_basis=ctx["c_basis"],
-                    eta_min_minutes=eta_min,
-                    eta_max_minutes=eta_max,
-                )
-            )
-            return
-
-        # 只记录最接近当前阶段的失败原因，不再把同方向 A/B/C 全部堆出来。
-        if a_checks["not_hard_counter"] and a_checks["h1_stage_ready"] and (ctx["structure"] or ctx["momentum"]):
-            _record_near_miss(a_name, a_checks)
-        elif b_checks["not_hard_counter"] and (bool(ctx["basis"]) or ctx["confirm"]):
-            _record_near_miss(b_name, b_checks)
+        if active_state["phase"] == "continuation":
+            checks = {
+                "bg_not_hard_counter": not background["hard_counter_short"],
+                "h1_continuation_locked": active_state["continuation_score"] >= 5,
+                "m15_trigger_ready": a_ready,
+                "not_exhausted": not hard_block,
+            }
+            if _evaluate_branch("A_SHORT", checks, near_miss_signals, blocked_counter):
+                eta_min, eta_max = _estimate_a_window("short", latest, prev, regime_score, last_bos_down or last_mss_down, last_index_15m)
+                sig = _signal_dict("A_SHORT", symbol, "short", price, trend_display, "active", structure_basis=a_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "short_continuation"
+                signals.append(sig)
+        elif active_state["phase"] == "repair":
+            checks = {
+                "bg_not_hard_counter": not background["hard_counter_short"],
+                "h1_repair_locked": active_state["repair_score"] >= 4,
+                "m15_reject_ready": b_ready,
+                "not_exhausted": not hard_block,
+            }
+            if _evaluate_branch("B_PULLBACK_SHORT", checks, near_miss_signals, blocked_counter):
+                b_age = _basis_age(last_index_15m, bear_fvg_fill, bear_sweep, near_bear_pivot, last_mss_down, eqh)
+                eta_min, eta_max = _estimate_b_window("short", latest, prev, regime_score, b_zone_low, b_zone_high, len(b_basis), b_age, reject_ready, abs(price - float(latest["ema10"])) <= atr * 1.20)
+                sig = _signal_dict("B_PULLBACK_SHORT", symbol, "short", price, trend_display, "active", zone_low=b_zone_low, zone_high=b_zone_high, structure_basis=b_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "short_repair"
+                signals.append(sig)
+            elif c_ready:
+                anchor = next((v for v in [float((bear_sweep or {}).get("level", 0.0)) if bear_sweep else None, float((near_bear_pivot or {}).get("price", 0.0)) if near_bear_pivot else None, float((eqh or {}).get("price", 0.0)) if eqh else None] if v is not None), None)
+                c_zone_low, c_zone_high = _build_c_zone("short", price, atr, anchor, float(latest["ema20"]))
+                c_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
+                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), not bool(latest.get("tai_rising")))
+                eta_min, eta_max = _estimate_c_window("short", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
+                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "short_repair"
+                signals.append(sig)
+            else:
+                _evaluate_branch("B_PULLBACK_SHORT", {
+                    "bg_not_hard_counter": not background["hard_counter_short"],
+                    "h1_repair_locked": active_state["repair_score"] >= 4,
+                    "m15_reject_ready": b_ready,
+                    "left_watch_ready": c_ready,
+                }, near_miss_signals, blocked_counter)
         else:
-            _record_near_miss(c_name, c_checks)
-
-    _append_direction_stage("long")
-    _append_direction_stage("short")
+            checks = {
+                "bg_not_hard_counter": not background["hard_counter_short"],
+                "left_basis_ready": len(c_basis) >= 2,
+                "left_confirm_ready": c_ready,
+            }
+            if _evaluate_branch("C_LEFT_SHORT", checks, near_miss_signals, blocked_counter):
+                anchor = next((v for v in [float((bear_sweep or {}).get("level", 0.0)) if bear_sweep else None, float((near_bear_pivot or {}).get("price", 0.0)) if near_bear_pivot else None, float((eqh or {}).get("price", 0.0)) if eqh else None] if v is not None), None)
+                c_zone_low, c_zone_high = _build_c_zone("short", price, atr, anchor, float(latest["ema20"]))
+                c_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
+                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), not bool(latest.get("tai_rising")))
+                eta_min, eta_max = _estimate_c_window("short", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
+                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis, eta_min_minutes=eta_min, eta_max_minutes=eta_max)
+                sig["phase_group"] = "short_early"
+                signals.append(sig)
 
     return {
-        "signals": signals,
-        "near_miss_signals": near_miss_signals[:4],
+        "signals": signals[:1],
+        "near_miss_signals": near_miss_signals,
         "blocked_reasons": dict(blocked_counter),
     }
