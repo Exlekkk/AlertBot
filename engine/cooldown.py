@@ -63,13 +63,25 @@ class SignalStateStore:
         score = int(signal.get("h1_tai_score", 2))
         rising = bool(signal.get("h1_tai_rising", False))
         multiplier = float(signal.get("h1_tai_repeat_multiplier", 1.0))
-        if score <= 1 and not rising:
+        zero_point = bool(signal.get("h1_tai_zero_point", False))
+        zero_exception = bool(signal.get("h1_tai_zero_exception", False))
+        if zero_point and not zero_exception:
+            multiplier = max(multiplier, 3.0)
+        elif zero_point and zero_exception:
+            multiplier = max(multiplier, 2.2)
+        elif score <= 1 and not rising:
             multiplier = max(multiplier, 1.8)
         elif score >= 4 and rising:
             multiplier = min(multiplier, 0.75)
         return max(15 * 60, int(base * multiplier))
 
     def _tai_allows_upgrade(self, signal: dict) -> bool:
+        zero_point = bool(signal.get("h1_tai_zero_point", False))
+        zero_exception = bool(signal.get("h1_tai_zero_exception", False))
+        if zero_point and not zero_exception:
+            return False
+        if zero_point and zero_exception:
+            return False
         score = int(signal.get("h1_tai_score", 2))
         rising = bool(signal.get("h1_tai_rising", False))
         return score >= 3 or (score >= 2 and rising)
