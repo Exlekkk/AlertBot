@@ -552,8 +552,13 @@ def _tai_profile(k: dict) -> dict[str, Any]:
     p60 = _float_safe(k.get("tai_p60"), value)
     p80 = _float_safe(k.get("tai_p80"), value)
     rising = bool(k.get("tai_rising"))
+    zero_point_threshold = p20 * 0.30
+    zero_point = value < zero_point_threshold
 
-    if value >= p80:
+    if zero_point:
+        score = 0
+        bucket = "zero"
+    elif value >= p80:
         score = 4
         bucket = "hot"
     elif value >= p60:
@@ -569,14 +574,21 @@ def _tai_profile(k: dict) -> dict[str, Any]:
         score = 0
         bucket = "cold"
 
+    fire_ready = (not zero_point) and (score >= 3 or (score >= 2 and rising))
+    allow_b = (not zero_point) and (score >= 2 or rising)
+    allow_c = (not zero_point) and (score >= 1 or rising)
+
     return {
+        "value": value,
         "score": score,
         "bucket": bucket,
         "rising": rising,
-        "fire_ready": score >= 3 or (score >= 2 and rising),
-        "allow_b": score >= 2 or rising,
-        "allow_c": score >= 1 or rising,
-        "repeat_multiplier": 0.75 if score >= 4 and rising else 0.9 if score >= 3 else 1.0 if score >= 2 else 1.35 if rising else 1.9,
+        "zero_point": zero_point,
+        "zero_point_threshold": zero_point_threshold,
+        "fire_ready": fire_ready,
+        "allow_b": allow_b,
+        "allow_c": allow_c,
+        "repeat_multiplier": 2.6 if zero_point else 0.75 if score >= 4 and rising else 0.9 if score >= 3 else 1.0 if score >= 2 else 1.35 if rising else 1.9,
     }
 
 
@@ -699,6 +711,8 @@ def _signal_dict(
         "h1_tai_bucket": tai_profile.get("bucket", "normal"),
         "h1_tai_rising": bool(tai_profile.get("rising", False)),
         "h1_tai_repeat_multiplier": float(tai_profile.get("repeat_multiplier", 1.0)),
+        "h1_tai_zero_point": bool(tai_profile.get("zero_point", False)),
+        "h1_tai_zero_exception": bool(tai_profile.get("zero_exception", False)),
     }
 
 
@@ -866,6 +880,9 @@ def _h1_state(
             "tai_allow_b": tai_profile["allow_b"],
             "tai_allow_c": tai_profile["allow_c"],
             "tai_repeat_multiplier": tai_profile["repeat_multiplier"],
+            "tai_zero_point": tai_profile["zero_point"],
+            "tai_zero_point_threshold": tai_profile["zero_point_threshold"],
+            "tai_value": tai_profile["value"],
         }
 
     exhausted_hard = _short_exhausted_hard(
@@ -923,6 +940,9 @@ def _h1_state(
         "tai_allow_b": tai_profile["allow_b"],
         "tai_allow_c": tai_profile["allow_c"],
         "tai_repeat_multiplier": tai_profile["repeat_multiplier"],
+        "tai_zero_point": tai_profile["zero_point"],
+        "tai_zero_point_threshold": tai_profile["zero_point_threshold"],
+        "tai_value": tai_profile["value"],
     }
 
 
@@ -943,6 +963,41 @@ def _pick_active_h1_state(long_state: dict[str, Any], short_state: dict[str, Any
         return short_state
 
     return {"direction": "neutral", "phase": "blocked", "bias_score": 0}
+
+
+def _tai_zero_point_ignition_exception(
+    direction: str,
+    active_state: dict[str, Any],
+    background: dict[str, Any],
+    latest: dict,
+    prev: dict,
+    atr: float,
+    vol_ratio_15m: float,
+    structure_event: dict[str, Any] | None,
+    hard_block: bool,
+) -> bool:
+    if not bool(active_state.get("tai_zero_point")):
+        return False
+
+    if direction == "long":
+        checks = (
+            not background["hard_counter_long"],
+            vol_ratio_15m >= 1.25 or float(latest.get("volume", 0.0)) >= float(latest.get("vol_sma20", 0.0)) * 1.15,
+            bool(structure_event),
+            _momentum_up(latest) or bool(latest.get("fl_buy_signal")),
+            abs(float(latest["close"]) - float(prev["close"])) >= atr * 0.18 or _price_above_stack(latest),
+            not hard_block,
+        )
+    else:
+        checks = (
+            not background["hard_counter_short"],
+            vol_ratio_15m >= 1.25 or float(latest.get("volume", 0.0)) >= float(latest.get("vol_sma20", 0.0)) * 1.15,
+            bool(structure_event),
+            _momentum_down(latest) or bool(latest.get("fl_sell_signal")),
+            abs(float(latest["close"]) - float(prev["close"])) >= atr * 0.18 or _price_below_stack(latest),
+            not hard_block,
+        )
+    return _count_true(*checks) >= 4
 
 
 def _build_c_zone(direction: str, price: float, atr: float, anchor: float | None, ema20: float) -> tuple[float, float]:
@@ -1164,8 +1219,39 @@ def detect_signals(
             not background["hard_counter_long"],
             active_state["tai_allow_c"],
         ) >= 3
+        tai_zero_exception = _tai_zero_point_ignition_exception(
+            "long",
+            active_state,
+            background,
+            latest,
+            prev,
+            atr,
+            vol_ratio_15m,
+            last_bos_up or last_mss_up,
+            hard_block,
+        )
 
-        if active_state["phase"] == "continuation":
+        if active_state.get("tai_zero_point") and not tai_zero_exception:
+            _evaluate_branch("ABC_ZERO_POINT_LONG", {"h1_tai_zero_point": False}, near_miss_signals, blocked_counter)
+        elif active_state.get("tai_zero_point") and tai_zero_exception:
+            checks = {
+                "h1_tai_zero_exception": True,
+                "bg_not_hard_counter": not background["hard_counter_long"],
+                "left_basis_ready": len(c_basis) >= 2,
+                "left_confirm_ready": c_ready,
+            }
+            if _evaluate_branch("C_LEFT_LONG", checks, near_miss_signals, blocked_counter):
+                anchor = next((v for v in [float((bull_sweep or {}).get("level", 0.0)) if bull_sweep else None, float((near_bull_pivot or {}).get("price", 0.0)) if near_bull_pivot else None, float((eql or {}).get("price", 0.0)) if eql else None] if v is not None), None)
+                c_zone_low, c_zone_high = _build_c_zone("long", price, atr, anchor, float(latest["ema20"]))
+                c_age = _basis_age(last_index_15m, bull_sweep, near_bull_pivot, last_mss_up, eql)
+                c_confirm = _count_true(eq_div, _momentum_up(latest), _rar_supportive(latest, prev), price >= float(prev["close"]), True)
+                eta_min, eta_max = _estimate_c_window("long", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
+                zero_profile = dict(active_state)
+                zero_profile["zero_exception"] = True
+                sig = _signal_dict("C_LEFT_LONG", symbol, "long", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis + ["tai_zero_break"], eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=zero_profile)
+                sig["phase_group"] = "long_zero_break"
+                signals.append(sig)
+        elif active_state["phase"] == "continuation":
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_long"],
                 "h1_continuation_locked": active_state["continuation_score"] >= 5,
@@ -1299,8 +1385,39 @@ def detect_signals(
             not background["hard_counter_short"],
             active_state["tai_allow_c"],
         ) >= 3
+        tai_zero_exception = _tai_zero_point_ignition_exception(
+            "short",
+            active_state,
+            background,
+            latest,
+            prev,
+            atr,
+            vol_ratio_15m,
+            last_bos_down or last_mss_down,
+            hard_block,
+        )
 
-        if active_state["phase"] == "continuation":
+        if active_state.get("tai_zero_point") and not tai_zero_exception:
+            _evaluate_branch("ABC_ZERO_POINT_SHORT", {"h1_tai_zero_point": False}, near_miss_signals, blocked_counter)
+        elif active_state.get("tai_zero_point") and tai_zero_exception:
+            checks = {
+                "h1_tai_zero_exception": True,
+                "bg_not_hard_counter": not background["hard_counter_short"],
+                "left_basis_ready": len(c_basis) >= 2,
+                "left_confirm_ready": c_ready,
+            }
+            if _evaluate_branch("C_LEFT_SHORT", checks, near_miss_signals, blocked_counter):
+                anchor = next((v for v in [float((bear_sweep or {}).get("level", 0.0)) if bear_sweep else None, float((near_bear_pivot or {}).get("price", 0.0)) if near_bear_pivot else None, float((eqh or {}).get("price", 0.0)) if eqh else None] if v is not None), None)
+                c_zone_low, c_zone_high = _build_c_zone("short", price, atr, anchor, float(latest["ema20"]))
+                c_age = _basis_age(last_index_15m, bear_sweep, near_bear_pivot, last_mss_down, eqh)
+                c_confirm = _count_true(eq_div, _momentum_down(latest), _rar_supportive(latest, prev), price <= float(prev["close"]), True)
+                eta_min, eta_max = _estimate_c_window("short", latest, prev, regime_score, anchor, len(c_basis), c_age, c_confirm)
+                zero_profile = dict(active_state)
+                zero_profile["zero_exception"] = True
+                sig = _signal_dict("C_LEFT_SHORT", symbol, "short", price, trend_display, "early", zone_low=c_zone_low, zone_high=c_zone_high, structure_basis=c_basis + ["tai_zero_break"], eta_min_minutes=eta_min, eta_max_minutes=eta_max, atr_value=atr, h1_tai_profile=zero_profile)
+                sig["phase_group"] = "short_zero_break"
+                signals.append(sig)
+        elif active_state["phase"] == "continuation":
             checks = {
                 "bg_not_hard_counter": not background["hard_counter_short"],
                 "h1_continuation_locked": active_state["continuation_score"] >= 5,
