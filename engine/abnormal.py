@@ -162,11 +162,11 @@ def detect_abnormal_signals(
     klines_15m: list[dict],
 ) -> list[dict[str, Any]]:
     """
-    X类异动信号：
-    - 15m >= 8000 或 1h >= 10000，进入异动强监控
-    - 保留首根实体起爆/起跌
-    - 新增插针 / 上下扫流动性路径，避免 pin bar 被漏掉
-    - 4h 仍只做硬逆风过滤，不改 ABC 主框架
+    X 类重构：
+    - X 独立于 ABC，不做优先级覆盖
+    - 1h >= 10000 进入 force-X 异动域
+    - 支持最近 1 小时（4 根 15m）内的插针、双边扫流动性、首根起爆/起跌
+    - force-X 下不再要求 stack/momentum/htf 同时全过，只保留最小必要过滤
     """
     if min(len(klines_15m), len(klines_1h), len(klines_4h), len(klines_1d)) < 12:
         return []
@@ -176,199 +176,167 @@ def detect_abnormal_signals(
     latest_1h = klines_1h[-1]
     latest_4h = klines_4h[-1]
     latest_1d = klines_1d[-1]
+    recent_4 = klines_15m[-4:]
 
-    price = _float(latest.get("close"))
+    price = _float(latest.get('close'))
     atr = _atr(latest)
     vol_ratio = _volume_ratio(latest)
-    volume_15m = _float(latest.get("volume"))
-    volume_1h = _float(latest_1h.get("volume"))
+    volume_15m = _float(latest.get('volume'))
+    volume_1h = _float(latest_1h.get('volume'))
 
-    # 用户定死的量门槛：15m 超 8k / 1h 超 10k，进入 X 异动域
     volume_gate_15m = volume_15m >= 8000
     volume_gate_1h = volume_1h >= 10000
     volume_expansion = volume_gate_15m or volume_gate_1h
 
-    trend_score_long = _trend_score("long", latest_1h, latest_4h, latest_1d)
-    trend_score_short = _trend_score("short", latest_1h, latest_4h, latest_1d)
-    trend_display_long = _trend_display("long", trend_score_long)
-    trend_display_short = _trend_display("short", trend_score_short)
+    trend_score_long = _trend_score('long', latest_1h, latest_4h, latest_1d)
+    trend_score_short = _trend_score('short', latest_1h, latest_4h, latest_1d)
+    trend_display_long = _trend_display('long', trend_score_long)
+    trend_display_short = _trend_display('short', trend_score_short)
 
     recent_high = _recent_breakout_level_long(klines_15m)
     recent_low = _recent_breakout_level_short(klines_15m)
 
-    ema10 = _float(latest.get("ema10"))
-    ema20 = _float(latest.get("ema20"))
-    prev_close = _float(prev.get("close"))
-    close = _float(latest.get("close"))
-    high = _float(latest.get("high"))
-    low = _float(latest.get("low"))
-    open_ = _float(latest.get("open"))
+    ema10 = _float(latest.get('ema10'))
+    ema20 = _float(latest.get('ema20'))
+    close = _float(latest.get('close'))
+    high = _float(latest.get('high'))
+    low = _float(latest.get('low'))
+    open_ = _float(latest.get('open'))
+    prev_close = _float(prev.get('close'))
 
     extension_long_atr = max(0.0, (close - ema20) / max(atr, 1e-9))
     extension_short_atr = max(0.0, (ema20 - close) / max(atr, 1e-9))
 
-    body = abs(close - open_)
+    # 当前 15m 形态
     candle_range = max(high - low, 1e-9)
+    body = abs(close - open_)
     body_ratio = body / candle_range
-    prev_high = _float(prev.get("high"))
-    prev_low = _float(prev.get("low"))
-    range_ratio = candle_range / max(_atr(latest), 1e-9)
-
     upper_wick = max(0.0, high - max(open_, close))
     lower_wick = max(0.0, min(open_, close) - low)
     upper_wick_ratio = upper_wick / candle_range
     lower_wick_ratio = lower_wick / candle_range
+    prev_high = _float(prev.get('high'))
+    prev_low = _float(prev.get('low'))
+    range_ratio = candle_range / max(_atr(latest), 1e-9)
 
     breakout_cross_up = prev_close < recent_high and close > recent_high
     breakout_cross_down = prev_close > recent_low and close < recent_low
     fresh_break_up = max(prev_high, open_) <= recent_high + atr * 0.10
     fresh_break_down = min(prev_low, open_) >= recent_low - atr * 0.10
-    impulse_up = breakout_cross_up and fresh_break_up and body_ratio >= 0.58 and range_ratio >= 1.15
-    impulse_down = breakout_cross_down and fresh_break_down and body_ratio >= 0.58 and range_ratio >= 1.15
+    impulse_up = breakout_cross_up and fresh_break_up and body_ratio >= 0.50 and range_ratio >= 1.05
+    impulse_down = breakout_cross_down and fresh_break_down and body_ratio >= 0.50 and range_ratio >= 1.05
 
-    # 插针 / 扫流动性路径
-    sweep_high = high >= recent_high + atr * 0.05
-    sweep_low = low <= recent_low - atr * 0.05
-    close_back_below_high = close <= recent_high + atr * 0.15
-    close_back_above_low = close >= recent_low - atr * 0.15
-
-    pin_reject_short = sweep_high and close_back_below_high and upper_wick_ratio >= 0.46 and range_ratio >= 1.08
-    pin_reject_long = sweep_low and close_back_above_low and lower_wick_ratio >= 0.46 and range_ratio >= 1.08
-
-    dual_sided_sweep = sweep_high and sweep_low and range_ratio >= 1.28
-    dual_bias_short = dual_sided_sweep and upper_wick_ratio >= lower_wick_ratio * 1.05
-    dual_bias_long = dual_sided_sweep and lower_wick_ratio >= upper_wick_ratio * 1.05
+    # 最近 1 小时聚合形态
+    hour_open = _float(recent_4[0].get('open'))
+    hour_close = _float(recent_4[-1].get('close'))
+    hour_high = max(_float(k.get('high')) for k in recent_4)
+    hour_low = min(_float(k.get('low')) for k in recent_4)
+    hour_range = max(hour_high - hour_low, 1e-9)
+    hour_body = abs(hour_close - hour_open)
+    hour_upper_wick = max(0.0, hour_high - max(hour_open, hour_close))
+    hour_lower_wick = max(0.0, min(hour_open, hour_close) - hour_low)
+    hour_upper_wick_ratio = hour_upper_wick / hour_range
+    hour_lower_wick_ratio = hour_lower_wick / hour_range
+    hour_break_up = hour_high >= recent_high + atr * 0.05 and hour_close >= recent_high - atr * 0.10
+    hour_break_down = hour_low <= recent_low - atr * 0.05 and hour_close <= recent_low + atr * 0.10
+    hour_pin_short = hour_high >= recent_high + atr * 0.05 and hour_close <= recent_high + atr * 0.12 and hour_upper_wick_ratio >= 0.35
+    hour_pin_long = hour_low <= recent_low - atr * 0.05 and hour_close >= recent_low - atr * 0.12 and hour_lower_wick_ratio >= 0.35
+    dual_sided_sweep = hour_high >= recent_high + atr * 0.05 and hour_low <= recent_low - atr * 0.05 and hour_range >= atr * 1.25
+    dual_bias_short = dual_sided_sweep and hour_upper_wick_ratio >= hour_lower_wick_ratio * 1.03
+    dual_bias_long = dual_sided_sweep and hour_lower_wick_ratio >= hour_upper_wick_ratio * 1.03
 
     stack_up = _price_above_stack(latest)
     stack_down = _price_below_stack(latest)
-    momentum_up = _momentum_up(latest)
-    momentum_down = _momentum_down(latest)
+    momentum_up = _momentum_up(latest) or _momentum_up(latest_1h)
+    momentum_down = _momentum_down(latest) or _momentum_down(latest_1h)
+
+    h1_bullish = _float(latest_1h.get('close')) >= _float(latest_1h.get('ema10')) >= _float(latest_1h.get('ema20'))
+    h1_bearish = _float(latest_1h.get('close')) <= _float(latest_1h.get('ema10')) <= _float(latest_1h.get('ema20'))
+
+    long_force = volume_gate_1h and (impulse_up or hour_break_up or hour_pin_long or dual_bias_long)
+    short_force = volume_gate_1h and (impulse_down or hour_break_down or hour_pin_short or dual_bias_short)
 
     signals: list[dict[str, Any]] = []
 
-    long_checks = {
-        "volume_expansion": volume_expansion,
-        "impulse_or_pin": impulse_up or pin_reject_long or dual_bias_long,
-        "stack_or_reclaim": stack_up or (close >= ema20 and ema10 >= ema20),
-        "momentum_confirm": momentum_up or bool(latest.get("fl_buy_signal")) or bool(latest.get("tai_rising")),
-        "not_too_extended": extension_long_atr <= 4.8,
-        "htf_not_hard_counter": trend_score_long >= 2,
-    }
-    long_force = volume_gate_1h and (impulse_up or pin_reject_long or dual_bias_long)
-    if (
-        (long_force and _count_true(*long_checks.values()) >= 4)
-        or (_count_true(*long_checks.values()) >= 5 and long_checks["volume_expansion"] and long_checks["impulse_or_pin"])
-    ):
-        breakout_level = recent_high if impulse_up else low
-        zone_low = max(min(ema10, close), breakout_level - atr * 0.35)
-        zone_high = max(close, recent_high + atr * 0.18)
-        zone_low, zone_high = _normalize_zone(zone_low, zone_high)
-        eta_min, eta_max = _window_from_extension(extension_long_atr, max(vol_ratio, 1.6))
-        basis: list[str] = []
-        if volume_gate_1h:
-            basis.append("h1_volume_force_x")
-        elif volume_gate_15m:
-            basis.append("m15_volume_spike")
-        if impulse_up:
-            basis.append("first_impulse_breakout_up")
-        if pin_reject_long:
-            basis.append("wick_rejection_down")
-        if dual_bias_long:
-            basis.append("dual_sided_sweep_long")
-        if momentum_up:
-            basis.append("momentum_up")
-        if trend_score_long >= 4:
-            basis.append("h1_repairing_up")
-
-        abnormal_type = "首根放量起爆 / 可能空头回补"
-        if pin_reject_long and not impulse_up:
-            abnormal_type = "放量下插针扫流动性 / 可能诱空反抽"
-        elif dual_bias_long and not impulse_up:
-            abnormal_type = "上下插针异动 / 偏多回拉"
-
-        signals.append(
-            _signal_dict(
-                "X_BREAKOUT_LONG",
-                symbol,
-                "long",
-                price,
-                trend_display_long,
-                basis or ["abnormal_long"],
-                zone_low,
-                zone_high,
-                breakout_level,
-                abnormal_type,
-                eta_min,
-                eta_max,
-            )
+    # LONG X
+    if long_force or (volume_gate_15m and (impulse_up or hour_pin_long or dual_bias_long)):
+        long_checks = _count_true(
+            volume_expansion,
+            impulse_up or hour_break_up or hour_pin_long or dual_bias_long,
+            stack_up or h1_bullish or close >= ema20,
+            momentum_up or bool(latest.get('fl_buy_signal')) or bool(latest.get('tai_rising')),
+            trend_score_long >= 1,
+            extension_long_atr <= 5.5,
         )
+        if long_force or long_checks >= 4:
+            breakout_level = recent_high if (impulse_up or hour_break_up) else hour_low
+            zone_low = max(min(ema10, close), breakout_level - atr * 0.35)
+            zone_high = max(close, recent_high + atr * 0.18)
+            zone_low, zone_high = _normalize_zone(zone_low, zone_high)
+            eta_min, eta_max = _window_from_extension(extension_long_atr, max(vol_ratio, 1.6))
+            basis: list[str] = []
+            if volume_gate_1h:
+                basis.append('h1_volume_force_x')
+            elif volume_gate_15m:
+                basis.append('m15_volume_spike')
+            if impulse_up or hour_break_up:
+                basis.append('impulse_breakout_up')
+            if hour_pin_long or lower_wick_ratio >= 0.35:
+                basis.append('wick_rejection_down')
+            if dual_bias_long:
+                basis.append('dual_sided_sweep_long')
+            abnormal_type = '1h放量起爆 / 可能空头回补'
+            if hour_pin_long and not (impulse_up or hour_break_up):
+                abnormal_type = '放量下插针扫流动性 / 可能诱空反抽'
+            elif dual_bias_long and not (impulse_up or hour_break_up):
+                abnormal_type = '上下插针异动 / 偏多回拉'
+            signals.append(_signal_dict('X_BREAKOUT_LONG', symbol, 'long', price, trend_display_long, basis or ['abnormal_long'], zone_low, zone_high, breakout_level, abnormal_type, eta_min, eta_max))
 
-    short_checks = {
-        "volume_expansion": volume_expansion,
-        "impulse_or_pin": impulse_down or pin_reject_short or dual_bias_short,
-        "stack_or_reject": stack_down or (close <= ema20 and ema10 <= ema20),
-        "momentum_confirm": momentum_down or bool(latest.get("fl_sell_signal")) or (bool(latest.get("tai_rising")) is False),
-        "not_too_extended": extension_short_atr <= 4.8,
-        "htf_not_hard_counter": trend_score_short >= 2,
-    }
-    short_force = volume_gate_1h and (impulse_down or pin_reject_short or dual_bias_short)
-    if (
-        (short_force and _count_true(*short_checks.values()) >= 4)
-        or (_count_true(*short_checks.values()) >= 5 and short_checks["volume_expansion"] and short_checks["impulse_or_pin"])
-    ):
-        breakout_level = recent_low if impulse_down else high
-        zone_low = min(close, recent_low - atr * 0.18)
-        zone_high = min(max(ema10, close), breakout_level + atr * 0.35)
-        zone_low, zone_high = _normalize_zone(zone_low, zone_high)
-        eta_min, eta_max = _window_from_extension(extension_short_atr, max(vol_ratio, 1.6))
-        basis: list[str] = []
-        if volume_gate_1h:
-            basis.append("h1_volume_force_x")
-        elif volume_gate_15m:
-            basis.append("m15_volume_spike")
-        if impulse_down:
-            basis.append("first_impulse_breakdown_down")
-        if pin_reject_short:
-            basis.append("wick_rejection_up")
-        if dual_bias_short:
-            basis.append("dual_sided_sweep_short")
-        if momentum_down:
-            basis.append("momentum_down")
-        if trend_score_short >= 4:
-            basis.append("h1_repairing_down")
-
-        abnormal_type = "首根放量起跌 / 可能多头踩踏"
-        if pin_reject_short and not impulse_down:
-            abnormal_type = "放量上插针扫流动性 / 可能诱多回落"
-        elif dual_bias_short and not impulse_down:
-            abnormal_type = "上下插针异动 / 偏空回落"
-
-        signals.append(
-            _signal_dict(
-                "X_BREAKOUT_SHORT",
-                symbol,
-                "short",
-                price,
-                trend_display_short,
-                basis or ["abnormal_short"],
-                zone_low,
-                zone_high,
-                breakout_level,
-                abnormal_type,
-                eta_min,
-                eta_max,
-            )
+    # SHORT X
+    if short_force or (volume_gate_15m and (impulse_down or hour_pin_short or dual_bias_short)):
+        short_checks = _count_true(
+            volume_expansion,
+            impulse_down or hour_break_down or hour_pin_short or dual_bias_short,
+            stack_down or h1_bearish or close <= ema20,
+            momentum_down or bool(latest.get('fl_sell_signal')) or (bool(latest.get('tai_rising')) is False),
+            trend_score_short >= 1,
+            extension_short_atr <= 5.5,
         )
+        if short_force or short_checks >= 4:
+            breakout_level = recent_low if (impulse_down or hour_break_down) else hour_high
+            zone_low = min(close, recent_low - atr * 0.18)
+            zone_high = min(max(ema10, close), breakout_level + atr * 0.35)
+            zone_low, zone_high = _normalize_zone(zone_low, zone_high)
+            eta_min, eta_max = _window_from_extension(extension_short_atr, max(vol_ratio, 1.6))
+            basis: list[str] = []
+            if volume_gate_1h:
+                basis.append('h1_volume_force_x')
+            elif volume_gate_15m:
+                basis.append('m15_volume_spike')
+            if impulse_down or hour_break_down:
+                basis.append('impulse_breakdown_down')
+            if hour_pin_short or upper_wick_ratio >= 0.35:
+                basis.append('wick_rejection_up')
+            if dual_bias_short:
+                basis.append('dual_sided_sweep_short')
+            abnormal_type = '1h放量起跌 / 可能多头踩踏'
+            if hour_pin_short and not (impulse_down or hour_break_down):
+                abnormal_type = '放量上插针扫流动性 / 可能诱多回落'
+            elif dual_bias_short and not (impulse_down or hour_break_down):
+                abnormal_type = '上下插针异动 / 偏空回落'
+            signals.append(_signal_dict('X_BREAKOUT_SHORT', symbol, 'short', price, trend_display_short, basis or ['abnormal_short'], zone_low, zone_high, breakout_level, abnormal_type, eta_min, eta_max))
 
     if len(signals) <= 1:
         return signals
 
-    # 避免同一根同时多空乱发：优先 volume force + 更高趋势分数的一边
-    def _score(sig: dict[str, Any]) -> tuple[int, int]:
-        basis = set(sig.get("structure_basis", []))
-        force = 1 if "h1_volume_force_x" in basis else 0
-        trend = trend_score_long if sig.get("direction") == "long" else trend_score_short
-        return (force, trend)
+    # 若同一小时双向都触发，仅保留当前更强的一边，但不压 ABC（scanner 仍独立处理）
+    def _score(sig: dict[str, Any]) -> tuple[int, int, int]:
+        basis = set(sig.get('structure_basis', []))
+        force = 1 if 'h1_volume_force_x' in basis else 0
+        trend = trend_score_long if sig.get('direction') == 'long' else trend_score_short
+        hour_dir = 1 if hour_close > hour_open and sig.get('direction') == 'long' else 0
+        hour_dir = 1 if hour_close < hour_open and sig.get('direction') == 'short' else hour_dir
+        return (force, trend, hour_dir)
 
     best = max(signals, key=_score)
     return [best]
