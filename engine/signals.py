@@ -786,6 +786,7 @@ def _phase_context(direction: str, h1_phase: str, bg_bias: str, zone_low: float 
     return f"{direction}|{h1_phase}|{bg_bias}|{low}-{high}"
 
 
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
 def build_a_long_candidate(
     *,
     symbol: str,
@@ -873,6 +874,9 @@ def build_a_short_candidate(
 
 
 def build_b_candidate(
+
+def _map_phase_to_signal(
+ main
     *,
     symbol: str,
     direction: str,
@@ -894,6 +898,26 @@ def build_b_candidate(
     zone_high_v = zone_high if zone_high is not None else price
     context = _phase_context(direction, phase_1h, bg_bias, zone_low_v, zone_high_v)
 
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
+
+    if phase_1h == "continuation" and trigger_15m in {"ready", "explosive"} and bg_bias != "hard_counter":
+        sig = _signal_dict(
+            "A_LONG" if direction == "long" else "A_SHORT",
+            symbol,
+            direction,
+            price,
+            trend_display,
+            "active",
+            zone_low=zone_low_v,
+            zone_high=zone_high_v,
+            structure_basis=structure_basis,
+            eta_min_minutes=max(10, eta_min - 10),
+            eta_max_minutes=max(45, eta_max - 30),
+        )
+        sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 3, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+        return sig
+
+ main
     if phase_1h == "repair" and trigger_15m in {"ready", "explosive"} and bg_bias != "hard_counter":
         sig = _signal_dict(
             "B_PULLBACK_LONG" if direction == "long" else "B_PULLBACK_SHORT",
@@ -911,6 +935,7 @@ def build_b_candidate(
         sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 2, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
         return sig
 
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
     return None
 
 
@@ -936,6 +961,8 @@ def build_c_candidate(
     zone_high_v = zone_high if zone_high is not None else price
     context = _phase_context(direction, phase_1h, bg_bias, zone_low_v, zone_high_v)
 
+
+ main
     if phase_1h == "early" and trigger_15m in {"weak", "ready", "explosive"}:
         sig = _signal_dict(
             "C_LEFT_LONG" if direction == "long" else "C_LEFT_SHORT",
@@ -1078,6 +1105,7 @@ def detect_signals(
     ] if ok]
     long_zone_low = min(float(latest["ema10"]), float(latest["ema20"]), float(latest.get("low")))
     long_zone_high = max(float(latest["close"]), recent_high_8, float(latest["ema10"]))
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
     long_signal = resolve_directional_signal(
         direction="long",
         symbol=symbol,
@@ -1087,6 +1115,17 @@ def detect_signals(
         bg_4h=long_bg,
         trigger_15m=long_trigger,
         tai_zero=tai_zero and not long_ignition,
+
+    long_signal = _map_phase_to_signal(
+        symbol=symbol,
+        direction="long",
+        price=price,
+        trend_display=trend_display_long,
+        phase_1h=h1_long_phase,
+        bg_bias=long_bg,
+        tai_zero=tai_zero and not long_ignition,
+        trigger_15m=long_trigger,
+ main
         zone_low=long_zone_low,
         zone_high=long_zone_high,
         structure_basis=long_basis,
@@ -1096,19 +1135,32 @@ def detect_signals(
     if long_signal:
         signals.append(long_signal)
     else:
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
         cand = "A_LONG" if h1_long_phase == "continuation" else ("B_PULLBACK_LONG" if h1_long_phase == "repair" else ("C_LEFT_LONG" if h1_long_phase == "early" else "NONE_LONG"))
+
+        cand = "A_LONG" if h1_long_phase == "continuation" else ("B_PULLBACK_LONG" if h1_long_phase == "repair" else "C_LEFT_LONG")
+ main
         failed = []
         if tai_zero and not long_ignition:
             failed.append("tai_zero_zone")
         if long_bg == "hard_counter" and h1_long_phase in {"continuation", "repair"}:
             failed.append("bg_not_hard_counter")
         if h1_long_phase == "continuation" and long_trigger not in {"ready", "explosive"}:
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
             failed.append("m15_trigger_ready")
         if h1_long_phase == "repair" and long_trigger not in {"ready", "explosive"}:
             failed.append("m15_trigger_ready")
         if h1_long_phase == "early" and long_trigger == "none":
             failed.append("m15_trigger_weak")
         if failed:
+
+            failed.append("m15_trigger_ready")
+        if h1_long_phase == "repair" and long_trigger not in {"ready", "explosive"}:
+            failed.append("m15_trigger_ready")
+        if h1_long_phase == "early" and long_trigger == "none":
+            failed.append("m15_trigger_weak")
+        if len(failed) <= 2 and failed:
+ main
             near_miss_signals.append({"candidate": cand, "failed_checks": failed})
 
     # SHORT branch
@@ -1122,6 +1174,7 @@ def detect_signals(
     ] if ok]
     short_zone_low = min(float(latest["close"]), recent_low_8, float(latest["ema10"]))
     short_zone_high = max(float(latest["ema10"]), float(latest["ema20"]), float(latest.get("high")))
+codex/refactor-alertbot-abc-signal-framework-bpyc3k
     short_signal = resolve_directional_signal(
         direction="short",
         symbol=symbol,
@@ -1131,6 +1184,17 @@ def detect_signals(
         bg_4h=short_bg,
         trigger_15m=short_trigger,
         tai_zero=tai_zero and not short_ignition,
+
+    short_signal = _map_phase_to_signal(
+        symbol=symbol,
+        direction="short",
+        price=price,
+        trend_display=trend_display_short,
+        phase_1h=h1_short_phase,
+        bg_bias=short_bg,
+        tai_zero=tai_zero and not short_ignition,
+        trigger_15m=short_trigger,
+ main
         zone_low=short_zone_low,
         zone_high=short_zone_high,
         structure_basis=short_basis,
@@ -1140,7 +1204,11 @@ def detect_signals(
     if short_signal:
         signals.append(short_signal)
     else:
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
         cand = "A_SHORT" if h1_short_phase == "continuation" else ("B_PULLBACK_SHORT" if h1_short_phase == "repair" else ("C_LEFT_SHORT" if h1_short_phase == "early" else "NONE_SHORT"))
+
+        cand = "A_SHORT" if h1_short_phase == "continuation" else ("B_PULLBACK_SHORT" if h1_short_phase == "repair" else "C_LEFT_SHORT")
+main
         failed = []
         if tai_zero and not short_ignition:
             failed.append("tai_zero_zone")
@@ -1152,7 +1220,11 @@ def detect_signals(
             failed.append("m15_trigger_ready")
         if h1_short_phase == "early" and short_trigger == "none":
             failed.append("m15_trigger_weak")
+ codex/refactor-alertbot-abc-signal-framework-bpyc3k
         if failed:
+
+        if len(failed) <= 2 and failed:
+ main
             near_miss_signals.append({"candidate": cand, "failed_checks": failed})
 
     return {"signals": signals, "near_miss_signals": near_miss_signals, "blocked_reasons": {}}
