@@ -663,52 +663,170 @@ def _signal_dict(
 
 
 
-def _tai_zero_threshold(k: dict) -> float:
+def _tai_zero_threshold(k: dict, tai_series: list[float] | None = None) -> float:
     p20 = _float_safe(k.get("tai_p20"), 0.0)
     if p20 <= 0:
         return 0.0
     p05 = _float_safe(k.get("tai_p05"), 0.0)
-    p10 = _float_safe(k.get("tai_p10"), 0.0)
-    lower_anchor = p05 if p05 > 0 else (p10 if p10 > 0 else p20 * 0.55)
+    if p05 > 0:
+        lower_anchor = p05
+    else:
+        series = [v for v in (tai_series or []) if v > 0]
+        rolling_min = min(series) if series else 0.0
+        lower_anchor = rolling_min if rolling_min > 0 else _float_safe(k.get("tai_p10"), p20)
     lower_anchor = min(lower_anchor, p20)
     return lower_anchor + 0.30 * (p20 - lower_anchor)
 
 
-def _tai_zero_point(k: dict) -> bool:
+def _tai_zero_point(k: dict, tai_series: list[float] | None = None) -> bool:
     tai = _float_safe(k.get("tai_value"), 0.0)
-    threshold = _tai_zero_threshold(k)
+    threshold = _tai_zero_threshold(k, tai_series=tai_series)
     return threshold > 0 and tai <= threshold
 
 
-def _bg_bias(direction: str, trend_4h: str, phase_4h: str) -> str:
-    supportive = trend_4h in {"bull", "lean_bull"} if direction == "long" else trend_4h in {"bear", "lean_bear"}
-    if supportive and phase_4h != "counter":
-        return "supportive"
-    if phase_4h == "counter" and not supportive:
+def _phase_1h(
+    direction: str,
+    latest: dict,
+    prev: dict,
+    *,
+    bos_event: dict[str, Any] | None,
+    mss_event: dict[str, Any] | None,
+    support_fvg_fill: dict[str, Any] | None,
+    resistance_fvg_fill: dict[str, Any] | None,
+    support_sweep: dict[str, Any] | None,
+    resistance_sweep: dict[str, Any] | None,
+    near_support: dict[str, Any] | None,
+    near_resistance: dict[str, Any] | None,
+    eql: dict[str, Any] | None,
+    eqh: dict[str, Any] | None,
+) -> str:
+    if direction == "long":
+        structure_drive = bool(bos_event or mss_event)
+        stack_ok = float(latest["close"]) >= float(latest["ema20"]) and float(latest["ema10"]) >= float(latest["ema20"])
+        working_area = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill)) >= 1
+        reclaiming = _count_true(float(latest["close"]) >= float(latest["ema10"]), float(latest["close"]) >= float(prev["close"]), _momentum_up(latest)) >= 2
+        overhead_pressure = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill)) >= 2
+        continuation_ready = _count_true(structure_drive, stack_ok, _momentum_up(latest), not overhead_pressure) >= 3
+        repair_ready = _count_true(structure_drive, working_area, reclaiming, stack_ok) >= 2
+        if continuation_ready:
+            return "continuation"
+        if repair_ready:
+            return "repair"
+        if working_area or bool(support_sweep or eql):
+            return "early"
+        return "none"
+
+    structure_drive = bool(bos_event or mss_event)
+    stack_ok = float(latest["close"]) <= float(latest["ema20"]) and float(latest["ema10"]) <= float(latest["ema20"])
+    working_area = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill)) >= 1
+    reclaiming = _count_true(float(latest["close"]) <= float(latest["ema10"]), float(latest["close"]) <= float(prev["close"]), _momentum_down(latest)) >= 2
+    support_pressure = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill)) >= 2
+    continuation_ready = _count_true(structure_drive, stack_ok, _momentum_down(latest), not support_pressure) >= 3
+    repair_ready = _count_true(structure_drive, working_area, reclaiming, stack_ok) >= 2
+    if continuation_ready:
+        return "continuation"
+    if repair_ready:
+        return "repair"
+    if working_area or bool(resistance_sweep or eqh):
+        return "early"
+    return "none"
+
+
+def _bg_4h(
+    direction: str,
+    trend_4h: str,
+    latest: dict,
+    prev: dict,
+    *,
+    bos_event: dict[str, Any] | None,
+    mss_event: dict[str, Any] | None,
+    support_fvg_fill: dict[str, Any] | None,
+    resistance_fvg_fill: dict[str, Any] | None,
+    support_sweep: dict[str, Any] | None,
+    resistance_sweep: dict[str, Any] | None,
+    near_support: dict[str, Any] | None,
+    near_resistance: dict[str, Any] | None,
+    eql: dict[str, Any] | None,
+    eqh: dict[str, Any] | None,
+) -> str:
+    supportive_trend = trend_4h in {"bull", "lean_bull"} if direction == "long" else trend_4h in {"bear", "lean_bear"}
+    if direction == "long":
+        counter_pressure = _count_true(
+            not supportive_trend,
+            _momentum_down(latest),
+            float(latest["close"]) < float(latest["ema20"]),
+            bool(near_resistance or resistance_sweep or eqh or resistance_fvg_fill),
+        )
+        support_marks = _count_true(
+            supportive_trend,
+            bool(bos_event or mss_event),
+            float(latest["close"]) >= float(latest["ema20"]),
+            _momentum_up(latest),
+            bool(near_support or support_sweep or eql or support_fvg_fill),
+        )
+    else:
+        counter_pressure = _count_true(
+            not supportive_trend,
+            _momentum_up(latest),
+            float(latest["close"]) > float(latest["ema20"]),
+            bool(near_support or support_sweep or eql or support_fvg_fill),
+        )
+        support_marks = _count_true(
+            supportive_trend,
+            bool(bos_event or mss_event),
+            float(latest["close"]) <= float(latest["ema20"]),
+            _momentum_down(latest),
+            bool(near_resistance or resistance_sweep or eqh or resistance_fvg_fill),
+        )
+    if counter_pressure >= 3:
         return "hard_counter"
+    if support_marks >= 3:
+        return "supportive"
     return "neutral"
 
 
-def _m15_trigger_ready(direction: str, latest: dict, prev: dict, *, bos_event: dict | None, mss_event: dict | None) -> bool:
+def _trigger_15m(
+    direction: str,
+    latest: dict,
+    prev: dict,
+    *,
+    bos_event: dict | None,
+    mss_event: dict | None,
+    reclaim_event: dict | None,
+    reject_event: dict | None,
+    sweep_event: dict | None,
+) -> str:
     close = _float_safe(latest.get("close"))
     prev_close = _float_safe(prev.get("close"))
-    ema10 = _float_safe(latest.get("ema10"))
-    ema20 = _float_safe(latest.get("ema20"))
+    vol_ratio = _volume_ratio(latest)
+    wick_reject = _close_position(latest) >= 0.65 if direction == "long" else _close_position(latest) <= 0.35
     if direction == "long":
-        return _count_true(
+        score = _count_true(
             bool(bos_event or mss_event),
-            close >= ema10,
             close >= prev_close,
             _momentum_up(latest),
-            bool(latest.get("fl_buy_signal")),
-        ) >= 2 and close >= ema20
-    return _count_true(
-        bool(bos_event or mss_event),
-        close <= ema10,
-        close <= prev_close,
-        _momentum_down(latest),
-        bool(latest.get("fl_sell_signal")),
-    ) >= 2 and close <= ema20
+            bool(reclaim_event),
+            bool(sweep_event),
+            wick_reject,
+            vol_ratio >= 1.05,
+        )
+    else:
+        score = _count_true(
+            bool(bos_event or mss_event),
+            close <= prev_close,
+            _momentum_down(latest),
+            bool(reject_event),
+            bool(sweep_event),
+            wick_reject,
+            vol_ratio >= 1.05,
+        )
+    if score >= 5 and vol_ratio >= 1.20:
+        return "explosive"
+    if score >= 3:
+        return "ready"
+    if score >= 1:
+        return "weak"
+    return "none"
 
 
 def _h1_ignition_long(k_1h: dict, latest_15m: dict, recent_high: float) -> bool:
@@ -743,19 +861,16 @@ def _phase_context(direction: str, h1_phase: str, bg_bias: str, zone_low: float 
     return f"{direction}|{h1_phase}|{bg_bias}|{low}-{high}"
 
 
-def _phase_mapped_signal(
+def _map_phase_to_signal(
     *,
     symbol: str,
     direction: str,
     price: float,
     trend_display: str,
-    h1_phase: str,
+    phase_1h: str,
     bg_bias: str,
     tai_zero: bool,
-    trigger_ready: bool,
-    a_ready: bool,
-    b_ready: bool,
-    c_ready: bool,
+    trigger_15m: str,
     zone_low: float | None,
     zone_high: float | None,
     structure_basis: list[str],
@@ -766,9 +881,9 @@ def _phase_mapped_signal(
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
-    context = _phase_context(direction, h1_phase, bg_bias, zone_low_v, zone_high_v)
+    context = _phase_context(direction, phase_1h, bg_bias, zone_low_v, zone_high_v)
 
-    if a_ready and h1_phase == "continuation":
+    if phase_1h == "continuation" and trigger_15m in {"ready", "explosive"} and bg_bias != "hard_counter":
         sig = _signal_dict(
             "A_LONG" if direction == "long" else "A_SHORT",
             symbol,
@@ -782,10 +897,10 @@ def _phase_mapped_signal(
             eta_min_minutes=max(10, eta_min - 10),
             eta_max_minutes=max(45, eta_max - 30),
         )
-        sig.update({"phase_name": h1_phase, "phase_context": context, "phase_rank": 3, "bg_bias": bg_bias, "trigger_ready": trigger_ready, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+        sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 3, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
         return sig
 
-    if b_ready and h1_phase == "mixed":
+    if phase_1h == "repair" and trigger_15m in {"ready", "explosive"} and bg_bias != "hard_counter":
         sig = _signal_dict(
             "B_PULLBACK_LONG" if direction == "long" else "B_PULLBACK_SHORT",
             symbol,
@@ -799,10 +914,10 @@ def _phase_mapped_signal(
             eta_min_minutes=eta_min,
             eta_max_minutes=eta_max,
         )
-        sig.update({"phase_name": h1_phase, "phase_context": context, "phase_rank": 2, "bg_bias": bg_bias, "trigger_ready": trigger_ready, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+        sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 2, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
         return sig
 
-    if c_ready:
+    if phase_1h == "early" and trigger_15m in {"weak", "ready", "explosive"}:
         sig = _signal_dict(
             "C_LEFT_LONG" if direction == "long" else "C_LEFT_SHORT",
             symbol,
@@ -816,7 +931,7 @@ def _phase_mapped_signal(
             eta_min_minutes=eta_min,
             eta_max_minutes=eta_max,
         )
-        sig.update({"phase_name": h1_phase, "phase_context": context, "phase_rank": 1, "bg_bias": bg_bias, "trigger_ready": trigger_ready, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+        sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 1, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
         return sig
     return None
 
@@ -887,17 +1002,11 @@ def detect_signals(
     h4_last_mss_up = latest_structure_event(klines_4h, direction="up", kinds=("mss",), max_bars_ago=6)
     h4_last_mss_down = latest_structure_event(klines_4h, direction="down", kinds=("mss",), max_bars_ago=6)
 
-    h1_long_phase = _classify_tf_phase("long", trend_1h, k_1h, p_1h, bos_event=h1_last_bos_up, mss_event=h1_last_mss_up, support_fvg_fill=h1_bull_fvg_fill, resistance_fvg_fill=h1_bear_fvg_fill, support_sweep=h1_bull_sweep, resistance_sweep=h1_bear_sweep, near_support=h1_near_bull_pivot, near_resistance=h1_near_bear_pivot, eql=h1_eql, eqh=h1_eqh)
-    h1_short_phase = _classify_tf_phase("short", trend_1h, k_1h, p_1h, bos_event=h1_last_bos_down, mss_event=h1_last_mss_down, support_fvg_fill=h1_bull_fvg_fill, resistance_fvg_fill=h1_bear_fvg_fill, support_sweep=h1_bull_sweep, resistance_sweep=h1_bear_sweep, near_support=h1_near_bull_pivot, near_resistance=h1_near_bear_pivot, eql=h1_eql, eqh=h1_eqh)
-    h4_long_phase = _classify_tf_phase("long", trend_4h, k_4h, p_4h, bos_event=h4_last_bos_up, mss_event=h4_last_mss_up, support_fvg_fill=h4_bull_fvg_fill, resistance_fvg_fill=h4_bear_fvg_fill, support_sweep=h4_bull_sweep, resistance_sweep=h4_bear_sweep, near_support=h4_near_bull_pivot, near_resistance=h4_near_bear_pivot, eql=h4_eql, eqh=h4_eqh)
-    h4_short_phase = _classify_tf_phase("short", trend_4h, k_4h, p_4h, bos_event=h4_last_bos_down, mss_event=h4_last_mss_down, support_fvg_fill=h4_bull_fvg_fill, resistance_fvg_fill=h4_bear_fvg_fill, support_sweep=h4_bull_sweep, resistance_sweep=h4_bear_sweep, near_support=h4_near_bull_pivot, near_resistance=h4_near_bear_pivot, eql=h4_eql, eqh=h4_eqh)
+    h1_long_phase = _phase_1h("long", k_1h, p_1h, bos_event=h1_last_bos_up, mss_event=h1_last_mss_up, support_fvg_fill=h1_bull_fvg_fill, resistance_fvg_fill=h1_bear_fvg_fill, support_sweep=h1_bull_sweep, resistance_sweep=h1_bear_sweep, near_support=h1_near_bull_pivot, near_resistance=h1_near_bear_pivot, eql=h1_eql, eqh=h1_eqh)
+    h1_short_phase = _phase_1h("short", k_1h, p_1h, bos_event=h1_last_bos_down, mss_event=h1_last_mss_down, support_fvg_fill=h1_bull_fvg_fill, resistance_fvg_fill=h1_bear_fvg_fill, support_sweep=h1_bull_sweep, resistance_sweep=h1_bear_sweep, near_support=h1_near_bull_pivot, near_resistance=h1_near_bear_pivot, eql=h1_eql, eqh=h1_eqh)
 
-    bullish_stack = _price_above_stack(latest)
-    bearish_stack = _price_below_stack(latest)
-    momentum_up = _momentum_up(latest)
-    momentum_down = _momentum_down(latest)
-    vol_ratio = _volume_ratio(latest)
-    tai_zero = _tai_zero_point(k_1h)
+    tai_series_1h = [_float_safe(k.get("tai_value"), 0.0) for k in klines_1h[-20:]]
+    tai_zero = _tai_zero_point(k_1h, tai_series=tai_series_1h)
     recent_high_8 = max(float(k["high"]) for k in klines_15m[-9:-1])
     recent_low_8 = min(float(k["low"]) for k in klines_15m[-9:-1])
     long_ignition = _h1_ignition_long(k_1h, latest, recent_high_8)
@@ -908,8 +1017,8 @@ def detect_signals(
     signals: list[dict[str, Any]] = []
 
     # LONG branch
-    long_bg = _bg_bias("long", trend_4h, h4_long_phase)
-    long_trigger = _m15_trigger_ready("long", latest, prev, bos_event=last_bos_up, mss_event=last_mss_up)
+    long_bg = _bg_4h("long", trend_4h, k_4h, p_4h, bos_event=h4_last_bos_up, mss_event=h4_last_mss_up, support_fvg_fill=h4_bull_fvg_fill, resistance_fvg_fill=h4_bear_fvg_fill, support_sweep=h4_bull_sweep, resistance_sweep=h4_bear_sweep, near_support=h4_near_bull_pivot, near_resistance=h4_near_bear_pivot, eql=h4_eql, eqh=h4_eqh)
+    long_trigger = _trigger_15m("long", latest, prev, bos_event=last_bos_up, mss_event=last_mss_up, reclaim_event=bull_fvg_fill, reject_event=bear_fvg_fill, sweep_event=bull_sweep)
     long_basis = [x for x, ok in [
         ("mss_up", bool(last_mss_up or h1_last_mss_up)),
         ("bos_up", bool(last_bos_up or h1_last_bos_up)),
@@ -918,21 +1027,36 @@ def detect_signals(
     ] if ok]
     long_zone_low = min(float(latest["ema10"]), float(latest["ema20"]), float(latest.get("low")))
     long_zone_high = max(float(latest["close"]), recent_high_8, float(latest["ema10"]))
-    a_long_ready = h1_long_phase == "continuation" and long_bg != "hard_counter" and long_trigger and not _long_overheat(latest, prev)
-    b_long_ready = h1_long_phase == "mixed" and _count_true(bullish_stack or float(latest["close"]) >= float(latest["ema20"]), momentum_up, bool(bull_fvg_fill or h1_bull_fvg_fill), bool(last_mss_up or h1_last_mss_up), vol_ratio >= 0.95) >= 3 and long_bg != "hard_counter"
-    c_long_ready = _count_true(bool(last_mss_up or h1_last_mss_up or bull_sweep or h1_bull_sweep or eql or h1_eql), momentum_up or bool(latest.get("tai_rising")), float(latest["close"]) >= float(latest["ema20"])) >= 2 and long_bg != "hard_counter"
-    long_signal = _phase_mapped_signal(symbol=symbol, direction="long", price=price, trend_display=trend_display_long, h1_phase=h1_long_phase, bg_bias=long_bg, tai_zero=tai_zero and not long_ignition, trigger_ready=long_trigger, a_ready=a_long_ready, b_ready=b_long_ready, c_ready=c_long_ready, zone_low=long_zone_low, zone_high=long_zone_high, structure_basis=long_basis, eta_min=25, eta_max=165)
+    long_signal = _map_phase_to_signal(
+        symbol=symbol,
+        direction="long",
+        price=price,
+        trend_display=trend_display_long,
+        phase_1h=h1_long_phase,
+        bg_bias=long_bg,
+        tai_zero=tai_zero and not long_ignition,
+        trigger_15m=long_trigger,
+        zone_low=long_zone_low,
+        zone_high=long_zone_high,
+        structure_basis=long_basis,
+        eta_min=25,
+        eta_max=165,
+    )
     if long_signal:
         signals.append(long_signal)
     else:
-        cand = "A_LONG" if h1_long_phase == "continuation" else ("B_PULLBACK_LONG" if h1_long_phase == "mixed" else "C_LEFT_LONG")
+        cand = "A_LONG" if h1_long_phase == "continuation" else ("B_PULLBACK_LONG" if h1_long_phase == "repair" else "C_LEFT_LONG")
         failed = []
         if tai_zero and not long_ignition:
             failed.append("tai_zero_zone")
         if long_bg == "hard_counter":
             failed.append("bg_not_hard_counter")
-        if h1_long_phase == "continuation" and not long_trigger:
+        if h1_long_phase == "continuation" and long_trigger not in {"ready", "explosive"}:
             failed.append("m15_trigger_ready")
+        if h1_long_phase == "repair" and long_trigger not in {"ready", "explosive"}:
+            failed.append("m15_trigger_ready")
+        if h1_long_phase == "early" and long_trigger == "none":
+            failed.append("m15_trigger_weak")
         if len(failed) <= 2 and failed:
             near_miss_signals.append({"candidate": cand, "failed_checks": failed})
         else:
@@ -940,8 +1064,8 @@ def detect_signals(
                 blocked_counter[f"{cand}:{reason}"] += 1
 
     # SHORT branch
-    short_bg = _bg_bias("short", trend_4h, h4_short_phase)
-    short_trigger = _m15_trigger_ready("short", latest, prev, bos_event=last_bos_down, mss_event=last_mss_down)
+    short_bg = _bg_4h("short", trend_4h, k_4h, p_4h, bos_event=h4_last_bos_down, mss_event=h4_last_mss_down, support_fvg_fill=h4_bull_fvg_fill, resistance_fvg_fill=h4_bear_fvg_fill, support_sweep=h4_bull_sweep, resistance_sweep=h4_bear_sweep, near_support=h4_near_bull_pivot, near_resistance=h4_near_bear_pivot, eql=h4_eql, eqh=h4_eqh)
+    short_trigger = _trigger_15m("short", latest, prev, bos_event=last_bos_down, mss_event=last_mss_down, reclaim_event=bull_fvg_fill, reject_event=bear_fvg_fill, sweep_event=bear_sweep)
     short_basis = [x for x, ok in [
         ("mss_down", bool(last_mss_down or h1_last_mss_down)),
         ("bos_down", bool(last_bos_down or h1_last_bos_down)),
@@ -950,21 +1074,36 @@ def detect_signals(
     ] if ok]
     short_zone_low = min(float(latest["close"]), recent_low_8, float(latest["ema10"]))
     short_zone_high = max(float(latest["ema10"]), float(latest["ema20"]), float(latest.get("high")))
-    a_short_ready = h1_short_phase == "continuation" and short_bg != "hard_counter" and short_trigger and not _short_exhausted(latest, prev)
-    b_short_ready = h1_short_phase == "mixed" and _count_true(bearish_stack or float(latest["close"]) <= float(latest["ema20"]), momentum_down, bool(bear_fvg_fill or h1_bear_fvg_fill), bool(last_mss_down or h1_last_mss_down), vol_ratio >= 0.95) >= 3 and short_bg != "hard_counter"
-    c_short_ready = _count_true(bool(last_mss_down or h1_last_mss_down or bear_sweep or h1_bear_sweep or eqh or h1_eqh), momentum_down or (not bool(latest.get("tai_rising"))), float(latest["close"]) <= float(latest["ema20"])) >= 2 and short_bg != "hard_counter"
-    short_signal = _phase_mapped_signal(symbol=symbol, direction="short", price=price, trend_display=trend_display_short, h1_phase=h1_short_phase, bg_bias=short_bg, tai_zero=tai_zero and not short_ignition, trigger_ready=short_trigger, a_ready=a_short_ready, b_ready=b_short_ready, c_ready=c_short_ready, zone_low=short_zone_low, zone_high=short_zone_high, structure_basis=short_basis, eta_min=25, eta_max=165)
+    short_signal = _map_phase_to_signal(
+        symbol=symbol,
+        direction="short",
+        price=price,
+        trend_display=trend_display_short,
+        phase_1h=h1_short_phase,
+        bg_bias=short_bg,
+        tai_zero=tai_zero and not short_ignition,
+        trigger_15m=short_trigger,
+        zone_low=short_zone_low,
+        zone_high=short_zone_high,
+        structure_basis=short_basis,
+        eta_min=25,
+        eta_max=165,
+    )
     if short_signal:
         signals.append(short_signal)
     else:
-        cand = "A_SHORT" if h1_short_phase == "continuation" else ("B_PULLBACK_SHORT" if h1_short_phase == "mixed" else "C_LEFT_SHORT")
+        cand = "A_SHORT" if h1_short_phase == "continuation" else ("B_PULLBACK_SHORT" if h1_short_phase == "repair" else "C_LEFT_SHORT")
         failed = []
         if tai_zero and not short_ignition:
             failed.append("tai_zero_zone")
         if short_bg == "hard_counter":
             failed.append("bg_not_hard_counter")
-        if h1_short_phase == "continuation" and not short_trigger:
+        if h1_short_phase == "continuation" and short_trigger not in {"ready", "explosive"}:
             failed.append("m15_trigger_ready")
+        if h1_short_phase == "repair" and short_trigger not in {"ready", "explosive"}:
+            failed.append("m15_trigger_ready")
+        if h1_short_phase == "early" and short_trigger == "none":
+            failed.append("m15_trigger_weak")
         if len(failed) <= 2 and failed:
             near_miss_signals.append({"candidate": cand, "failed_checks": failed})
         else:

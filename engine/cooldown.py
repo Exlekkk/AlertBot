@@ -50,6 +50,9 @@ class SignalStateStore:
             return f"X|{signal['symbol']}|{signal['timeframe']}|{signal['signal']}|{signal['direction']}"
         return f"ABC|{signal['symbol']}|{signal['timeframe']}|{signal['direction']}"
 
+    def _phase_rank(self, phase_name: str) -> int:
+        return {"none": 0, "early": 1, "repair": 2, "continuation": 3}.get(phase_name, 0)
+
     def should_send(self, signal: dict[str, Any]) -> bool:
         key = self._family_key(signal)
         previous = self.last_sent.get(key)
@@ -75,6 +78,10 @@ class SignalStateStore:
         curr_context = signal.get("phase_context", "")
         prev_phase = previous.get("phase_name", "")
         curr_phase = signal.get("phase_name", "")
+        prev_phase_rank = self._phase_rank(prev_phase)
+        curr_phase_rank = self._phase_rank(curr_phase)
+        prev_label = previous.get("signal", "")
+        curr_label = signal.get("signal", "")
 
         # 同方向同阶段同上下文：小波动不重发
         if prev_context == curr_context and prev_phase == curr_phase and tiny_move and now - prev_sent_at < cooldown_seconds:
@@ -86,11 +93,20 @@ class SignalStateStore:
                 return False
             return True
 
-        # B/C 防抖：同方向不允许无上下文变化的降级乱跳
-        if curr_rank < prev_rank:
-            if prev_context == curr_context and now - prev_sent_at < max(cooldown_seconds, 2 * 3600):
-                return False
-            if prev_phase == curr_phase and now - prev_sent_at < max(cooldown_seconds, 90 * 60):
+        # 同方向阶段约束：没有真实 phase 回退，不允许标签非法降级回播
+        if curr_phase_rank < prev_phase_rank:
+            return False
+
+        illegal_downgrade = {
+            ("B_PULLBACK_LONG", "C_LEFT_LONG"),
+            ("B_PULLBACK_SHORT", "C_LEFT_SHORT"),
+            ("A_LONG", "B_PULLBACK_LONG"),
+            ("A_LONG", "C_LEFT_LONG"),
+            ("A_SHORT", "B_PULLBACK_SHORT"),
+            ("A_SHORT", "C_LEFT_SHORT"),
+        }
+        if (prev_label, curr_label) in illegal_downgrade:
+            if not (prev_phase == "repair" and curr_phase == "early"):
                 return False
 
         # 同等级但没有阶段/区间变化，不重发
@@ -98,10 +114,15 @@ class SignalStateStore:
             if now - prev_sent_at < cooldown_seconds:
                 return False
 
+        # 同方向降级即便 phase 发生变化，也需避免快速回播
+        if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds, 75 * 60):
+            return False
+
         return True
 
     def mark_sent(self, signal: dict[str, Any]):
         key = self._family_key(signal)
+        now = time.time()
         self.last_sent[key] = {
             "signal": signal["signal"],
             "status": signal.get("status", "active"),
@@ -111,6 +132,11 @@ class SignalStateStore:
             "phase_rank": int(signal.get("phase_rank", self._rank(signal.get("signal", "")))),
             "phase_name": signal.get("phase_name", ""),
             "phase_context": signal.get("phase_context", ""),
-            "sent_at": time.time(),
+            "last_direction": signal.get("direction", ""),
+            "last_phase_1h": signal.get("phase_name", ""),
+            "last_label": signal.get("signal", ""),
+            "last_trigger_state": signal.get("trigger_state", ""),
+            "last_sent_ts": now,
+            "sent_at": now,
         }
         self._save()
