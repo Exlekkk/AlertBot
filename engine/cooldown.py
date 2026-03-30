@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -53,6 +54,118 @@ class SignalStateStore:
     def _phase_rank(self, phase_name: str) -> int:
         return {"none": 0, "early": 1, "repair": 2, "continuation": 3}.get(phase_name, 0)
 
+    def _normalized_zone(self, low: float | None, high: float | None, price: float) -> tuple[float, float]:
+        low_v = float(price if low is None else low)
+        high_v = float(price if high is None else high)
+        if low_v > high_v:
+            low_v, high_v = high_v, low_v
+        if abs(high_v - low_v) < max(abs(price) * 0.0008, 8.0):
+            pad = max(abs(price) * 0.0012, 12.0)
+            low_v -= pad * 0.5
+            high_v += pad * 0.5
+        return low_v, high_v
+
+    def _zone_overlap_ratio(self, prev_low: float, prev_high: float, curr_low: float, curr_high: float) -> float:
+        intersection = max(0.0, min(prev_high, curr_high) - max(prev_low, curr_low))
+        union = max(prev_high, curr_high) - min(prev_low, curr_low)
+        if union <= 1e-9:
+            return 1.0
+        return max(0.0, min(1.0, intersection / union))
+
+    def _basis_overlap_ratio(self, previous: dict[str, Any], current: dict[str, Any]) -> float:
+        prev_basis = set(previous.get("structure_basis") or [])
+        curr_basis = set(current.get("structure_basis") or [])
+        if not prev_basis and not curr_basis:
+            return 1.0
+        if not prev_basis or not curr_basis:
+            return 0.0
+        inter = len(prev_basis & curr_basis)
+        union = len(prev_basis | curr_basis)
+        return inter / max(union, 1)
+
+    def _context_similarity(self, previous: dict[str, Any], current: dict[str, Any]) -> float:
+        score = 0.0
+        if previous.get("signal") == current.get("signal"):
+            score += 0.22
+        if previous.get("phase_name") == current.get("phase_name"):
+            score += 0.16
+        if previous.get("trigger_state") == current.get("trigger_state"):
+            score += 0.12
+        if previous.get("trend_1h") == current.get("trend_1h"):
+            score += 0.08
+        if previous.get("bg_bias") == current.get("bg_bias"):
+            score += 0.08
+        return score
+
+    def _price_similarity(self, previous: dict[str, Any], current: dict[str, Any]) -> float:
+        prev_price = float(previous.get("price", 0.0) or 0.0)
+        curr_price = float(current.get("price", 0.0) or 0.0)
+        if prev_price <= 0 or curr_price <= 0:
+            return 0.0
+        ratio = self._price_change_ratio(prev_price, curr_price)
+        base = max(float(previous.get("atr", 0.0) or 0.0), prev_price * 0.0012)
+        normalized_move = abs(curr_price - prev_price) / max(base, 1e-9)
+        tiny_bonus = 1.0 if ratio <= self.price_change_threshold else 0.0
+        smooth = 1.0 / (1.0 + normalized_move)
+        return min(1.0, 0.55 * smooth + 0.45 * tiny_bonus)
+
+    def _signal_similarity(self, previous: dict[str, Any], current: dict[str, Any]) -> float:
+        curr_price = float(current.get("price", previous.get("price", 0.0)) or 0.0)
+        prev_low, prev_high = self._normalized_zone(previous.get("zone_low"), previous.get("zone_high"), float(previous.get("price", curr_price) or curr_price))
+        curr_low, curr_high = self._normalized_zone(current.get("zone_low"), current.get("zone_high"), curr_price)
+        zone_overlap = self._zone_overlap_ratio(prev_low, prev_high, curr_low, curr_high)
+        basis_overlap = self._basis_overlap_ratio(previous, current)
+        context_similarity = self._context_similarity(previous, current)
+        price_similarity = self._price_similarity(previous, current)
+
+        score = (
+            0.30 * zone_overlap
+            + 0.24 * basis_overlap
+            + 0.22 * price_similarity
+            + context_similarity
+        )
+        return max(0.0, min(1.0, score))
+
+    def _novelty_score(self, previous: dict[str, Any], current: dict[str, Any]) -> float:
+        prev_rank = int(previous.get("phase_rank", self._rank(previous.get("signal", ""))))
+        curr_rank = int(current.get("phase_rank", self._rank(current.get("signal", ""))))
+        prev_phase_rank = self._phase_rank(previous.get("phase_name", ""))
+        curr_phase_rank = self._phase_rank(current.get("phase_name", ""))
+
+        score = 0.0
+        if curr_rank > prev_rank:
+            score += 0.34
+        elif curr_rank < prev_rank:
+            score -= 0.18
+
+        phase_delta = curr_phase_rank - prev_phase_rank
+        if phase_delta > 0:
+            score += min(0.20, phase_delta * 0.10)
+        elif phase_delta < 0:
+            score -= min(0.14, abs(phase_delta) * 0.07)
+
+        if previous.get("trigger_state") != current.get("trigger_state"):
+            score += 0.08
+        if previous.get("signal") != current.get("signal"):
+            score += 0.08
+        if previous.get("phase_context") != current.get("phase_context"):
+            score += 0.08
+        if previous.get("trend_1h") != current.get("trend_1h"):
+            score += 0.05
+        if previous.get("bg_bias") != current.get("bg_bias"):
+            score += 0.04
+        if previous.get("signature") != current.get("signature"):
+            score += 0.06
+        return score
+
+    def _time_release(self, previous: dict[str, Any], signal: dict[str, Any], now: float) -> float:
+        cooldown_seconds = int(signal.get("cooldown_seconds", previous.get("cooldown_seconds", 1800)) or 1800)
+        prev_sent_at = float(previous.get("sent_at", 0.0) or 0.0)
+        elapsed = max(0.0, now - prev_sent_at)
+        if cooldown_seconds <= 0:
+            return 1.0
+        return max(0.0, min(1.0, elapsed / cooldown_seconds))
+
     def should_send(self, signal: dict[str, Any]) -> bool:
         key = self._family_key(signal)
         previous = self.last_sent.get(key)
@@ -61,61 +174,34 @@ class SignalStateStore:
 
         now = time.time()
         cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
-        prev_sent_at = float(previous.get("sent_at", 0.0))
-        tiny_move = self._price_change_ratio(float(previous.get("price", 0.0)), float(signal.get("price", 0.0))) <= self.price_change_threshold
+        prev_sent_at = float(previous.get("sent_at", 0.0) or 0.0)
+        elapsed = max(0.0, now - prev_sent_at)
 
-        # X 独立：只按签名与冷却期去重
         if signal["signal"].startswith("X_"):
-            if signal.get("signature") == previous.get("signature") and now - prev_sent_at < cooldown_seconds:
+            similarity = self._signal_similarity(previous, signal)
+            release = self._time_release(previous, signal, now)
+            if similarity >= 0.82 and release < 1.0:
                 return False
-            if tiny_move and now - prev_sent_at < cooldown_seconds:
-                return False
-            return True
-
-        prev_rank = int(previous.get("phase_rank", self._rank(previous.get("signal", ""))))
-        curr_rank = int(signal.get("phase_rank", self._rank(signal.get("signal", ""))))
-        prev_context = previous.get("phase_context", "")
-        curr_context = signal.get("phase_context", "")
-        prev_phase = previous.get("phase_name", "")
-        curr_phase = signal.get("phase_name", "")
-        prev_phase_rank = self._phase_rank(prev_phase)
-        curr_phase_rank = self._phase_rank(curr_phase)
-        prev_label = previous.get("signal", "")
-        curr_label = signal.get("signal", "")
-
-        # 同方向同阶段同上下文：小波动不重发
-        if prev_context == curr_context and prev_phase == curr_phase and tiny_move and now - prev_sent_at < cooldown_seconds:
-            return False
-
-        # A 直通：A 一旦成立，不能被 B/C 防抖拖住
-        if curr_rank == 3:
-            if prev_rank == 3 and prev_context == curr_context and now - prev_sent_at < cooldown_seconds and tiny_move:
+            if signal.get("signature") == previous.get("signature") and elapsed < cooldown_seconds:
                 return False
             return True
 
-        # 同方向阶段约束：没有真实 phase 回退，不允许标签非法降级回播
-        if curr_phase_rank < prev_phase_rank:
+        similarity = self._signal_similarity(previous, signal)
+        novelty = self._novelty_score(previous, signal)
+        release = self._time_release(previous, signal, now)
+
+        # 生命周期抑制：越像同一机会、距离上次越近，越倾向静默更新；
+        # 真正出现阶段推进/结构变化时，novelty 会释放新的提醒。
+        suppression_pressure = similarity * (1.0 - release)
+        reissue_strength = novelty + release * 0.55
+
+        if suppression_pressure >= 0.58 and reissue_strength <= 0.34:
             return False
 
-        illegal_downgrade = {
-            ("B_PULLBACK_LONG", "C_LEFT_LONG"),
-            ("B_PULLBACK_SHORT", "C_LEFT_SHORT"),
-            ("A_LONG", "B_PULLBACK_LONG"),
-            ("A_LONG", "C_LEFT_LONG"),
-            ("A_SHORT", "B_PULLBACK_SHORT"),
-            ("A_SHORT", "C_LEFT_SHORT"),
-        }
-        if (prev_label, curr_label) in illegal_downgrade:
-            if not (prev_phase == "repair" and curr_phase == "early"):
-                return False
+        if similarity >= 0.78 and novelty <= 0.12 and elapsed < cooldown_seconds:
+            return False
 
-        # 同等级但没有阶段/区间变化，不重发
-        if curr_rank == prev_rank and prev_context == curr_context:
-            if now - prev_sent_at < cooldown_seconds:
-                return False
-
-        # 同方向降级即便 phase 发生变化，也需避免快速回播
-        if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds, 75 * 60):
+        if similarity >= 0.68 and novelty < 0 and release < 1.15:
             return False
 
         return True
@@ -136,6 +222,13 @@ class SignalStateStore:
             "last_phase_1h": signal.get("phase_name", ""),
             "last_label": signal.get("signal", ""),
             "last_trigger_state": signal.get("trigger_state", ""),
+            "trend_1h": signal.get("trend_1h", ""),
+            "bg_bias": signal.get("bg_bias", ""),
+            "trigger_state": signal.get("trigger_state", ""),
+            "zone_low": signal.get("zone_low"),
+            "zone_high": signal.get("zone_high"),
+            "structure_basis": signal.get("structure_basis", []),
+            "atr": signal.get("atr", 0.0),
             "last_sent_ts": now,
             "sent_at": now,
         }
