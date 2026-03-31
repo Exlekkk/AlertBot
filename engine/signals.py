@@ -636,8 +636,14 @@ def _phase_1h(
         stack_ok = float(latest["close"]) >= float(latest["ema20"]) and float(latest["ema10"]) >= float(latest["ema20"])
         working_area = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill)) >= 1
         reclaiming = _count_true(float(latest["close"]) >= float(latest["ema10"]), float(latest["close"]) >= float(prev["close"]), _momentum_up(latest)) >= 2
-        overhead_pressure = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill)) >= 2
-        continuation_ready = _count_true(structure_drive, stack_ok, _momentum_up(latest), not overhead_pressure) >= 3
+        overhead_pressure_score = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill))
+        continuation_ready = _count_true(
+            structure_drive,
+            stack_ok,
+            _momentum_up(latest),
+            float(latest["close"]) >= float(prev["close"]),
+            float(latest["close"]) >= float(latest["ema10"]),
+        ) >= 3 and not (overhead_pressure_score >= 3 and float(latest["close"]) < float(latest["ema10"]))
         repair_ready = _count_true(structure_drive, working_area, reclaiming, stack_ok) >= 2
         if continuation_ready:
             return "continuation"
@@ -651,8 +657,14 @@ def _phase_1h(
     stack_ok = float(latest["close"]) <= float(latest["ema20"]) and float(latest["ema10"]) <= float(latest["ema20"])
     working_area = _count_true(bool(near_resistance), bool(resistance_sweep), bool(eqh), bool(resistance_fvg_fill)) >= 1
     reclaiming = _count_true(float(latest["close"]) <= float(latest["ema10"]), float(latest["close"]) <= float(prev["close"]), _momentum_down(latest)) >= 2
-    support_pressure = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill)) >= 2
-    continuation_ready = _count_true(structure_drive, stack_ok, _momentum_down(latest), not support_pressure) >= 3
+    support_pressure_score = _count_true(bool(near_support), bool(support_sweep), bool(eql), bool(support_fvg_fill))
+    continuation_ready = _count_true(
+        structure_drive,
+        stack_ok,
+        _momentum_down(latest),
+        float(latest["close"]) <= float(prev["close"]),
+        float(latest["close"]) <= float(latest["ema10"]),
+    ) >= 3 and not (support_pressure_score >= 3 and float(latest["close"]) > float(latest["ema10"]))
     repair_ready = _count_true(structure_drive, working_area, reclaiming, stack_ok) >= 2
     if continuation_ready:
         return "continuation"
@@ -786,10 +798,68 @@ def _phase_rank(signal_name: str) -> int:
     return 0
 
 
-def _phase_context(direction: str, h1_phase: str, bg_bias: str, zone_low: float | None, zone_high: float | None) -> str:
-    low = _round5(zone_low or 0.0)
-    high = _round5(zone_high or 0.0)
-    return f"{direction}|{h1_phase}|{bg_bias}|{low}-{high}"
+def _phase_context(direction: str, h1_phase: str, bg_bias: str, phase_anchor: str) -> str:
+    return f"{direction}|{h1_phase}|{bg_bias}|{phase_anchor}"
+
+
+def _event_anchor_token(event: dict[str, Any] | None, klines: list[dict]) -> tuple[int, str]:
+    if not event:
+        return (-1, "")
+    if "trigger_index" in event:
+        idx = int(event["trigger_index"])
+        if 0 <= idx < len(klines):
+            k = klines[idx]
+            return (idx, f"t{int(k.get('open_time', idx))}")
+        return (idx, f"i{idx}")
+    if "second_index" in event:
+        idx = int(event["second_index"])
+        if 0 <= idx < len(klines):
+            k = klines[idx]
+            return (idx, f"t{int(k.get('open_time', idx))}")
+        return (idx, f"i{idx}")
+    if "index" in event:
+        idx = int(event["index"])
+        if 0 <= idx < len(klines):
+            k = klines[idx]
+            return (idx, f"t{int(k.get('open_time', idx))}")
+        return (idx, f"i{idx}")
+    if "bars_ago" in event:
+        idx = len(klines) - 1 - int(event["bars_ago"])
+        if 0 <= idx < len(klines):
+            k = klines[idx]
+            return (idx, f"t{int(k.get('open_time', idx))}")
+        return (idx, f"i{idx}")
+    return (-1, "")
+
+
+def _phase_anchor(direction: str, phase_1h: str, klines_1h: list[dict], *events: dict[str, Any] | None) -> str:
+    candidates = [_event_anchor_token(event, klines_1h) for event in events]
+    candidates = [item for item in candidates if item[1]]
+    if candidates:
+        _, token = max(candidates, key=lambda item: item[0])
+        return f"{direction}:{phase_1h}:{token}"
+    latest_open_time = int(klines_1h[-1].get("open_time", len(klines_1h) - 1))
+    return f"{direction}:{phase_1h}:t{latest_open_time}"
+
+
+def _h1_tai_bias(latest: dict, prev: dict) -> str:
+    tai = _float_safe(latest.get("tai_value"), 0.0)
+    prev_tai = _float_safe(prev.get("tai_value"), 0.0)
+    p20 = _float_safe(latest.get("tai_p20"), 0.0)
+    p40 = _float_safe(latest.get("tai_p40"), p20)
+    rising = bool(latest.get("tai_rising")) or tai > prev_tai
+    if rising and tai >= p40 > 0:
+        return "drive"
+    if rising or (p20 > 0 and tai >= p20):
+        return "support"
+    if p20 > 0 and tai < p20 and tai <= prev_tai:
+        return "drag"
+    return "flat"
+
+
+def _h1_tai_slot(latest: dict, prev: dict) -> str:
+    hour_anchor = int(latest.get("open_time", 0))
+    return f"{hour_anchor}:{_h1_tai_bias(latest, prev)}"
 
 
 def build_a_long_candidate(
@@ -806,18 +876,32 @@ def build_a_long_candidate(
     structure_basis: list[str],
     eta_min: int,
     eta_max: int,
+    phase_anchor: str,
+    h1_tai_bias: str,
+    h1_tai_slot: str,
 ) -> dict[str, Any] | None:
     if phase_1h != "continuation" or trigger_15m not in {"ready", "explosive"} or bg_4h == "hard_counter" or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
-    context = _phase_context("long", phase_1h, bg_4h, zone_low_v, zone_high_v)
+    context = _phase_context("long", phase_1h, bg_4h, phase_anchor)
     sig = _signal_dict(
         "A_LONG", symbol, "long", price, trend_display, "active",
         zone_low=zone_low_v, zone_high=zone_high_v, structure_basis=structure_basis,
         eta_min_minutes=max(10, eta_min - 10), eta_max_minutes=max(45, eta_max - 30),
     )
-    sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 3, "bg_bias": bg_4h, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+    sig.update({
+        "phase_name": phase_1h,
+        "phase_context": context,
+        "phase_rank": 3,
+        "bg_bias": bg_4h,
+        "trigger_state": trigger_15m,
+        "tai_zero": tai_zero,
+        "atr": max(abs(price) * 0.0012, 1.0),
+        "phase_anchor": phase_anchor,
+        "h1_tai_bias": h1_tai_bias,
+        "h1_tai_slot": h1_tai_slot,
+    })
     return sig
 
 
@@ -835,18 +919,32 @@ def build_a_short_candidate(
     structure_basis: list[str],
     eta_min: int,
     eta_max: int,
+    phase_anchor: str,
+    h1_tai_bias: str,
+    h1_tai_slot: str,
 ) -> dict[str, Any] | None:
     if phase_1h != "continuation" or trigger_15m not in {"ready", "explosive"} or bg_4h == "hard_counter" or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
-    context = _phase_context("short", phase_1h, bg_4h, zone_low_v, zone_high_v)
+    context = _phase_context("short", phase_1h, bg_4h, phase_anchor)
     sig = _signal_dict(
         "A_SHORT", symbol, "short", price, trend_display, "active",
         zone_low=zone_low_v, zone_high=zone_high_v, structure_basis=structure_basis,
         eta_min_minutes=max(10, eta_min - 10), eta_max_minutes=max(45, eta_max - 30),
     )
-    sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 3, "bg_bias": bg_4h, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+    sig.update({
+        "phase_name": phase_1h,
+        "phase_context": context,
+        "phase_rank": 3,
+        "bg_bias": bg_4h,
+        "trigger_state": trigger_15m,
+        "tai_zero": tai_zero,
+        "atr": max(abs(price) * 0.0012, 1.0),
+        "phase_anchor": phase_anchor,
+        "h1_tai_bias": h1_tai_bias,
+        "h1_tai_slot": h1_tai_slot,
+    })
     return sig
 
 
@@ -865,19 +963,33 @@ def build_b_candidate(
     structure_basis: list[str],
     eta_min: int,
     eta_max: int,
+    phase_anchor: str,
+    h1_tai_bias: str,
+    h1_tai_slot: str,
 ) -> dict[str, Any] | None:
     if phase_1h != "repair" or trigger_15m not in {"ready", "explosive"} or bg_bias == "hard_counter" or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
-    context = _phase_context(direction, phase_1h, bg_bias, zone_low_v, zone_high_v)
+    context = _phase_context(direction, phase_1h, bg_bias, phase_anchor)
     sig = _signal_dict(
         "B_PULLBACK_LONG" if direction == "long" else "B_PULLBACK_SHORT",
         symbol, direction, price, trend_display, "active",
         zone_low=zone_low_v, zone_high=zone_high_v, structure_basis=structure_basis,
         eta_min_minutes=eta_min, eta_max_minutes=eta_max,
     )
-    sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 2, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+    sig.update({
+        "phase_name": phase_1h,
+        "phase_context": context,
+        "phase_rank": 2,
+        "bg_bias": bg_bias,
+        "trigger_state": trigger_15m,
+        "tai_zero": tai_zero,
+        "atr": max(abs(price) * 0.0012, 1.0),
+        "phase_anchor": phase_anchor,
+        "h1_tai_bias": h1_tai_bias,
+        "h1_tai_slot": h1_tai_slot,
+    })
     return sig
 
 
@@ -896,19 +1008,33 @@ def build_c_candidate(
     structure_basis: list[str],
     eta_min: int,
     eta_max: int,
+    phase_anchor: str,
+    h1_tai_bias: str,
+    h1_tai_slot: str,
 ) -> dict[str, Any] | None:
     if phase_1h != "early" or trigger_15m not in {"weak", "ready", "explosive"} or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
-    context = _phase_context(direction, phase_1h, bg_bias, zone_low_v, zone_high_v)
+    context = _phase_context(direction, phase_1h, bg_bias, phase_anchor)
     sig = _signal_dict(
         "C_LEFT_LONG" if direction == "long" else "C_LEFT_SHORT",
         symbol, direction, price, trend_display, "watch",
         zone_low=zone_low_v, zone_high=zone_high_v, structure_basis=structure_basis,
         eta_min_minutes=eta_min, eta_max_minutes=eta_max,
     )
-    sig.update({"phase_name": phase_1h, "phase_context": context, "phase_rank": 1, "bg_bias": bg_bias, "trigger_state": trigger_15m, "tai_zero": tai_zero, "atr": max(abs(price) * 0.0012, 1.0)})
+    sig.update({
+        "phase_name": phase_1h,
+        "phase_context": context,
+        "phase_rank": 1,
+        "bg_bias": bg_bias,
+        "trigger_state": trigger_15m,
+        "tai_zero": tai_zero,
+        "atr": max(abs(price) * 0.0012, 1.0),
+        "phase_anchor": phase_anchor,
+        "h1_tai_bias": h1_tai_bias,
+        "h1_tai_slot": h1_tai_slot,
+    })
     return sig
 
 
@@ -927,17 +1053,20 @@ def resolve_directional_signal(
     structure_basis: list[str],
     eta_min: int,
     eta_max: int,
+    phase_anchor: str,
+    h1_tai_bias: str,
+    h1_tai_slot: str,
 ) -> dict[str, Any] | None:
     if direction == "long":
         if phase_1h == "continuation":
-            return build_a_long_candidate(symbol=symbol, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_4h=bg_4h, trigger_15m=trigger_15m, tai_zero=tai_zero, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max)
+            return build_a_long_candidate(symbol=symbol, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_4h=bg_4h, trigger_15m=trigger_15m, tai_zero=tai_zero, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max, phase_anchor=phase_anchor, h1_tai_bias=h1_tai_bias, h1_tai_slot=h1_tai_slot)
     else:
         if phase_1h == "continuation":
-            return build_a_short_candidate(symbol=symbol, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_4h=bg_4h, trigger_15m=trigger_15m, tai_zero=tai_zero, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max)
+            return build_a_short_candidate(symbol=symbol, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_4h=bg_4h, trigger_15m=trigger_15m, tai_zero=tai_zero, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max, phase_anchor=phase_anchor, h1_tai_bias=h1_tai_bias, h1_tai_slot=h1_tai_slot)
     if phase_1h == "repair":
-        return build_b_candidate(symbol=symbol, direction=direction, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_bias=bg_4h, tai_zero=tai_zero, trigger_15m=trigger_15m, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max)
+        return build_b_candidate(symbol=symbol, direction=direction, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_bias=bg_4h, tai_zero=tai_zero, trigger_15m=trigger_15m, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max, phase_anchor=phase_anchor, h1_tai_bias=h1_tai_bias, h1_tai_slot=h1_tai_slot)
     if phase_1h == "early":
-        return build_c_candidate(symbol=symbol, direction=direction, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_bias=bg_4h, tai_zero=tai_zero, trigger_15m=trigger_15m, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max)
+        return build_c_candidate(symbol=symbol, direction=direction, price=price, trend_display=trend_display, phase_1h=phase_1h, bg_bias=bg_4h, tai_zero=tai_zero, trigger_15m=trigger_15m, zone_low=zone_low, zone_high=zone_high, structure_basis=structure_basis, eta_min=eta_min, eta_max=eta_max, phase_anchor=phase_anchor, h1_tai_bias=h1_tai_bias, h1_tai_slot=h1_tai_slot)
     return None
 
 
@@ -1053,6 +1182,11 @@ def detect_signals(
     h1_long_phase = _phase_1h("long", k_1h, p_1h, bos_event=h1_last_bos_up, mss_event=h1_last_mss_up, support_fvg_fill=h1_bull_fvg_fill, resistance_fvg_fill=h1_bear_fvg_fill, support_sweep=h1_bull_sweep, resistance_sweep=h1_bear_sweep, near_support=h1_near_bull_pivot, near_resistance=h1_near_bear_pivot, eql=h1_eql, eqh=h1_eqh)
     h1_short_phase = _phase_1h("short", k_1h, p_1h, bos_event=h1_last_bos_down, mss_event=h1_last_mss_down, support_fvg_fill=h1_bull_fvg_fill, resistance_fvg_fill=h1_bear_fvg_fill, support_sweep=h1_bull_sweep, resistance_sweep=h1_bear_sweep, near_support=h1_near_bull_pivot, near_resistance=h1_near_bear_pivot, eql=h1_eql, eqh=h1_eqh)
 
+    h1_long_anchor = _phase_anchor("long", h1_long_phase, klines_1h, h1_last_bos_up, h1_last_mss_up, h1_bull_sweep, h1_eql, h1_bull_fvg_fill)
+    h1_short_anchor = _phase_anchor("short", h1_short_phase, klines_1h, h1_last_bos_down, h1_last_mss_down, h1_bear_sweep, h1_eqh, h1_bear_fvg_fill)
+    h1_tai_bias = _h1_tai_bias(k_1h, p_1h)
+    h1_tai_slot = _h1_tai_slot(k_1h, p_1h)
+
     tai_series_1h = [_float_safe(k.get("tai_value"), 0.0) for k in klines_1h[-20:]]
     tai_zero = _tai_zero_point(k_1h, tai_series=tai_series_1h)
     recent_high_8 = max(float(k["high"]) for k in klines_15m[-9:-1])
@@ -1078,6 +1212,7 @@ def detect_signals(
         phase_1h=h1_long_phase, bg_4h=long_bg, trigger_15m=long_trigger,
         tai_zero=tai_zero and not long_ignition, zone_low=long_zone_low, zone_high=long_zone_high,
         structure_basis=long_basis, eta_min=25, eta_max=165,
+        phase_anchor=h1_long_anchor, h1_tai_bias=h1_tai_bias, h1_tai_slot=h1_tai_slot,
     )
     if not long_signal:
         cand = "A_LONG" if h1_long_phase == "continuation" else ("B_PULLBACK_LONG" if h1_long_phase == "repair" else ("C_LEFT_LONG" if h1_long_phase == "early" else "NONE_LONG"))
@@ -1108,6 +1243,7 @@ def detect_signals(
         phase_1h=h1_short_phase, bg_4h=short_bg, trigger_15m=short_trigger,
         tai_zero=tai_zero and not short_ignition, zone_low=short_zone_low, zone_high=short_zone_high,
         structure_basis=short_basis, eta_min=25, eta_max=165,
+        phase_anchor=h1_short_anchor, h1_tai_bias=h1_tai_bias, h1_tai_slot=h1_tai_slot,
     )
     if not short_signal:
         cand = "A_SHORT" if h1_short_phase == "continuation" else ("B_PULLBACK_SHORT" if h1_short_phase == "repair" else ("C_LEFT_SHORT" if h1_short_phase == "early" else "NONE_SHORT"))
