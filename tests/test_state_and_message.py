@@ -79,6 +79,68 @@ class SignalStateAndMessageTests(unittest.TestCase):
             "h1_tai_slot": "124:support",
         }
         self.assertTrue(store.should_send(allowed_upgrade))
+    def test_same_anchor_phase_upgrade_can_open_without_new_tai_slot(self):
+        store = self._store()
+        c_signal = {
+            "signal": "C_LEFT_SHORT",
+            "symbol": "BTCUSDT",
+            "timeframe": "15m",
+            "direction": "short",
+            "priority": 3,
+            "status": "watch",
+            "price": 100.0,
+            "phase_rank": 1,
+            "phase_name": "early",
+            "phase_context": "short|early|neutral|short:early:t123",
+            "phase_anchor": "short:early:t123",
+            "h1_tai_bias": "flat",
+            "h1_tai_slot": "123:flat",
+            "trigger_state": "weak",
+        }
+        store.mark_sent(c_signal)
+
+        upgrade = {
+            **c_signal,
+            "signal": "B_PULLBACK_SHORT",
+            "phase_rank": 2,
+            "phase_name": "repair",
+            "price": 98.8,
+            "trigger_state": "ready",
+        }
+        self.assertTrue(store.should_send(upgrade))
+
+    def test_cross_anchor_rearm_allows_new_watch_after_old_stronger_signal(self):
+        store = self._store()
+        prev_signal = {
+            "signal": "A_LONG",
+            "symbol": "BTCUSDT",
+            "timeframe": "15m",
+            "direction": "long",
+            "priority": 1,
+            "status": "active",
+            "price": 100.0,
+            "phase_rank": 3,
+            "phase_name": "continuation",
+            "phase_context": "long|continuation|neutral|long:continuation:t100",
+            "phase_anchor": "long:continuation:t100",
+            "h1_tai_bias": "support",
+            "h1_tai_slot": "100:support",
+            "trigger_state": "ready",
+        }
+        store.mark_sent(prev_signal)
+
+        rearm = {
+            **prev_signal,
+            "signal": "C_LEFT_LONG",
+            "phase_rank": 1,
+            "phase_name": "early",
+            "phase_context": "long|early|neutral|long:early:t101",
+            "phase_anchor": "long:early:t101",
+            "price": 99.6,
+            "trigger_state": "weak",
+        }
+        self.assertTrue(store.should_send(rearm))
+
 
     def test_engine_message_has_only_expected_fields(self):
         message = self.telegram.format_engine_message(
