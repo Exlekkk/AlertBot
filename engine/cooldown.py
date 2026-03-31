@@ -78,6 +78,8 @@ class SignalStateStore:
         curr_rank = int(signal.get("phase_rank", self._rank(signal.get("signal", ""))))
         prev_phase_rank = self._phase_rank(previous.get("phase_name", ""))
         curr_phase_rank = self._phase_rank(signal.get("phase_name", ""))
+        prev_trigger_strength = {"none": 0, "weak": 1, "ready": 2, "explosive": 3}.get(str(previous.get("last_trigger_state", "none")), 0)
+        curr_trigger_strength = {"none": 0, "weak": 1, "ready": 2, "explosive": 3}.get(str(signal.get("trigger_state", "none")), 0)
 
         prev_anchor = str(previous.get("phase_anchor", ""))
         curr_anchor = str(signal.get("phase_anchor", ""))
@@ -93,7 +95,7 @@ class SignalStateStore:
         prev_label = previous.get("signal", "")
         curr_label = signal.get("signal", "")
 
-        if curr_phase_rank < prev_phase_rank:
+        if curr_phase_rank < prev_phase_rank and same_anchor:
             return False
 
         if same_anchor:
@@ -111,18 +113,20 @@ class SignalStateStore:
                     return False
                 return True
 
-            # 同一段升级，必须看到 1h TAI 配合；否则不允许 15m 自己把节奏顶上去。
+            # 同一段升级，1h TAI 只主控“重复广播频率”；真正的阶段推进允许在 15m 强触发下有限开口。
             if curr_rank > prev_rank:
-                if not tai_cooperative and curr_phase_rank <= prev_phase_rank:
+                real_phase_upgrade = curr_phase_rank > prev_phase_rank
+                strong_trigger_upgrade = curr_trigger_strength > prev_trigger_strength and curr_trigger_strength >= 2
+                if not tai_cooperative and not real_phase_upgrade and not strong_trigger_upgrade:
                     return False
-                if prev_rank == 1 and curr_rank >= 2 and not tai_cooperative:
+                if prev_rank == 1 and curr_rank >= 2 and not tai_cooperative and not real_phase_upgrade:
                     return False
                 return True
 
             return False
 
-        # 跨 anchor 视为新一段 1h 背景，可以重新发。
-        if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds, 75 * 60):
+        # 跨 anchor 视为新一段 1h 背景，可以重新发；旧段失效后的重武装不再被整段压死。
+        if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds // 2, 20 * 60):
             return False
         if tiny_move and now - prev_sent_at < cooldown_seconds and signal.get("phase_context") == previous.get("phase_context"):
             return False
