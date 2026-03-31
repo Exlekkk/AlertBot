@@ -645,11 +645,21 @@ def _phase_1h(
             float(latest["close"]) >= float(latest["ema10"]),
         ) >= 3 and not (overhead_pressure_score >= 3 and float(latest["close"]) < float(latest["ema10"]))
         repair_ready = _count_true(structure_drive, working_area, reclaiming, stack_ok) >= 2
+        rearm_repair = working_area and _count_true(
+            float(latest["close"]) >= float(latest["ema10"]),
+            float(latest["close"]) >= float(prev["close"]),
+            _momentum_up(latest),
+        ) >= 2
+        rearm_early = working_area and _count_true(
+            float(latest["close"]) >= float(prev["close"]),
+            _momentum_up(latest),
+            float(latest["close"]) >= float(latest["ema10"]),
+        ) >= 1
         if continuation_ready:
             return "continuation"
-        if repair_ready:
+        if repair_ready or rearm_repair:
             return "repair"
-        if working_area or bool(support_sweep or eql):
+        if working_area or bool(support_sweep or eql) or rearm_early:
             return "early"
         return "none"
 
@@ -666,11 +676,21 @@ def _phase_1h(
         float(latest["close"]) <= float(latest["ema10"]),
     ) >= 3 and not (support_pressure_score >= 3 and float(latest["close"]) > float(latest["ema10"]))
     repair_ready = _count_true(structure_drive, working_area, reclaiming, stack_ok) >= 2
+    rearm_repair = working_area and _count_true(
+        float(latest["close"]) <= float(latest["ema10"]),
+        float(latest["close"]) <= float(prev["close"]),
+        _momentum_down(latest),
+    ) >= 2
+    rearm_early = working_area and _count_true(
+        float(latest["close"]) <= float(prev["close"]),
+        _momentum_down(latest),
+        float(latest["close"]) <= float(latest["ema10"]),
+    ) >= 1
     if continuation_ready:
         return "continuation"
-    if repair_ready:
+    if repair_ready or rearm_repair:
         return "repair"
-    if working_area or bool(resistance_sweep or eqh):
+    if working_area or bool(resistance_sweep or eqh) or rearm_early:
         return "early"
     return "none"
 
@@ -880,7 +900,7 @@ def build_a_long_candidate(
     h1_tai_bias: str,
     h1_tai_slot: str,
 ) -> dict[str, Any] | None:
-    if phase_1h != "continuation" or trigger_15m not in {"ready", "explosive"} or bg_4h == "hard_counter" or tai_zero:
+    if phase_1h != "continuation" or trigger_15m not in {"ready", "explosive"} or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
@@ -923,7 +943,7 @@ def build_a_short_candidate(
     h1_tai_bias: str,
     h1_tai_slot: str,
 ) -> dict[str, Any] | None:
-    if phase_1h != "continuation" or trigger_15m not in {"ready", "explosive"} or bg_4h == "hard_counter" or tai_zero:
+    if phase_1h != "continuation" or trigger_15m not in {"ready", "explosive"} or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
@@ -967,7 +987,7 @@ def build_b_candidate(
     h1_tai_bias: str,
     h1_tai_slot: str,
 ) -> dict[str, Any] | None:
-    if phase_1h != "repair" or trigger_15m not in {"ready", "explosive"} or bg_bias == "hard_counter" or tai_zero:
+    if phase_1h != "repair" or trigger_15m not in {"ready", "explosive"} or tai_zero:
         return None
     zone_low_v = zone_low if zone_low is not None else price
     zone_high_v = zone_high if zone_high is not None else price
@@ -1219,8 +1239,7 @@ def detect_signals(
         failed: list[str] = []
         if tai_zero and not long_ignition:
             failed.append("tai_zero_zone")
-        if long_bg == "hard_counter" and h1_long_phase in {"continuation", "repair"}:
-            failed.append("bg_not_hard_counter")
+
         if h1_long_phase in {"continuation", "repair"} and long_trigger not in {"ready", "explosive"}:
             failed.append("m15_trigger_ready")
         if h1_long_phase == "early" and long_trigger == "none":
@@ -1250,8 +1269,7 @@ def detect_signals(
         failed = []
         if tai_zero and not short_ignition:
             failed.append("tai_zero_zone")
-        if short_bg == "hard_counter" and h1_short_phase in {"continuation", "repair"}:
-            failed.append("bg_not_hard_counter")
+
         if h1_short_phase in {"continuation", "repair"} and short_trigger not in {"ready", "explosive"}:
             failed.append("m15_trigger_ready")
         if h1_short_phase == "early" and short_trigger == "none":
