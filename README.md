@@ -1,4 +1,4 @@
-[Uploading README_x_news.md…]()
+
 # AlertBot (FastAPI + Telegram + SMCT Scanner)
 
 ## 当前能力
