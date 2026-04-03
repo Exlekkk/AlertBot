@@ -12,113 +12,84 @@ class SignalStateAndMessageTests(unittest.TestCase):
             sys.modules["requests"] = types.SimpleNamespace(post=lambda *args, **kwargs: None)
         cls.telegram = importlib.import_module("services.telegram")
 
-    def _store(self):
-        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
-        tmp.close()
-        return importlib.import_module("engine.cooldown").SignalStateStore(
-            price_change_threshold=0.001,
-            state_file=tmp.name,
-        )
+    def test_state_store_blocks_conflicting_direction_same_segment(self):
+        from engine.cooldown import SignalStateStore
 
-    def test_same_classifier_same_anchor_c_signal_does_not_repeat(self):
-        store = self._store()
-        c_signal = {
-            "signal": "C_LEFT_LONG",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "long",
-            "priority": 3,
-            "status": "watch",
-            "price": 100.0,
-            "phase_rank": 1,
-            "phase_name": "early",
-            "phase_context": "long|early|neutral|long:early:t123",
-            "phase_anchor": "long:early:t123",
-            "h1_tai_bias": "flat",
-            "h1_tai_slot": "123:flat",
-            "market_heat": "cold",
-        }
-        self.assertTrue(store.should_send(c_signal))
-        store.mark_sent(c_signal)
-        self.assertFalse(store.should_send({**c_signal, "price": 100.8}))
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SignalStateStore(price_change_threshold=0.001, state_file=f"{tmp}/state.json")
+            a_short = {
+                "signal": "A_SHORT",
+                "symbol": "BTCUSDT",
+                "timeframe": "15m",
+                "direction": "short",
+                "status": "active",
+                "price": 100.0,
+                "phase_rank": 3,
+                "state_1h": "trend_drive_short",
+                "segment_id": "BTCUSDT|15m|trend_drive_short|short|neutral",
+                "cooldown_seconds": 1800,
+            }
+            self.assertTrue(store.should_send(a_short))
+            store.mark_sent(a_short)
 
-    def test_publish_gate_blocks_opposite_direction_conflict(self):
-        store = self._store()
-        first = {
-            "signal": "A_SHORT",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "short",
-            "priority": 1,
-            "status": "active",
-            "price": 100.0,
-            "phase_rank": 3,
-            "phase_name": "continuation",
-            "phase_context": "short|continuation|neutral|short:continuation:t100",
-            "phase_anchor": "short:continuation:t100",
-            "h1_tai_bias": "support",
-            "h1_tai_slot": "100:support",
-            "trigger_state": "explosive",
-            "market_heat": "cold",
-        }
-        store.mark_sent(first)
-        opposite = {
-            "signal": "B_PULLBACK_LONG",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "long",
-            "priority": 2,
-            "status": "active",
-            "price": 100.5,
-            "phase_rank": 2,
-            "phase_name": "repair",
-            "phase_context": "long|repair|neutral|long:repair:t101",
-            "phase_anchor": "long:repair:t101",
-            "h1_tai_bias": "support",
-            "h1_tai_slot": "101:support",
-            "trigger_state": "ready",
-            "market_heat": "cold",
-        }
-        self.assertFalse(store.should_send(opposite))
+            conflicting_b_long = {
+                "signal": "B_PULLBACK_LONG",
+                "symbol": "BTCUSDT",
+                "timeframe": "15m",
+                "direction": "long",
+                "status": "active",
+                "price": 100.05,
+                "phase_rank": 2,
+                "state_1h": "repair_long",
+                "segment_id": "BTCUSDT|15m|trend_drive_short|short|neutral",
+                "cooldown_seconds": 1800,
+            }
+            self.assertFalse(store.should_send(conflicting_b_long))
 
-    def test_publish_gate_blocks_same_direction_cross_classifier_churn(self):
-        store = self._store()
-        first = {
-            "signal": "A_SHORT",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "short",
-            "priority": 1,
-            "status": "active",
-            "price": 100.0,
-            "phase_rank": 3,
-            "phase_name": "continuation",
-            "phase_context": "short|continuation|neutral|short:continuation:t100",
-            "phase_anchor": "short:continuation:t100",
-            "h1_tai_bias": "support",
-            "h1_tai_slot": "100:support",
-            "trigger_state": "explosive",
-            "market_heat": "cold",
-        }
-        store.mark_sent(first)
-        same_direction_other_classifier = {
-            "signal": "B_PULLBACK_SHORT",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "short",
-            "priority": 2,
-            "status": "active",
-            "price": 99.8,
-            "phase_rank": 2,
-            "phase_name": "repair",
-            "phase_context": "short|repair|neutral|short:repair:t101",
-            "phase_anchor": "short:repair:t101",
-            "h1_tai_bias": "support",
-            "h1_tai_slot": "101:support",
-            "trigger_state": "ready",
-            "market_heat": "cold",
-        }
-        self.assertFalse(store.should_send(same_direction_other_classifier))
+    def test_state_store_blocks_lower_rank_same_segment(self):
+        from engine.cooldown import SignalStateStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SignalStateStore(price_change_threshold=0.001, state_file=f"{tmp}/state.json")
+            a_long = {
+                "signal": "A_LONG",
+                "symbol": "BTCUSDT",
+                "timeframe": "15m",
+                "direction": "long",
+                "status": "active",
+                "price": 100.0,
+                "phase_rank": 3,
+                "state_1h": "trend_drive_long",
+                "segment_id": "BTCUSDT|15m|trend_drive_long|long|warm",
+                "cooldown_seconds": 1800,
+            }
+            self.assertTrue(store.should_send(a_long))
+            store.mark_sent(a_long)
+
+            b_long = {
+                "signal": "B_PULLBACK_LONG",
+                "symbol": "BTCUSDT",
+                "timeframe": "15m",
+                "direction": "long",
+                "status": "active",
+                "price": 100.02,
+                "phase_rank": 2,
+                "state_1h": "repair_long",
+                "segment_id": "BTCUSDT|15m|trend_drive_long|long|warm",
+                "cooldown_seconds": 1800,
+            }
+            self.assertFalse(store.should_send(b_long))
+
+    def test_tai_heat_is_heat_not_direction(self):
+        from engine.signals import _tai_heat, _tai_budget_mode
+
+        k = {"tai_value": 9.0, "tai_p20": 10.0, "tai_p40": 20.0, "tai_p60": 30.0, "tai_p80": 40.0}
+        self.assertEqual(_tai_heat(k), "cold")
+        self.assertEqual(_tai_budget_mode(_tai_heat(k)), "restricted")
+
+        k2 = {"tai_value": 35.0, "tai_p20": 10.0, "tai_p40": 20.0, "tai_p60": 30.0, "tai_p80": 40.0}
+        self.assertEqual(_tai_heat(k2), "warm")
+        self.assertEqual(_tai_budget_mode(_tai_heat(k2)), "expanded")
 
     def test_engine_message_has_only_expected_fields(self):
         message = self.telegram.format_engine_message(
@@ -130,10 +101,10 @@ class SignalStateAndMessageTests(unittest.TestCase):
             trend_1h="bull",
             status="active",
         )
-        for field in ["交易提示", "操作建议", "标的", "参考价位区间", "总体趋势方向", "预计启动时段", "状态"]:
+        for field in ["交易提示", "操作建议", "标的", "参考价位区间", "总体趋势方向", "状态"]:
             self.assertIn(field, message)
 
-        for forbidden in ["来源", "SMCT", "BOS", "MSS", "FVG", "Evil MACD"]:
+        for forbidden in ["触发", "来源", "SMCT", "BOS", "MSS", "FVG", "Evil MACD"]:
             self.assertNotIn(forbidden, message)
 
 
