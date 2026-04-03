@@ -91,7 +91,7 @@ class SignalStateAndMessageTests(unittest.TestCase):
         self.assertEqual(_tai_heat(k2), "warm")
         self.assertEqual(_tai_budget_mode(_tai_heat(k2)), "expanded")
 
-    def test_engine_message_has_only_expected_fields(self):
+    def test_engine_message_uses_compact_template_for_a(self):
         message = self.telegram.format_engine_message(
             signal="A_LONG",
             symbol="BTCUSDT",
@@ -100,12 +100,31 @@ class SignalStateAndMessageTests(unittest.TestCase):
             price=65000.12,
             trend_1h="bull",
             status="active",
+            confidence=88,
         )
-        for field in ["交易提示", "操作建议", "标的", "参考价位区间", "总体趋势方向", "状态"]:
+        for field in ["交易提示｜A类｜BTCUSDT", "背景：", "区间：", "关键位：", "观察：", "状态："]:
             self.assertIn(field, message)
 
-        for forbidden in ["触发", "来源", "SMCT", "BOS", "MSS", "FVG", "Evil MACD"]:
-            self.assertNotIn(forbidden, message)
+        for old_field in ["操作建议", "标的", "总体趋势方向", "预计启动时段", "时效说明"]:
+            self.assertNotIn(old_field, message)
+
+    def test_engine_message_uses_compact_template_for_x(self):
+        message = self.telegram.format_engine_message(
+            signal="X_BREAKOUT_SHORT",
+            symbol="BTCUSDT",
+            timeframe="15m",
+            priority=4,
+            price=66700.0,
+            trend_1h="bear",
+            status="active",
+            trigger_level=66781.91,
+            entry_zone_low=66722.16,
+            entry_zone_high=66861.27,
+            abnormal_type="上插针扫流动性",
+            confidence=95,
+        )
+        for field in ["异动预警｜X类｜BTCUSDT", "背景：", "关键位：", "反抽观察区：", "观察：", "状态："]:
+            self.assertIn(field, message)
 
 
 if __name__ == "__main__":
