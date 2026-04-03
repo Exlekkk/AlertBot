@@ -36,12 +36,26 @@ class SignalStateStore:
         base = max(abs(previous_price), 1e-9)
         return abs(current_price - previous_price) / base
 
+    def _rank(self, signal_name: str) -> int:
+        if signal_name.startswith("A_"):
+            return 3
+        if signal_name.startswith("B_"):
+            return 2
+        if signal_name.startswith("C_"):
+            return 1
+        return 0
+
     def _family_key(self, signal: dict[str, Any]) -> str:
-        signal_name = signal.get("signal", "")
-        if signal_name.startswith("X_"):
-            return f"X|{signal['symbol']}|{signal['timeframe']}|{signal_name}|{signal['direction']}"
-        # A / B / C 各自独立完整，不共享同一个去重桶。
-        return f"ABC|{signal['symbol']}|{signal['timeframe']}|{signal_name}|{signal['direction']}"
+        if signal["signal"].startswith("X_"):
+            return f"X|{signal['symbol']}|{signal['timeframe']}|{signal['signal']}|{signal['direction']}"
+        classifier = signal["signal"].split("_", 1)[0]
+        return f"{classifier}|{signal['symbol']}|{signal['timeframe']}|{signal['direction']}"
+
+    def _phase_rank(self, phase_name: str) -> int:
+        return {"none": 0, "early": 1, "repair": 2, "continuation": 3}.get(phase_name, 0)
+
+    def _tai_bias_rank(self, tai_bias: str) -> int:
+        return {"drag": 0, "flat": 1, "support": 2, "drive": 3}.get(tai_bias, 1)
 
     def should_send(self, signal: dict[str, Any]) -> bool:
         key = self._family_key(signal)
@@ -50,43 +64,36 @@ class SignalStateStore:
             return True
 
         now = time.time()
-        cooldown_seconds = int(signal.get("cooldown_seconds", previous.get("cooldown_seconds", 1800)) or 1800)
+        cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
         prev_sent_at = float(previous.get("sent_at", 0.0))
         tiny_move = self._price_change_ratio(float(previous.get("price", 0.0)), float(signal.get("price", 0.0))) <= self.price_change_threshold
 
+        if signal["signal"].startswith("X_"):
+            if signal.get("signature") == previous.get("signature") and now - prev_sent_at < cooldown_seconds:
+                return False
+            if tiny_move and now - prev_sent_at < cooldown_seconds:
+                return False
+            return True
+
+        prev_rank = int(previous.get("phase_rank", self._rank(previous.get("signal", ""))))
+        curr_rank = int(signal.get("phase_rank", self._rank(signal.get("signal", ""))))
         prev_anchor = str(previous.get("phase_anchor", ""))
         curr_anchor = str(signal.get("phase_anchor", ""))
         same_anchor = bool(prev_anchor) and prev_anchor == curr_anchor
 
-        prev_signature = str(previous.get("signature", ""))
-        curr_signature = str(signal.get("signature", ""))
-        same_signature = bool(curr_signature) and curr_signature == prev_signature
-
-        prev_tai_slot = str(previous.get("h1_tai_slot", ""))
-        curr_tai_slot = str(signal.get("h1_tai_slot", ""))
-        tai_slot_changed = bool(curr_tai_slot) and curr_tai_slot != prev_tai_slot
-
-        signal_name = str(signal.get("signal", ""))
-        is_c = signal_name.startswith("C_")
-
         if same_anchor:
-            # C 作为独立分类器：同一段观察只出生一次，除非真的切到新的节奏槽位且价格位移明显。
-            if is_c:
+            if previous.get("signal") == signal.get("signal"):
                 if now - prev_sent_at < cooldown_seconds:
                     return False
-                if same_signature and (tiny_move or not tai_slot_changed):
+                if tiny_move:
                     return False
-                return not tiny_move or tai_slot_changed
-
-            # A / B 作为独立分类器：同一 anchor 下只接受“新信息增量”，不再走跨桶升级/降级补位。
-            if now - prev_sent_at < cooldown_seconds and (same_signature or tiny_move) and not tai_slot_changed:
+            if curr_rank == prev_rank and tiny_move and now - prev_sent_at < cooldown_seconds:
                 return False
-            if same_signature and tiny_move:
+            if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds // 2, 20 * 60):
                 return False
             return True
 
-        # 跨 anchor 视为该分类器的新一段机会，但短时间内的几乎同价重复依旧拦住。
-        if tiny_move and now - prev_sent_at < max(cooldown_seconds // 2, 15 * 60):
+        if tiny_move and now - prev_sent_at < cooldown_seconds and signal.get("phase_context") == previous.get("phase_context"):
             return False
         return True
 
@@ -99,14 +106,17 @@ class SignalStateStore:
             "price": signal.get("price", 0.0),
             "signature": signal.get("signature", ""),
             "cooldown_seconds": int(signal.get("cooldown_seconds", 1800) or 1800),
-            "phase_rank": int(signal.get("phase_rank", 0)),
+            "phase_rank": int(signal.get("phase_rank", self._rank(signal.get("signal", "")))),
             "phase_name": signal.get("phase_name", ""),
             "phase_context": signal.get("phase_context", ""),
             "phase_anchor": signal.get("phase_anchor", ""),
             "h1_tai_bias": signal.get("h1_tai_bias", "flat"),
             "h1_tai_slot": signal.get("h1_tai_slot", ""),
             "last_direction": signal.get("direction", ""),
+            "last_phase_1h": signal.get("phase_name", ""),
+            "last_label": signal.get("signal", ""),
             "last_trigger_state": signal.get("trigger_state", ""),
+            "last_sent_ts": now,
             "sent_at": now,
         }
         self._save()
