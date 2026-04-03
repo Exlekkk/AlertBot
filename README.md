@@ -1,226 +1,253 @@
-[Uploading README_alertbot_full.md…]()
+[README_alertbot_full_en.md](https://github.com/user-attachments/files/26455856/README_alertbot_full_en.md)
 # AlertBot
 
-AlertBot 是一个面向 **Binance / BTCUSDT** 的实盘扫描与 Telegram 播报系统，目标不是机械喊单，而是把 **结构、趋势、节奏、异动** 整合成可执行的盘中提醒。
+AlertBot is a Telegram-based market monitoring and signal delivery system built for fast-moving crypto execution, with BTCUSDT as the current primary instrument.
 
-当前项目同时包含两条能力线：
+It is designed around a layered workflow instead of a single indicator trigger:
 
-1. **Webhook 接口**：接收外部请求并做基础处理。
-2. **Scanner 引擎**：定时拉取行情、计算指标、识别 A / B / C / X，并推送到 Telegram。
+- **A** = primary trend execution signal
+- **B** = repair / pullback / rebound-continuation signal
+- **C** = early warning / left-side observation signal
+- **X** = abnormal-event detection module, independent from A/B/C
 
----
+The system is intended to stay aligned with a multi-timeframe execution model:
 
-## 1. 项目定位
+- **4h** = background layer
+- **1h** = main judgment layer
+- **15m** = trigger layer
 
-AlertBot 的定位不是自动下单，也不是简单量价报警器。
+## Core Goals
 
-它的职责是：
+AlertBot is built to do four things well:
 
-- 在盘中提供 **提前 / 进行时 / 结构化** 的交易机会提醒
-- 区分 **A / B / C** 三类正常节奏信号
-- 区分 **X** 类异常驱动信号
-- 对重复、冲突、低质量信号做发布层控制
-- 将最终结果推送到 Telegram，供人工判断和执行
+1. Detect structured opportunities rather than random noise
+2. Send Telegram alerts in a way that is actionable
+3. Keep message flow consistent instead of letting signals fight each other
+4. Separate normal structure-based opportunities from abnormal event-driven movement
 
----
-
-## 2. 当前信号体系
-
-### A 类
-趋势里的主力执行信号。
-
-特点：
-- 服务于趋势推进
-- 要求更干净、更连续
-- 可以在同一段趋势中多次出现
-- 重点是 **纯度**，不是单纯数量少
-
-### B 类
-修复 / 回踩 / 反弹延续信号。
-
-特点：
-- 服务于趋势中的修复段
-- 用来识别“修复后继续”的位置
-- 不是 A 的降级替代品
-
-### C 类
-左侧预警信号。
-
-特点：
-- 用于提前观察
-- 更偏观察与准备
-- 不是用来补 A/B 的空缺
-
-### X 类
-独立于 ABC 的异常驱动模块。
-
-特点：
-- 不处理正常结构节奏
-- 处理非正常波动、突发事件、盘口异动、消息催化
-- 当前已改为更偏 **多维异动侦测**，而不是单纯量能二极管
+This project is **not** an auto-trading bot.  
+It is a monitoring and alerting system. Entry, stop, take profit, and final execution remain manual.
 
 ---
 
-## 3. 当前原则
+## Signal Architecture
 
-### ABC 原则
-- A / B / C 三个分类器各自独立完整
-- 不允许通过 A↔B↔C 的降级、升级、补位来掩盖识别问题
-- 不从别的桶里“舀水”补当前这个桶
-- 使用三个独立分类器的质量增强机制
+## A Signals
 
-### 发布层原则
-- 最终 Telegram 播报不能互相打架
-- 同一时间窗内要保持主叙事一致性
-- 低热度环境下控制播报密度
-- 不把分类器独立，误解为“消息可以群殴式同时发”
+A signals are the main execution signals inside a trend segment.
 
-### X 原则
-- X 独立于 ABC
-- X 不是高优先级版 ABC
-- X 关注的是“异常事件”，不是普通结构波动
+They are meant to represent the **primary directional opportunity** when the market is already in a cleaner continuation state.
 
----
+A should not be rare by definition.  
+A should be **clean**.
 
-## 4. 目录结构
+What matters is:
 
-```text
-AlertBot/
-├─ app.py                         # FastAPI 入口
-├─ config.py                      # 环境变量与配置
-├─ README.md                      # 项目说明
-├─ requirements.txt               # Python 依赖
-├─ .env.example                   # 环境变量示例
-│
-├─ engine/
-│  ├─ abnormal.py                 # X 类异常侦测
-│  ├─ cooldown.py                 # 去重、状态记忆、发布层控制
-│  ├─ indicators.py               # EMA / ATR / 量能 / MACD 等指标计算
-│  ├─ market_data.py              # Binance 行情拉取
-│  ├─ scanner.py                  # 主扫描流程
-│  ├─ signals.py                  # A / B / C 分类器主逻辑
-│  └─ structure.py                # BOS / MSS / FVG / Sweep 等结构识别
-│
-├─ services/
-│  ├─ logger.py                   # 日志初始化
-│  └─ telegram.py                 # Telegram 文案格式化与发送
-│
-├─ scripts/
-│  ├─ run_bihourly_report.py      # 2h 系统检测报告
-│  └─ run_scanner.py              # 扫描器启动入口
-│
-├─ systemd/
-│  └─ smct-scanner.service        # systemd 服务样例
-│
-└─ tests/
-   └─ test_state_and_message.py   # 当前状态与文案测试
-```
+- A should represent the main narrative of the trend
+- A should not be a fake continuation
+- A should not conflict with B/C in the same segment
+- A should not be generated from low-quality rebound noise
+
+Examples:
+
+- `A_LONG`
+- `A_SHORT`
 
 ---
 
-## 5. 运行流程
+## B Signals
 
-### 行情流程
-1. 拉取 Binance 多周期 K 线
-2. 计算指标与结构事件
-3. 识别 A / B / C / X 候选
-4. 进入发布层做去重、冲突控制、密度控制
-5. 生成 Telegram 文案并发送
+B signals cover repair, pullback, rebound, and continuation-after-repair behavior.
 
-### 时间框架职责
-- **4h**：背景层
-- **1h**：主判断层
-- **15m**：触发层
+They are not the same as trend continuation.  
+They belong to the "working through structure" stage.
 
-这套职责划分是当前执行逻辑的基础，不建议随意打乱。
+What B is supposed to do:
+
+- Track valid pullbacks in a trend
+- Track valid rebounds inside a broader directional environment
+- Avoid low-quality repair signals that come from weak heat / weak structure
+
+Examples:
+
+- `B_PULLBACK_LONG`
+- `B_PULLBACK_SHORT`
 
 ---
 
-## 6. 安装
+## C Signals
+
+C signals are early warning signals.
+
+They are used when the market is approaching a potentially important area but has not yet confirmed enough to become B or A.
+
+C should:
+
+- be early
+- be selective
+- avoid random noise
+- avoid repeating too often inside the same anchor
+
+Examples:
+
+- `C_LEFT_LONG`
+- `C_LEFT_SHORT`
+
+---
+
+## X Signals
+
+X is fully independent from A/B/C.
+
+It is used for **abnormal event detection**, not for normal structure execution.
+
+X should detect situations such as:
+
+- sudden breakout / breakdown
+- abnormal volume spikes
+- wick sweep / liquidity grab behavior
+- dual-sided sweep and directional resolution
+- news-driven or event-driven abnormal movement
+
+X should work more like an **anomaly radar** than a binary switch.
+
+Examples:
+
+- `X_BREAKOUT_LONG`
+- `X_BREAKOUT_SHORT`
+
+---
+
+## Design Principles
+
+### 1. A / B / C are independent classifiers
+
+A, B, and C must each improve their own quality logic independently.
+
+The system should **not** hide recognition mistakes by reclassifying one bucket into another.
+
+That means:
+
+- do not "fix A" by downgrading it into B
+- do not "fix B" by pushing it into C
+- do not "borrow water from another bucket"
+
+The correct approach is:
+
+- improve A as A
+- improve B as B
+- improve C as C
+
+### 2. Publishing must still stay coherent
+
+Independent classifiers do **not** mean Telegram should publish conflicting messages at the same time.
+
+The publishing layer should keep:
+
+- directional conflict control
+- single main narrative per active segment
+- cleaner behavior in low-heat environments
+- fewer contradictory alerts when 15m heat is near ice-point conditions
+
+### 3. Multi-timeframe role separation remains fixed
+
+The project uses:
+
+- **4h** as background only
+- **1h** as the main judgment layer
+- **15m** as the trigger layer
+
+Indicators are helpers, not replacements for structure.
+
+---
+
+## Main Components
+
+### `engine/signals.py`
+Generates A/B/C candidates.
+
+Responsibilities:
+- multi-timeframe interpretation
+- structure-based candidate generation
+- classifier-specific quality filters
+- signal metadata generation
+
+### `engine/cooldown.py`
+Controls message repetition and publishing-state memory.
+
+Responsibilities:
+- classifier-aware deduplication
+- anchor-aware repeat suppression
+- publishing conflict control
+- state persistence
+
+### `engine/abnormal.py`
+Generates X abnormal-event signals.
+
+Responsibilities:
+- abnormal movement detection
+- price / volume / structure / news-assisted event scoring
+- event-type classification
+
+### `engine/scanner.py`
+Main scanning orchestration.
+
+Responsibilities:
+- fetch market data
+- call A/B/C and X detection modules
+- pass alerts into the delivery layer
+
+### `services/telegram.py`
+Formats and sends Telegram messages.
+
+Responsibilities:
+- convert signal objects into Telegram text
+- deliver alerts to configured chats
+
+### `tests/test_state_and_message.py`
+Basic behavior and formatting tests.
+
+Responsibilities:
+- repetition logic checks
+- message field checks
+- state transition checks for published alerts
+
+---
+
+## Current Working Logic
+
+In simplified form, the bot runs like this:
+
+1. Pull market data
+2. Build structure context
+3. Generate A/B/C candidates
+4. Generate X abnormal-event candidates
+5. Resolve publishing conflicts
+6. Send final Telegram message(s)
+7. Save state
+
+This keeps signal generation separate from publication control.
+
+---
+
+## X News Feed Support
+
+X can optionally use a local news feed file to improve anomaly detection.
+
+Default path:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+/opt/smct-alert/config/x_news_feed.json
 ```
 
-复制环境变量：
-
-```bash
-cp .env.example .env
-```
-
-或按你的服务器目录放置：
-
-```bash
-cp .env.example /opt/smct-alert/.env
-```
-
----
-
-## 7. 环境变量
-
-最常用的配置包括：
-
-- `TELEGRAM_BOT_TOKEN`：Telegram Bot Token
-- `TELEGRAM_CHAT_ID`：目标聊天 / 群组 ID
-- `WEBHOOK_SECRET`：Webhook 校验密钥
-- `BINANCE_BASE_URL`：Binance API 地址
-- `SMCT_SIGNAL_STATE_FILE`：状态文件路径
-
-### X 模块新增
-- `X_NEWS_FEED_FILE`：本地消息源 JSON 文件路径
-- `X_NEWS_TTL_MINUTES`：消息有效期
-
-示例：
+Optional environment variables:
 
 ```bash
 X_NEWS_FEED_FILE=/opt/smct-alert/config/x_news_feed.json
 X_NEWS_TTL_MINUTES=180
 ```
 
----
-
-## 8. 启动方式
-
-### 手动启动 scanner
-
-```bash
-python scripts/run_scanner.py
-```
-
-### 手动启动 FastAPI
-
-```bash
-uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-### systemd 启动 scanner
-
-```bash
-sudo cp systemd/smct-scanner.service /etc/systemd/system/smct-scanner.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now smct-scanner.service
-sudo systemctl status smct-scanner.service --no-pager
-```
-
----
-
-## 9. 服务器更新命令
-
-```bash
-cd /opt/smct-alert && \
- git fetch origin && \
- git reset --hard origin/main && \
- sudo systemctl restart smct-scanner.service && \
- systemctl status smct-scanner.service --no-pager
-```
-
----
-
-## 10. X 消息源格式
-
-本地 `x_news_feed.json` 示例：
+Example feed format:
 
 ```json
 [
@@ -236,84 +263,100 @@ cd /opt/smct-alert && \
 ]
 ```
 
-字段说明：
-- `headline`：新闻标题
-- `direction`：消息偏向，`long / short / mixed`
-- `driver`：驱动类型，`macro / policy / exchange / etf / liquidity / other`
-- `score`：消息权重
-- `symbols`：关联标的
-- `timestamp`：发布时间
-- `ttl_minutes`：消息存活时间
+The X module does not rely on news alone.  
+News is only one dimension inside abnormal-event detection.
 
 ---
 
-## 11. 当前改造重点
+## Project Structure
 
-近期主要在做三件事：
-
-### A / B / C
-- 保持三分类器独立
-- 提高 A 的纯度
-- 提高 B 的修复质量
-- 提高 C 的预警有效性
-- 发布层减少互相打架与乱切叙事
-
-### TAI 冰点区
-- 当 15m TAI 进入低热度区时，降低低质量机会密度
-- 保持“精准 + 提前 + 进行时”，而不是群发噪音
-
-### X
-- 从“量能二极管”改成多维异动侦测
-- 增加消息面增强能力
-- 输出更像异常事件说明，而不是单一 breakout 标签
-
----
-
-## 12. 测试
-
-运行测试：
-
-```bash
-python -m pytest tests/test_state_and_message.py -q
+```text
+AlertBot/
+├── engine/
+│   ├── abnormal.py
+│   ├── cooldown.py
+│   ├── indicators.py
+│   ├── market_data.py
+│   ├── scanner.py
+│   ├── signals.py
+│   └── structure.py
+├── scripts/
+├── services/
+├── systemd/
+├── tests/
+│   └── test_state_and_message.py
+├── .env.example
+├── README.md
+├── app.py
+├── config.py
+└── requirements.txt
 ```
 
-当前测试主要覆盖：
-- 去重逻辑
-- 文案字段
-- 发布层基础行为
+---
 
-后续建议继续补：
-- X 消息源解析测试
-- 低 TAI 发布密度测试
-- 同段主叙事一致性测试
+## Environment Variables
+
+Typical variables include:
+
+```bash
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+SMCT_SIGNAL_STATE_FILE=/opt/smct-alert/signal_state.json
+X_NEWS_FEED_FILE=/opt/smct-alert/config/x_news_feed.json
+X_NEWS_TTL_MINUTES=180
+```
+
+Use `.env.example` as a reference.
 
 ---
 
-## 13. 已知边界
+## Deployment
 
-当前项目仍然不是全自动策略执行器，主要边界包括：
+Typical update flow on the server:
 
-- 不自动下单
-- 不管理仓位
-- 不做收益统计
-- systemd 日志默认不一定输出完整 Telegram 播报文本
-- X 的新闻能力当前依赖本地消息文件，不是实时在线新闻抓取
+```bash
+cd /opt/smct-alert && git fetch origin && git reset --hard origin/main && sudo systemctl restart smct-scanner.service && systemctl status smct-scanner.service --no-pager
+```
 
----
+To follow service output:
 
-## 14. 后续方向
-
-- 完善 X 的消息源接入
-- 增加 TG 播报本地落盘，便于服务器直接回看历史
-- 更完整的阶段状态机
-- 更严格的低热度预算控制
-- 更清晰的“主叙事进行时”维护
+```bash
+journalctl -u smct-scanner.service -f
+```
 
 ---
 
-## 15. 一句话说明
+## Current Priorities
 
-AlertBot 不是简单报警器。
+The current development focus is:
 
-它的目标是：
-**用结构、节奏、热度、异动，把盘中真正值得看的机会整理成可执行的 Telegram 播报。**
+- keep A clean without making it artificially scarce
+- improve B/C quality in low-heat conditions
+- stop contradictory Telegram publishing
+- make X behave like an anomaly detector instead of a binary trigger
+- keep A/B/C classifier logic independent
+
+---
+
+## What This Bot Is Not
+
+This bot is not:
+
+- an auto-execution engine
+- a guaranteed entry system
+- a replacement for discretionary execution
+- a one-indicator strategy
+
+It is a structured alerting system for discretionary trading.
+
+---
+
+## Future Direction
+
+Potential next steps include:
+
+- richer publishing-state control for live narrative consistency
+- stronger low-heat filtering
+- better abnormal-event clustering for X
+- improved local event/news ingestion
+- historical message storage for easier review and debugging
