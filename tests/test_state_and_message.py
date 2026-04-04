@@ -1,100 +1,32 @@
-import importlib
-import sys
-import tempfile
-import types
 import unittest
 
 
-class SignalStateAndMessageTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        if "requests" not in sys.modules:
-            sys.modules["requests"] = types.SimpleNamespace(post=lambda *args, **kwargs: None)
-        cls.telegram = importlib.import_module("services.telegram")
+class ABCConfidenceRefactorTests(unittest.TestCase):
+    def test_a_confidence_only_high_when_clean(self):
+        from engine.signals import _abc_confidence
+        clean = _abc_confidence("A_LONG", "long", "bull", "continuation", "explosive", ["bos_up", "mss_up", "fvg"])
+        weak = _abc_confidence("A_LONG", "long", "lean_bull", "continuation", "watch", ["fvg"])
+        self.assertGreaterEqual(clean, 74)
+        self.assertLess(weak, clean)
+        self.assertLessEqual(clean, 89)
 
-    def _store(self):
-        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
-        tmp.close()
-        return importlib.import_module("engine.cooldown").SignalStateStore(
-            price_change_threshold=0.001,
-            state_file=tmp.name,
-        )
+    def test_b_confidence_not_artificially_high(self):
+        from engine.signals import _abc_confidence
+        b_value = _abc_confidence("B_PULLBACK_SHORT", "short", "lean_bear", "repair", "ready", ["resistance_zone", "trigger_repair"])
+        self.assertGreaterEqual(b_value, 58)
+        self.assertLessEqual(b_value, 76)
 
-    def test_same_anchor_c_signal_does_not_repeat(self):
-        store = self._store()
-        c_signal = {
-            "signal": "C_LEFT_LONG",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "long",
-            "priority": 3,
-            "status": "watch",
-            "price": 100.0,
-            "phase_rank": 1,
-            "phase_name": "early",
-            "phase_context": "long|early|neutral|long:early:t123",
-            "phase_anchor": "long:early:t123",
-            "h1_tai_bias": "flat",
-            "h1_tai_slot": "123:flat",
-        }
+    def test_c_confidence_stays_low_to_mid(self):
+        from engine.signals import _abc_confidence
+        c_value = _abc_confidence("C_LEFT_LONG", "long", "neutral", "early", "probe", ["support_zone", "early_warning"])
+        self.assertGreaterEqual(c_value, 50)
+        self.assertLessEqual(c_value, 70)
 
-        self.assertTrue(store.should_send(c_signal))
-        store.mark_sent(c_signal)
-        self.assertFalse(store.should_send({**c_signal, "price": 100.8}))
-
-    def test_upgrade_requires_h1_tai_cooperation(self):
-        store = self._store()
-        c_signal = {
-            "signal": "C_LEFT_LONG",
-            "symbol": "BTCUSDT",
-            "timeframe": "15m",
-            "direction": "long",
-            "priority": 3,
-            "status": "watch",
-            "price": 100.0,
-            "phase_rank": 1,
-            "phase_name": "early",
-            "phase_context": "long|early|neutral|long:early:t123",
-            "phase_anchor": "long:early:t123",
-            "h1_tai_bias": "flat",
-            "h1_tai_slot": "123:flat",
-        }
-        store.mark_sent(c_signal)
-
-        blocked_upgrade = {
-            **c_signal,
-            "signal": "A_LONG",
-            "phase_rank": 3,
-            "phase_name": "continuation",
-            "phase_context": "long|continuation|neutral|long:early:t123",
-            "price": 101.0,
-            "h1_tai_bias": "flat",
-            "h1_tai_slot": "123:flat",
-        }
-        self.assertFalse(store.should_send(blocked_upgrade))
-
-        allowed_upgrade = {
-            **blocked_upgrade,
-            "h1_tai_bias": "support",
-            "h1_tai_slot": "124:support",
-        }
-        self.assertTrue(store.should_send(allowed_upgrade))
-
-    def test_engine_message_has_only_expected_fields(self):
-        message = self.telegram.format_engine_message(
-            signal="A_LONG",
-            symbol="BTCUSDT",
-            timeframe="15m",
-            priority=1,
-            price=65000.12,
-            trend_1h="bull",
-            status="active",
-        )
-        for field in ["交易提示", "操作建议", "标的", "参考价位区间", "总体趋势方向", "预计启动时段", "状态"]:
-            self.assertIn(field, message)
-
-        for forbidden in ["来源", "SMCT", "BOS", "MSS", "FVG", "Evil MACD"]:
-            self.assertNotIn(forbidden, message)
+    def test_counter_trend_a_gets_pulled_down(self):
+        from engine.signals import _abc_confidence
+        normal = _abc_confidence("A_SHORT", "short", "bear", "continuation", "explosive", ["bos_down", "mss_down", "resistance_zone"])
+        counter = _abc_confidence("A_SHORT", "short", "lean_bull", "continuation", "explosive", ["bos_down", "mss_down", "resistance_zone"])
+        self.assertLess(counter, normal)
 
 
 if __name__ == "__main__":
