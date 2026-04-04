@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 
@@ -55,7 +51,12 @@ def _volume_ratio(k: dict) -> float:
     return volume / baseline
 
 
-def _trend_score(direction: str, k_1h: dict, k_4h: dict, k_1d: dict | None = None) -> int:
+def _trend_score(
+    direction: str,
+    k_1h: dict,
+    k_4h: dict,
+    k_1d: dict | None = None,
+) -> int:
     if direction == "long":
         score = 0
         score += 2 if _price_above_stack(k_1h) else 0
@@ -102,10 +103,9 @@ def _round5(value: float) -> int:
     return int(round(value / 5.0) * 5)
 
 
-def _window_from_extension(extension_atr: float, vol_ratio: float, news_score: int) -> tuple[int, int]:
-    speed_boost = max(0.0, news_score - 40) / 40.0
-    start = 5 + max(0.0, 1.2 - min(vol_ratio, 3.5)) * 12 + max(0.0, extension_atr - 1.4) * 6 - speed_boost * 8
-    end = 30 + max(0.0, extension_atr - 0.8) * 20 + max(0.0, 2.0 - min(vol_ratio, 3.5)) * 18 - speed_boost * 10
+def _window_from_extension(extension_atr: float, vol_ratio: float) -> tuple[int, int]:
+    start = 5 + max(0.0, 1.1 - min(vol_ratio, 3.0)) * 15 + max(0.0, extension_atr - 1.6) * 6
+    end = 35 + max(0.0, extension_atr - 0.8) * 22 + max(0.0, 2.0 - min(vol_ratio, 3.0)) * 18
     start_i = max(5, min(60, _round5(start)))
     end_i = max(start_i + 15, min(180, _round5(end)))
     return start_i, end_i
@@ -124,11 +124,6 @@ def _signal_dict(
     abnormal_type: str,
     eta_min_minutes: int,
     eta_max_minutes: int,
-    *,
-    x_driver: str,
-    x_confidence: int,
-    x_news_score: int,
-    x_event_score: int,
 ) -> dict[str, Any]:
     return {
         "signal": signal,
@@ -146,10 +141,6 @@ def _signal_dict(
         "abnormal_type": abnormal_type,
         "eta_min_minutes": int(eta_min_minutes),
         "eta_max_minutes": int(eta_max_minutes),
-        "x_driver": x_driver,
-        "x_confidence": int(x_confidence),
-        "x_news_score": int(x_news_score),
-        "x_event_score": int(x_event_score),
     }
 
 
@@ -163,144 +154,60 @@ def _recent_breakout_level_short(klines_15m: list[dict]) -> float:
     return min(_float(k.get("low")) for k in recent)
 
 
-def _parse_ts(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        ts = float(value)
-        return ts / 1000.0 if ts > 10_000_000_000 else ts
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            ts = float(text)
-            return ts / 1000.0 if ts > 10_000_000_000 else ts
-        except ValueError:
-            pass
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except ValueError:
-            return None
-    return None
-
-
-def _now_ts(latest_15m: dict) -> float:
-    open_time = _parse_ts(latest_15m.get("open_time"))
-    if open_time is None:
-        return datetime.now(tz=timezone.utc).timestamp()
-    return open_time + 15 * 60
-
-
-def _news_feed_path() -> Path:
-    return Path(os.getenv("X_NEWS_FEED_FILE", "/opt/smct-alert/config/x_news_feed.json"))
-
-
-def _load_news_events() -> list[dict[str, Any]]:
-    path = _news_feed_path()
-    if not path.exists():
+def detect_abnormal_signals(
+    symbol: str,
+    klines_1d: list[dict],
+    klines_4h: list[dict],
+    klines_1h: list[dict],
+    klines_15m: list[dict],
+) -> list[dict[str, Any]]:
+    """
+    X 类重构：
+    - X 独立于 ABC，不做优先级覆盖
+    - 1h >= 10000 进入 force-X 异动域
+    - 支持最近 1 小时（4 根 15m）内的插针、双边扫流动性、首根起爆/起跌
+    - force-X 下不再要求 stack/momentum/htf 同时全过，只保留最小必要过滤
+    """
+    if min(len(klines_15m), len(klines_1h), len(klines_4h), len(klines_1d)) < 12:
         return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if isinstance(payload, dict):
-        payload = payload.get("events", [])
-    if not isinstance(payload, list):
-        return []
-    return [item for item in payload if isinstance(item, dict)]
 
-
-def _symbol_aliases(symbol: str) -> set[str]:
-    raw = symbol.upper()
-    aliases = {raw}
-    for suffix in ("USDT", "USD", "PERP"):
-        if raw.endswith(suffix):
-            aliases.add(raw[: -len(suffix)])
-    return {item for item in aliases if item}
-
-
-def _match_news_event(symbol: str, event: dict[str, Any]) -> bool:
-    aliases = _symbol_aliases(symbol)
-    symbols = event.get("symbols") or event.get("symbol") or event.get("assets") or []
-    if isinstance(symbols, str):
-        symbols = [symbols]
-    symbols = {str(item).upper() for item in symbols if str(item).strip()}
-    if not symbols:
-        headline = str(event.get("headline") or event.get("title") or "").upper()
-        return any(alias in headline for alias in aliases)
-    return bool(aliases & symbols)
-
-
-def _news_scores(symbol: str, latest_15m: dict) -> dict[str, Any]:
-    events = _load_news_events()
-    if not events:
-        return {
-            "long": 0,
-            "short": 0,
-            "driver": "none",
-            "headline": "",
-            "direction": "mixed",
-        }
-    now_ts = _now_ts(latest_15m)
-    default_ttl = int(os.getenv("X_NEWS_TTL_MINUTES", "180") or 180)
-    long_score = 0.0
-    short_score = 0.0
-    best_weight = -1.0
-    best_driver = "none"
-    best_headline = ""
-    best_direction = "mixed"
-    for event in events:
-        if not _match_news_event(symbol, event):
-            continue
-        event_ts = _parse_ts(event.get("timestamp") or event.get("ts") or event.get("time"))
-        if event_ts is None:
-            continue
-        ttl_minutes = int(event.get("ttl_minutes") or default_ttl)
-        age_minutes = max(0.0, (now_ts - event_ts) / 60.0)
-        if age_minutes > ttl_minutes:
-            continue
-        recency = max(0.15, 1.0 - age_minutes / max(ttl_minutes, 1))
-        base_score = max(10.0, min(100.0, _float(event.get("score") or event.get("importance") or 50.0)))
-        weight = base_score * recency
-        direction = str(event.get("direction") or event.get("bias") or "mixed").lower()
-        if direction == "long":
-            long_score += weight
-        elif direction == "short":
-            short_score += weight
-        else:
-            long_score += weight * 0.5
-            short_score += weight * 0.5
-        if weight > best_weight:
-            best_weight = weight
-            best_driver = str(event.get("driver") or event.get("type") or "news")
-            best_headline = str(event.get("headline") or event.get("title") or "")[:72]
-            best_direction = direction
-    return {
-        "long": min(100, int(round(long_score))),
-        "short": min(100, int(round(short_score))),
-        "driver": best_driver,
-        "headline": best_headline,
-        "direction": best_direction,
-    }
-
-
-def _event_shape(latest: dict, prev: dict, klines_15m: list[dict]) -> dict[str, Any]:
+    latest = klines_15m[-1]
+    prev = klines_15m[-2]
+    latest_1h = klines_1h[-1]
+    latest_4h = klines_4h[-1]
+    latest_1d = klines_1d[-1]
     recent_4 = klines_15m[-4:]
+
+    price = _float(latest.get('close'))
     atr = _atr(latest)
+    vol_ratio = _volume_ratio(latest)
+    volume_15m = _float(latest.get('volume'))
+    volume_1h = _float(latest_1h.get('volume'))
+
+    volume_gate_15m = volume_15m >= 8000
+    volume_gate_1h = volume_1h >= 10000
+    volume_expansion = volume_gate_15m or volume_gate_1h
+
+    trend_score_long = _trend_score('long', latest_1h, latest_4h, latest_1d)
+    trend_score_short = _trend_score('short', latest_1h, latest_4h, latest_1d)
+    trend_display_long = _trend_display('long', trend_score_long)
+    trend_display_short = _trend_display('short', trend_score_short)
+
     recent_high = _recent_breakout_level_long(klines_15m)
     recent_low = _recent_breakout_level_short(klines_15m)
-    close = _float(latest.get("close"))
-    high = _float(latest.get("high"))
-    low = _float(latest.get("low"))
-    open_ = _float(latest.get("open"))
-    prev_close = _float(prev.get("close"))
-    prev_high = _float(prev.get("high"))
-    prev_low = _float(prev.get("low"))
 
+    ema10 = _float(latest.get('ema10'))
+    ema20 = _float(latest.get('ema20'))
+    close = _float(latest.get('close'))
+    high = _float(latest.get('high'))
+    low = _float(latest.get('low'))
+    open_ = _float(latest.get('open'))
+    prev_close = _float(prev.get('close'))
+
+    extension_long_atr = max(0.0, (close - ema20) / max(atr, 1e-9))
+    extension_short_atr = max(0.0, (ema20 - close) / max(atr, 1e-9))
+
+    # 当前 15m 形态
     candle_range = max(high - low, 1e-9)
     body = abs(close - open_)
     body_ratio = body / candle_range
@@ -308,7 +215,9 @@ def _event_shape(latest: dict, prev: dict, klines_15m: list[dict]) -> dict[str, 
     lower_wick = max(0.0, min(open_, close) - low)
     upper_wick_ratio = upper_wick / candle_range
     lower_wick_ratio = lower_wick / candle_range
-    range_ratio = candle_range / max(atr, 1e-9)
+    prev_high = _float(prev.get('high'))
+    prev_low = _float(prev.get('low'))
+    range_ratio = candle_range / max(_atr(latest), 1e-9)
 
     breakout_cross_up = prev_close < recent_high and close > recent_high
     breakout_cross_down = prev_close > recent_low and close < recent_low
@@ -317,11 +226,13 @@ def _event_shape(latest: dict, prev: dict, klines_15m: list[dict]) -> dict[str, 
     impulse_up = breakout_cross_up and fresh_break_up and body_ratio >= 0.50 and range_ratio >= 1.05
     impulse_down = breakout_cross_down and fresh_break_down and body_ratio >= 0.50 and range_ratio >= 1.05
 
-    hour_open = _float(recent_4[0].get("open"))
-    hour_close = _float(recent_4[-1].get("close"))
-    hour_high = max(_float(k.get("high")) for k in recent_4)
-    hour_low = min(_float(k.get("low")) for k in recent_4)
+    # 最近 1 小时聚合形态
+    hour_open = _float(recent_4[0].get('open'))
+    hour_close = _float(recent_4[-1].get('close'))
+    hour_high = max(_float(k.get('high')) for k in recent_4)
+    hour_low = min(_float(k.get('low')) for k in recent_4)
     hour_range = max(hour_high - hour_low, 1e-9)
+    hour_body = abs(hour_close - hour_open)
     hour_upper_wick = max(0.0, hour_high - max(hour_open, hour_close))
     hour_lower_wick = max(0.0, min(hour_open, hour_close) - hour_low)
     hour_upper_wick_ratio = hour_upper_wick / hour_range
@@ -334,216 +245,98 @@ def _event_shape(latest: dict, prev: dict, klines_15m: list[dict]) -> dict[str, 
     dual_bias_short = dual_sided_sweep and hour_upper_wick_ratio >= hour_lower_wick_ratio * 1.03
     dual_bias_long = dual_sided_sweep and hour_lower_wick_ratio >= hour_upper_wick_ratio * 1.03
 
-    return {
-        "atr": atr,
-        "recent_high": recent_high,
-        "recent_low": recent_low,
-        "close": close,
-        "high": high,
-        "low": low,
-        "body_ratio": body_ratio,
-        "upper_wick_ratio": upper_wick_ratio,
-        "lower_wick_ratio": lower_wick_ratio,
-        "range_ratio": range_ratio,
-        "impulse_up": impulse_up,
-        "impulse_down": impulse_down,
-        "hour_break_up": hour_break_up,
-        "hour_break_down": hour_break_down,
-        "hour_pin_short": hour_pin_short,
-        "hour_pin_long": hour_pin_long,
-        "dual_bias_short": dual_bias_short,
-        "dual_bias_long": dual_bias_long,
-        "hour_close": hour_close,
-        "hour_open": hour_open,
-    }
+    stack_up = _price_above_stack(latest)
+    stack_down = _price_below_stack(latest)
+    momentum_up = _momentum_up(latest) or _momentum_up(latest_1h)
+    momentum_down = _momentum_down(latest) or _momentum_down(latest_1h)
 
+    h1_bullish = _float(latest_1h.get('close')) >= _float(latest_1h.get('ema10')) >= _float(latest_1h.get('ema20'))
+    h1_bearish = _float(latest_1h.get('close')) <= _float(latest_1h.get('ema10')) <= _float(latest_1h.get('ema20'))
 
-def _driver_and_type(direction: str, shape: dict[str, Any], news: dict[str, Any]) -> tuple[str, str, list[str]]:
-    basis: list[str] = []
-    if direction == "long":
-        if shape["impulse_up"] or shape["hour_break_up"]:
-            basis.append("impulse_breakout_up")
-            x_type = "起爆上破"
-            driver = "price+volume"
-        elif shape["hour_pin_long"]:
-            basis.append("wick_rejection_down")
-            x_type = "下插针扫流动性"
-            driver = "liquidity_sweep"
-        else:
-            basis.append("dual_sided_sweep_long")
-            x_type = "双边扫后偏多"
-            driver = "liquidity_sweep"
-    else:
-        if shape["impulse_down"] or shape["hour_break_down"]:
-            basis.append("impulse_breakdown_down")
-            x_type = "起跌下破"
-            driver = "price+volume"
-        elif shape["hour_pin_short"]:
-            basis.append("wick_rejection_up")
-            x_type = "上插针扫流动性"
-            driver = "liquidity_sweep"
-        else:
-            basis.append("dual_sided_sweep_short")
-            x_type = "双边扫后偏空"
-            driver = "liquidity_sweep"
+    long_force = volume_gate_1h and (impulse_up or hour_break_up or hour_pin_long or dual_bias_long)
+    short_force = volume_gate_1h and (impulse_down or hour_break_down or hour_pin_short or dual_bias_short)
 
-    if news.get(direction, 0) >= 35:
-        headline = news.get("headline") or "消息催化"
-        driver = f"news+{driver}"
-        x_type = f"消息驱动{ x_type }"
-        basis.append("news_catalyst")
-        basis.append(headline[:32])
-    return driver, x_type, basis
+    signals: list[dict[str, Any]] = []
 
-
-def _event_scores(direction: str, latest: dict, latest_1h: dict, latest_4h: dict, latest_1d: dict, shape: dict[str, Any], news: dict[str, Any]) -> dict[str, Any]:
-    vol_ratio_15m = _volume_ratio(latest)
-    vol_ratio_1h = _volume_ratio(latest_1h)
-    volume_score = 0
-    volume_score += 3 if vol_ratio_15m >= 1.8 else 2 if vol_ratio_15m >= 1.35 else 1 if vol_ratio_15m >= 1.15 else 0
-    volume_score += 3 if vol_ratio_1h >= 1.8 else 2 if vol_ratio_1h >= 1.35 else 1 if vol_ratio_1h >= 1.15 else 0
-
-    price_score = 0
-    price_score += 3 if shape["range_ratio"] >= 1.8 else 2 if shape["range_ratio"] >= 1.25 else 1 if shape["range_ratio"] >= 1.05 else 0
-    price_score += 2 if abs(shape["close"] - _float(latest_1h.get("open"))) / max(shape["atr"], 1e-9) >= 1.0 else 0
-
-    if direction == "long":
-        structure_score = _count_true(shape["impulse_up"], shape["hour_break_up"], shape["hour_pin_long"], shape["dual_bias_long"])
-        support_ok = _count_true(_price_above_stack(latest), _float(latest.get("close")) >= _float(latest.get("ema20")), _momentum_up(latest), _momentum_up(latest_1h))
-        trend_score = _trend_score("long", latest_1h, latest_4h, latest_1d)
-    else:
-        structure_score = _count_true(shape["impulse_down"], shape["hour_break_down"], shape["hour_pin_short"], shape["dual_bias_short"])
-        support_ok = _count_true(_price_below_stack(latest), _float(latest.get("close")) <= _float(latest.get("ema20")), _momentum_down(latest), _momentum_down(latest_1h))
-        trend_score = _trend_score("short", latest_1h, latest_4h, latest_1d)
-
-    news_score = news.get(direction, 0)
-    total = price_score + volume_score + structure_score * 2 + min(4, support_ok) + min(4, trend_score // 2) + min(5, news_score // 20)
-    return {
-        "price_score": price_score,
-        "volume_score": volume_score,
-        "structure_score": structure_score,
-        "support_score": support_ok,
-        "trend_score": trend_score,
-        "news_score": news_score,
-        "total": total,
-        "vol_ratio_15m": vol_ratio_15m,
-        "vol_ratio_1h": vol_ratio_1h,
-    }
-
-
-def _should_emit_x(direction: str, scores: dict[str, Any], shape: dict[str, Any]) -> bool:
-    event_present = scores["structure_score"] >= 1
-    strong_combo = scores["price_score"] >= 2 and scores["volume_score"] >= 2 and scores["structure_score"] >= 1
-    news_combo = scores["news_score"] >= 45 and scores["structure_score"] >= 1 and scores["price_score"] >= 1
-    sweep_combo = scores["structure_score"] >= 2 and scores["price_score"] >= 1 and scores["volume_score"] >= 1
-    return event_present and (scores["total"] >= 11 or strong_combo or news_combo or sweep_combo)
-
-
-def _confidence(scores: dict[str, Any]) -> int:
-    return max(35, min(95, int(round(scores["total"] * 7.5 + scores["news_score"] * 0.18))))
-
-
-def _abnormal_type_text(x_type: str, driver: str, confidence: int, headline: str) -> str:
-    driver_text = {
-        "price+volume": "盘口放量驱动",
-        "liquidity_sweep": "流动性扫单驱动",
-        "news+price+volume": "消息+盘口驱动",
-        "news+liquidity_sweep": "消息+扫流动性驱动",
-    }.get(driver, driver)
-    if headline:
-        return f"{x_type}｜{driver_text}｜置信度{confidence}｜{headline}"
-    return f"{x_type}｜{driver_text}｜置信度{confidence}"
-
-
-def detect_abnormal_signals(
-    symbol: str,
-    klines_1d: list[dict],
-    klines_4h: list[dict],
-    klines_1h: list[dict],
-    klines_15m: list[dict],
-) -> list[dict[str, Any]]:
-    """
-    X 模块重构：
-    - X 独立于 ABC，只负责非正常异动
-    - 采用 价格 + 量能 + 结构 + 消息 四维评分，不再使用绝对放量二极管
-    - 支持本地 news feed 文件增强消息面侦测
-    - 同轮双向只保留更强的一边
-    """
-    if min(len(klines_15m), len(klines_1h), len(klines_4h), len(klines_1d)) < 12:
-        return []
-
-    latest = klines_15m[-1]
-    prev = klines_15m[-2]
-    latest_1h = klines_1h[-1]
-    latest_4h = klines_4h[-1]
-    latest_1d = klines_1d[-1]
-
-    price = _float(latest.get("close"))
-    shape = _event_shape(latest, prev, klines_15m)
-    news = _news_scores(symbol, latest)
-
-    candidates: list[dict[str, Any]] = []
-
-    for direction in ("long", "short"):
-        if direction == "long" and not _count_true(shape["impulse_up"], shape["hour_break_up"], shape["hour_pin_long"], shape["dual_bias_long"]):
-            continue
-        if direction == "short" and not _count_true(shape["impulse_down"], shape["hour_break_down"], shape["hour_pin_short"], shape["dual_bias_short"]):
-            continue
-
-        scores = _event_scores(direction, latest, latest_1h, latest_4h, latest_1d, shape, news)
-        if not _should_emit_x(direction, scores, shape):
-            continue
-
-        trend_display = _trend_display(direction, scores["trend_score"])
-        driver, x_type, basis = _driver_and_type(direction, shape, news)
-        confidence = _confidence(scores)
-        abnormal_type = _abnormal_type_text(x_type, driver, confidence, news.get("headline", ""))
-
-        atr = shape["atr"]
-        if direction == "long":
-            breakout_level = shape["recent_high"] if (shape["impulse_up"] or shape["hour_break_up"]) else shape["recent_low"]
-            zone_low = max(min(_float(latest.get("ema10")), _float(latest.get("ema20")), price), breakout_level - atr * 0.40)
-            zone_high = max(price, shape["recent_high"] + atr * 0.22)
-            extension = max(0.0, (price - _float(latest.get("ema20"))) / max(atr, 1e-9))
-            signal_name = "X_BREAKOUT_LONG"
-        else:
-            breakout_level = shape["recent_low"] if (shape["impulse_down"] or shape["hour_break_down"]) else shape["recent_high"]
-            zone_low = min(price, shape["recent_low"] - atr * 0.22)
-            zone_high = min(max(_float(latest.get("ema10")), _float(latest.get("ema20")), price), breakout_level + atr * 0.40)
-            extension = max(0.0, (_float(latest.get("ema20")) - price) / max(atr, 1e-9))
-            signal_name = "X_BREAKOUT_SHORT"
-
-        zone_low, zone_high = _normalize_zone(zone_low, zone_high)
-        eta_min, eta_max = _window_from_extension(extension, max(scores["vol_ratio_15m"], scores["vol_ratio_1h"]), scores["news_score"])
-        candidates.append(
-            _signal_dict(
-                signal_name,
-                symbol,
-                direction,
-                price,
-                trend_display,
-                basis,
-                zone_low,
-                zone_high,
-                breakout_level,
-                abnormal_type,
-                eta_min,
-                eta_max,
-                x_driver=driver,
-                x_confidence=confidence,
-                x_news_score=scores["news_score"],
-                x_event_score=scores["total"],
-            )
+    # LONG X
+    if long_force or (volume_gate_15m and (impulse_up or hour_pin_long or dual_bias_long)):
+        long_checks = _count_true(
+            volume_expansion,
+            impulse_up or hour_break_up or hour_pin_long or dual_bias_long,
+            stack_up or h1_bullish or close >= ema20,
+            momentum_up or bool(latest.get('fl_buy_signal')) or bool(latest.get('tai_rising')),
+            trend_score_long >= 1,
+            extension_long_atr <= 5.5,
         )
+        if long_force or long_checks >= 4:
+            breakout_level = recent_high if (impulse_up or hour_break_up) else hour_low
+            zone_low = max(min(ema10, close), breakout_level - atr * 0.35)
+            zone_high = max(close, recent_high + atr * 0.18)
+            zone_low, zone_high = _normalize_zone(zone_low, zone_high)
+            eta_min, eta_max = _window_from_extension(extension_long_atr, max(vol_ratio, 1.6))
+            basis: list[str] = []
+            if volume_gate_1h:
+                basis.append('h1_volume_force_x')
+            elif volume_gate_15m:
+                basis.append('m15_volume_spike')
+            if impulse_up or hour_break_up:
+                basis.append('impulse_breakout_up')
+            if hour_pin_long or lower_wick_ratio >= 0.35:
+                basis.append('wick_rejection_down')
+            if dual_bias_long:
+                basis.append('dual_sided_sweep_long')
+            abnormal_type = '1h放量起爆 / 可能空头回补'
+            if hour_pin_long and not (impulse_up or hour_break_up):
+                abnormal_type = '放量下插针扫流动性 / 可能诱空反抽'
+            elif dual_bias_long and not (impulse_up or hour_break_up):
+                abnormal_type = '上下插针异动 / 偏多回拉'
+            signals.append(_signal_dict('X_BREAKOUT_LONG', symbol, 'long', price, trend_display_long, basis or ['abnormal_long'], zone_low, zone_high, breakout_level, abnormal_type, eta_min, eta_max))
 
-    if len(candidates) <= 1:
-        return candidates
-
-    def _pick_score(sig: dict[str, Any]) -> tuple[int, int, int]:
-        return (
-            int(sig.get("x_confidence", 0)),
-            int(sig.get("x_news_score", 0)),
-            int(sig.get("x_event_score", 0)),
+    # SHORT X
+    if short_force or (volume_gate_15m and (impulse_down or hour_pin_short or dual_bias_short)):
+        short_checks = _count_true(
+            volume_expansion,
+            impulse_down or hour_break_down or hour_pin_short or dual_bias_short,
+            stack_down or h1_bearish or close <= ema20,
+            momentum_down or bool(latest.get('fl_sell_signal')) or (bool(latest.get('tai_rising')) is False),
+            trend_score_short >= 1,
+            extension_short_atr <= 5.5,
         )
+        if short_force or short_checks >= 4:
+            breakout_level = recent_low if (impulse_down or hour_break_down) else hour_high
+            zone_low = min(close, recent_low - atr * 0.18)
+            zone_high = min(max(ema10, close), breakout_level + atr * 0.35)
+            zone_low, zone_high = _normalize_zone(zone_low, zone_high)
+            eta_min, eta_max = _window_from_extension(extension_short_atr, max(vol_ratio, 1.6))
+            basis: list[str] = []
+            if volume_gate_1h:
+                basis.append('h1_volume_force_x')
+            elif volume_gate_15m:
+                basis.append('m15_volume_spike')
+            if impulse_down or hour_break_down:
+                basis.append('impulse_breakdown_down')
+            if hour_pin_short or upper_wick_ratio >= 0.35:
+                basis.append('wick_rejection_up')
+            if dual_bias_short:
+                basis.append('dual_sided_sweep_short')
+            abnormal_type = '1h放量起跌 / 可能多头踩踏'
+            if hour_pin_short and not (impulse_down or hour_break_down):
+                abnormal_type = '放量上插针扫流动性 / 可能诱多回落'
+            elif dual_bias_short and not (impulse_down or hour_break_down):
+                abnormal_type = '上下插针异动 / 偏空回落'
+            signals.append(_signal_dict('X_BREAKOUT_SHORT', symbol, 'short', price, trend_display_short, basis or ['abnormal_short'], zone_low, zone_high, breakout_level, abnormal_type, eta_min, eta_max))
 
-    return [max(candidates, key=_pick_score)]
+    if len(signals) <= 1:
+        return signals
+
+    # 若同一小时双向都触发，仅保留当前更强的一边，但不压 ABC（scanner 仍独立处理）
+    def _score(sig: dict[str, Any]) -> tuple[int, int, int]:
+        basis = set(sig.get('structure_basis', []))
+        force = 1 if 'h1_volume_force_x' in basis else 0
+        trend = trend_score_long if sig.get('direction') == 'long' else trend_score_short
+        hour_dir = 1 if hour_close > hour_open and sig.get('direction') == 'long' else 0
+        hour_dir = 1 if hour_close < hour_open and sig.get('direction') == 'short' else hour_dir
+        return (force, trend, hour_dir)
+
+    best = max(signals, key=_score)
+    return [best]
