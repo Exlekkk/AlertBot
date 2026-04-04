@@ -549,6 +549,71 @@ def _trend_display(direction: str, score: int) -> str:
     return "neutral"
 
 
+def _type_purity(name: str, phase_1h: str, trigger_15m: str, basis_count: int) -> int:
+    score = 0
+    if name.startswith("A_"):
+        score += 3 if phase_1h == "continuation" else -3
+        score += 3 if trigger_15m in {"ready", "explosive"} else -2
+        score += 2 if basis_count >= 3 else 1 if basis_count >= 2 else -1
+    elif name.startswith("B_"):
+        score += 3 if phase_1h == "repair" else -3
+        score += 2 if trigger_15m in {"ready", "explosive"} else -2
+        score += 2 if basis_count >= 2 else 0
+    elif name.startswith("C_"):
+        score += 3 if phase_1h == "early" else -3
+        score += 2 if trigger_15m in {"probe", "watch", "ready", "explosive"} else -1
+        score += 1 if basis_count >= 2 else 0
+    return score
+
+
+def _environment_fit(name: str, trend_display: str, direction: str) -> int:
+    score = 0
+    if direction == "long":
+        if trend_display == "bull":
+            score += 3
+        elif trend_display == "lean_bull":
+            score += 2
+        elif trend_display == "neutral":
+            score += 0
+        else:
+            score -= 3
+    else:
+        if trend_display == "bear":
+            score += 3
+        elif trend_display == "lean_bear":
+            score += 2
+        elif trend_display == "neutral":
+            score += 0
+        else:
+            score -= 3
+    return score
+
+
+def _completion_strength(basis_count: int, trigger_15m: str) -> int:
+    score = min(3, basis_count)
+    if trigger_15m == "explosive":
+        score += 3
+    elif trigger_15m == "ready":
+        score += 2
+    elif trigger_15m in {"probe", "watch"}:
+        score += 1
+    return score
+
+
+def _abc_confidence(name: str, direction: str, trend_display: str, phase_1h: str, trigger_15m: str, structure_basis: list[str] | None) -> int:
+    basis = structure_basis or []
+    purity = _type_purity(name, phase_1h, trigger_15m, len(basis))
+    env_fit = _environment_fit(name, trend_display, direction)
+    strength = _completion_strength(len(basis), trigger_15m)
+    base = 47
+    total = base + purity * 3 + env_fit * 2 + strength * 2
+    if name.startswith("A_"):
+        total += 2
+    elif name.startswith("C_"):
+        total -= 2
+    return max(38, min(89, int(round(total))))
+
+
 def _signal_dict(
     name: str,
     symbol: str,
@@ -562,6 +627,8 @@ def _signal_dict(
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
     trigger_level: float | None = None,
+    phase_name: str = "",
+    trigger_state: str = "",
 ) -> dict[str, Any]:
     basis = structure_basis or []
     zone_low_v = zone_low if zone_low is not None else price
@@ -587,6 +654,9 @@ def _signal_dict(
         "eta_max_minutes": eta_max_minutes,
         "signature": signature,
         "cooldown_seconds": cooldown_seconds,
+        "phase_name": phase_name,
+        "trigger_state": trigger_state,
+        "confidence": _abc_confidence(name, direction, trend_display, phase_name, trigger_state, basis),
     }
 
 
@@ -1262,3 +1332,37 @@ def detect_signals(
     final_signal = resolve_symbol_signal(long_signal, short_signal)
     signals = [final_signal] if final_signal else []
     return {"signals": signals, "near_miss_signals": near_miss_signals, "blocked_reasons": {}}
+
+import unittest
+
+
+class ABCConfidenceRefactorTests(unittest.TestCase):
+    def test_a_confidence_only_high_when_clean(self):
+        from engine.signals import _abc_confidence
+        clean = _abc_confidence("A_LONG", "long", "bull", "continuation", "explosive", ["bos_up", "mss_up", "fvg"])
+        weak = _abc_confidence("A_LONG", "long", "lean_bull", "continuation", "watch", ["fvg"])
+        self.assertGreaterEqual(clean, 74)
+        self.assertLess(weak, clean)
+        self.assertLessEqual(clean, 89)
+
+    def test_b_confidence_not_artificially_high(self):
+        from engine.signals import _abc_confidence
+        b_value = _abc_confidence("B_PULLBACK_SHORT", "short", "lean_bear", "repair", "ready", ["resistance_zone", "trigger_repair"])
+        self.assertGreaterEqual(b_value, 58)
+        self.assertLessEqual(b_value, 76)
+
+    def test_c_confidence_stays_low_to_mid(self):
+        from engine.signals import _abc_confidence
+        c_value = _abc_confidence("C_LEFT_LONG", "long", "neutral", "early", "probe", ["support_zone", "early_warning"])
+        self.assertGreaterEqual(c_value, 50)
+        self.assertLessEqual(c_value, 70)
+
+    def test_counter_trend_a_gets_pulled_down(self):
+        from engine.signals import _abc_confidence
+        normal = _abc_confidence("A_SHORT", "short", "bear", "continuation", "explosive", ["bos_down", "mss_down", "resistance_zone"])
+        counter = _abc_confidence("A_SHORT", "short", "lean_bull", "continuation", "explosive", ["bos_down", "mss_down", "resistance_zone"])
+        self.assertLess(counter, normal)
+
+
+if __name__ == "__main__":
+    unittest.main()
