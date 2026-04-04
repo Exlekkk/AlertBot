@@ -8,7 +8,11 @@ from typing import Any
 
 
 class SignalStateStore:
-    def __init__(self, price_change_threshold: float = 0.001, state_file: str | None = None):
+    def __init__(
+        self,
+        price_change_threshold: float = 0.001,
+        state_file: str | None = None,
+    ):
         self.price_change_threshold = price_change_threshold
         self.state_file = Path(state_file or os.getenv("SMCT_SIGNAL_STATE_FILE", "/opt/smct-alert/signal_state.json"))
         self.last_sent: dict[str, dict[str, Any]] = {}
@@ -44,96 +48,90 @@ class SignalStateStore:
     def _family_key(self, signal: dict[str, Any]) -> str:
         if signal["signal"].startswith("X_"):
             return f"X|{signal['symbol']}|{signal['timeframe']}|{signal['signal']}|{signal['direction']}"
-        return f"ABC|{signal['symbol']}|{signal['timeframe']}"
+        return f"ABC|{signal['symbol']}|{signal['timeframe']}|{signal['direction']}"
 
-    def _signal_bucket_key(self, signal: dict[str, Any]) -> str:
-        if signal["signal"].startswith("X_"):
-            return f"X_BUCKET|{signal['symbol']}|{signal['timeframe']}|{signal['signal']}|{signal['direction']}"
-        return f"ABC_BUCKET|{signal['symbol']}|{signal['timeframe']}|{signal['signal']}|{signal['direction']}"
+    def _phase_rank(self, phase_name: str) -> int:
+        return {"none": 0, "early": 1, "repair": 2, "continuation": 3}.get(phase_name, 0)
+
+    def _tai_bias_rank(self, tai_bias: str) -> int:
+        return {"drag": 0, "flat": 1, "support": 2, "drive": 3}.get(tai_bias, 1)
 
     def should_send(self, signal: dict[str, Any]) -> bool:
-        bucket_key = self._signal_bucket_key(signal)
-        bucket_prev = self.last_sent.get(bucket_key)
-        now = time.time()
-        cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
-
-        if bucket_prev:
-            tiny_move = self._price_change_ratio(float(bucket_prev.get("price", 0.0)), float(signal.get("price", 0.0))) <= self.price_change_threshold
-            if signal["signal"].startswith("X_"):
-                if signal.get("signature") == bucket_prev.get("signature") and now - float(bucket_prev.get("sent_at", 0.0)) < cooldown_seconds:
-                    return False
-            if tiny_move and now - float(bucket_prev.get("sent_at", 0.0)) < cooldown_seconds:
-                return False
-
-        if signal["signal"].startswith("X_"):
-            return True
-
-        family_key = self._family_key(signal)
-        previous = self.last_sent.get(family_key)
+        key = self._family_key(signal)
+        previous = self.last_sent.get(key)
         if not previous:
             return True
 
+        now = time.time()
+        cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
         prev_sent_at = float(previous.get("sent_at", 0.0))
-        prev_price = float(previous.get("price", 0.0))
-        curr_price = float(signal.get("price", 0.0))
-        tiny_move = self._price_change_ratio(prev_price, curr_price) <= self.price_change_threshold
+        tiny_move = self._price_change_ratio(float(previous.get("price", 0.0)), float(signal.get("price", 0.0))) <= self.price_change_threshold
+
+        if signal["signal"].startswith("X_"):
+            if signal.get("signature") == previous.get("signature") and now - prev_sent_at < cooldown_seconds:
+                return False
+            if tiny_move and now - prev_sent_at < cooldown_seconds:
+                return False
+            return True
+
         prev_rank = int(previous.get("phase_rank", self._rank(previous.get("signal", ""))))
         curr_rank = int(signal.get("phase_rank", self._rank(signal.get("signal", ""))))
-        prev_signal = previous.get("signal", "")
-        curr_signal = signal.get("signal", "")
-        prev_direction = previous.get("direction", "")
-        curr_direction = signal.get("direction", "")
-        prev_segment = previous.get("segment_id", "")
-        curr_segment = signal.get("segment_id", "")
-        prev_state = previous.get("state_1h", previous.get("phase_name", ""))
-        curr_state = signal.get("state_1h", signal.get("phase_name", ""))
-        prev_heat = previous.get("tai_heat_1h", "neutral")
-        curr_heat = signal.get("tai_heat_1h", "neutral")
-        heat_restricted = bool(signal.get("heat_restricted"))
+        prev_phase_rank = self._phase_rank(previous.get("phase_name", ""))
+        curr_phase_rank = self._phase_rank(signal.get("phase_name", ""))
 
-        # Keep one dominant narrative per segment. Do not allow direction conflict.
-        if prev_segment == curr_segment and prev_direction and curr_direction and prev_direction != curr_direction:
+        prev_anchor = str(previous.get("phase_anchor", ""))
+        curr_anchor = str(signal.get("phase_anchor", ""))
+        same_anchor = bool(prev_anchor) and prev_anchor == curr_anchor
+
+        prev_tai_slot = str(previous.get("h1_tai_slot", ""))
+        curr_tai_slot = str(signal.get("h1_tai_slot", ""))
+        tai_slot_changed = bool(curr_tai_slot) and curr_tai_slot != prev_tai_slot
+        prev_tai_bias_rank = self._tai_bias_rank(str(previous.get("h1_tai_bias", "flat")))
+        curr_tai_bias_rank = self._tai_bias_rank(str(signal.get("h1_tai_bias", "flat")))
+        tai_cooperative = curr_tai_bias_rank >= 2 and (tai_slot_changed or curr_tai_bias_rank > prev_tai_bias_rank)
+
+        prev_label = previous.get("signal", "")
+        curr_label = signal.get("signal", "")
+
+        if curr_phase_rank < prev_phase_rank:
             return False
 
-        # Inside the same segment, do not let lower-rank categories steal narrative control.
-        if prev_segment == curr_segment and curr_rank < prev_rank:
-            return False
-
-        # Same signal, same segment, tiny movement: suppress.
-        if prev_signal == curr_signal and prev_segment == curr_segment and tiny_move and now - prev_sent_at < cooldown_seconds:
-            return False
-
-        # Same direction and same segment: only allow if upgrading or materially moving.
-        if prev_segment == curr_segment and prev_direction == curr_direction:
-            if curr_rank == prev_rank and tiny_move and now - prev_sent_at < cooldown_seconds:
+        if same_anchor:
+            # 同一段 1h 背景下，C 只允许出生一次；后续只能升级或静默结束。
+            if prev_rank == 1 and curr_rank == 1:
                 return False
-            if curr_rank > prev_rank:
+
+            # 同一段 1h 背景下，A/B 平级不复读，除非已经切到新的 1h TAI 节奏槽位且价格/签名有明显变化。
+            if curr_rank == prev_rank:
+                if curr_label == prev_label:
+                    return False
+                if now - prev_sent_at < cooldown_seconds and not tai_slot_changed:
+                    return False
+                if tiny_move and not tai_slot_changed:
+                    return False
                 return True
-            if curr_rank < prev_rank:
-                return False
 
-        # In restricted heat, be much stricter across nearby narrative changes.
-        if heat_restricted and tiny_move and now - prev_sent_at < max(cooldown_seconds, 60 * 60):
+            # 同一段升级，必须看到 1h TAI 配合；否则不允许 15m 自己把节奏顶上去。
+            if curr_rank > prev_rank:
+                if not tai_cooperative and curr_phase_rank <= prev_phase_rank:
+                    return False
+                if prev_rank == 1 and curr_rank >= 2 and not tai_cooperative:
+                    return False
+                return True
+
             return False
 
-        # Do not flip from a valid A narrative into B/C of the same direction too quickly.
-        if prev_rank == 3 and curr_rank < 3 and prev_direction == curr_direction and now - prev_sent_at < max(cooldown_seconds, 75 * 60):
+        # 跨 anchor 视为新一段 1h 背景，可以重新发。
+        if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds, 75 * 60):
             return False
-
-        # If the prior state was range neutral and new state is meaningful, allow.
-        if prev_state == "range_neutral" and curr_state != "range_neutral":
-            return True
-
-        # If heat improves materially and state changes, allow.
-        heat_order = {"cold": 0, "cool": 1, "neutral": 2, "warm": 3, "hot": 4}
-        if heat_order.get(curr_heat, 2) > heat_order.get(prev_heat, 2) and curr_state != prev_state:
-            return True
-
+        if tiny_move and now - prev_sent_at < cooldown_seconds and signal.get("phase_context") == previous.get("phase_context"):
+            return False
         return True
 
     def mark_sent(self, signal: dict[str, Any]):
+        key = self._family_key(signal)
         now = time.time()
-        payload = {
+        self.last_sent[key] = {
             "signal": signal["signal"],
             "status": signal.get("status", "active"),
             "price": signal.get("price", 0.0),
@@ -141,13 +139,15 @@ class SignalStateStore:
             "cooldown_seconds": int(signal.get("cooldown_seconds", 1800) or 1800),
             "phase_rank": int(signal.get("phase_rank", self._rank(signal.get("signal", "")))),
             "phase_name": signal.get("phase_name", ""),
-            "direction": signal.get("direction", ""),
-            "state_1h": signal.get("state_1h", signal.get("phase_name", "")),
-            "trigger_15m_state": signal.get("trigger_15m_state", signal.get("trigger_state", "")),
-            "tai_heat_1h": signal.get("tai_heat_1h", "neutral"),
-            "segment_id": signal.get("segment_id", ""),
+            "phase_context": signal.get("phase_context", ""),
+            "phase_anchor": signal.get("phase_anchor", ""),
+            "h1_tai_bias": signal.get("h1_tai_bias", "flat"),
+            "h1_tai_slot": signal.get("h1_tai_slot", ""),
+            "last_direction": signal.get("direction", ""),
+            "last_phase_1h": signal.get("phase_name", ""),
+            "last_label": signal.get("signal", ""),
+            "last_trigger_state": signal.get("trigger_state", ""),
+            "last_sent_ts": now,
             "sent_at": now,
         }
-        self.last_sent[self._signal_bucket_key(signal)] = payload
-        self.last_sent[self._family_key(signal)] = payload
         self._save()
