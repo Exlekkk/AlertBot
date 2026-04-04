@@ -141,6 +141,7 @@ class SMCTScanner:
                     eta_max_minutes=signal.get("eta_max_minutes"),
                     trigger_level=signal.get("breakout_level"),
                     abnormal_type=signal.get("abnormal_type"),
+                    confidence=signal.get("confidence") or signal.get("x_confidence"),
                 )
                 telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
                 self.state_store.mark_sent(signal)
