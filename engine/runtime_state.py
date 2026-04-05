@@ -77,9 +77,11 @@ class RuntimeStateStore:
         self._save()
 
     def get_snapshot(self) -> dict[str, Any]:
+        self._load()
         return dict(self.state)
 
     def build_health_payload(self) -> dict[str, Any]:
+        self._load()
         last_scan_at = float(self.state.get("last_scan_at", 0.0) or 0.0)
         age = max(0, int(time.time() - last_scan_at)) if last_scan_at else None
         stale = age is None or age > HEARTBEAT_STALE_AFTER_SECONDS
