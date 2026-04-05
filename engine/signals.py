@@ -121,10 +121,10 @@ def _cross_tf_heat_profile(k_15m: dict, k_1h: dict, k_4h: dict) -> dict[str, Any
 def _structure_context(klines: list[dict]) -> dict[str, Any]:
     eq = detect_recent_equal_levels(klines)
     return {
-        "bos_up": latest_structure_event(klines, direction="up", kinds=("bos",), max_bars_ago=12),
-        "bos_down": latest_structure_event(klines, direction="down", kinds=("bos",), max_bars_ago=12),
-        "mss_up": latest_structure_event(klines, direction="up", kinds=("mss",), max_bars_ago=16),
-        "mss_down": latest_structure_event(klines, direction="down", kinds=("mss",), max_bars_ago=16),
+        "bos_up": latest_structure_event(klines, direction="up", kinds=("bos",), max_bars_ago=14),
+        "bos_down": latest_structure_event(klines, direction="down", kinds=("bos",), max_bars_ago=14),
+        "mss_up": latest_structure_event(klines, direction="up", kinds=("mss",), max_bars_ago=18),
+        "mss_down": latest_structure_event(klines, direction="down", kinds=("mss",), max_bars_ago=18),
         "bull_fvg": detect_recent_fvg_fill(klines, "bull"),
         "bear_fvg": detect_recent_fvg_fill(klines, "bear"),
         "bull_sweep": detect_recent_liquidity_sweep(klines, "bull"),
@@ -139,6 +139,7 @@ def _structure_context(klines: list[dict]) -> dict[str, Any]:
 def _background_4h_direction(klines_4h: list[dict]) -> str:
     latest, prev = klines_4h[-1], klines_4h[-2]
     ctx = _structure_context(klines_4h)
+
     bull_score = _count(
         bool(ctx["bos_up"] or ctx["mss_up"]),
         _ema_alignment(latest, "long") != "opposing",
@@ -151,6 +152,7 @@ def _background_4h_direction(klines_4h: list[dict]) -> str:
         _momentum_down(latest, prev),
         bool(ctx["bear_fvg"] or ctx["bear_sweep"] or ctx["near_bear"] or ctx["eqh"]),
     )
+
     if bull_score >= 4 and bear_score <= 1:
         return "bull"
     if bear_score >= 4 and bull_score <= 1:
@@ -166,6 +168,7 @@ def _trigger_15m_state(direction: str, latest: dict, prev: dict, ctx_15m: dict[s
     vol_ratio = _float(latest.get("volume")) / max(_float(latest.get("vol_sma20")), 1e-9)
     close = _float(latest.get("close"))
     prev_close = _float(prev.get("close"))
+
     if direction == "long":
         score = _count(
             bool(ctx_15m["bos_up"] or ctx_15m["mss_up"]),
@@ -174,20 +177,27 @@ def _trigger_15m_state(direction: str, latest: dict, prev: dict, ctx_15m: dict[s
             close >= prev_close,
             bool(ctx_15m["bull_sweep"] or ctx_15m["bull_fvg"]),
         )
-    else:
-        score = _count(
-            bool(ctx_15m["bos_down"] or ctx_15m["mss_down"]),
-            bool(latest.get("fl_sell_signal")) or _float(latest.get("fl_trend")) < 0,
-            _momentum_down(latest, prev),
-            close <= prev_close,
-            bool(ctx_15m["bear_sweep"] or ctx_15m["bear_fvg"]),
-        )
-    if score >= 4 and vol_ratio >= 1.15:
-        return f"confirm_{direction}"
+        if score >= 4 and vol_ratio >= 1.05:
+            return "confirm_long"
+        if score >= 2:
+            return "repairing_long"
+        if score >= 1:
+            return "probing_long"
+        return "idle"
+
+    score = _count(
+        bool(ctx_15m["bos_down"] or ctx_15m["mss_down"]),
+        bool(latest.get("fl_sell_signal")) or _float(latest.get("fl_trend")) < 0,
+        _momentum_down(latest, prev),
+        close <= prev_close,
+        bool(ctx_15m["bear_sweep"] or ctx_15m["bear_fvg"]),
+    )
+    if score >= 4 and vol_ratio >= 1.05:
+        return "confirm_short"
     if score >= 2:
-        return f"repairing_{direction}"
+        return "repairing_short"
     if score >= 1:
-        return f"probing_{direction}"
+        return "probing_short"
     return "idle"
 
 
@@ -203,6 +213,7 @@ def _state_candidate(
 ) -> tuple[str, int, list[str]]:
     support_ctx = bool(ctx_1h["bull_fvg"] or ctx_1h["bull_sweep"] or ctx_1h["near_bull"] or ctx_1h["eql"])
     resist_ctx = bool(ctx_1h["bear_fvg"] or ctx_1h["bear_sweep"] or ctx_1h["near_bear"] or ctx_1h["eqh"])
+
     long_drive = _count(
         background_4h in {"bull", "lean_bull"},
         bool(ctx_1h["bos_up"] or ctx_1h["mss_up"]),
@@ -217,6 +228,7 @@ def _state_candidate(
         _momentum_down(latest_1h, prev_1h),
         trigger_state == "confirm_short",
     )
+
     long_repair = _count(
         background_4h != "bear",
         support_ctx,
@@ -231,6 +243,7 @@ def _state_candidate(
         trigger_state in {"confirm_short", "repairing_short"},
         _float(latest_15m.get("close")) <= _float(prev_15m.get("close")),
     )
+
     long_probe = _count(
         support_ctx,
         trigger_state in {"confirm_long", "repairing_long", "probing_long"},
@@ -305,7 +318,6 @@ def _choose_state(
     prev_15m: dict,
     trigger_long: str,
     trigger_short: str,
-    heat_profile: dict[str, Any],
 ) -> tuple[str, int, list[str]]:
     long_state, long_score, long_basis = _state_candidate(
         "long", background_4h, latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, trigger_long
@@ -325,213 +337,166 @@ def _choose_state(
     return "range_neutral", max(long_score, short_score), []
 
 
-def _trigger_context(direction: str, ctx_15m: dict[str, Any], latest_15m: dict) -> tuple[float | None, float | None]:
+def _trigger_context(direction: str, latest_15m: dict) -> tuple[float | None, float | None]:
     close = _float(latest_15m.get("close"))
     atr = _atr(latest_15m)
+    ema10 = _float(latest_15m.get("ema10"))
+    ema20 = _float(latest_15m.get("ema20"))
+
     if direction == "long":
-        lows = [_float(latest_15m.get("ema20")) - atr * 0.15]
-        highs = [close, _float(latest_15m.get("ema10"))]
-        for key in ("bull_fvg", "near_bull", "eql"):
-            item = ctx_15m.get(key)
-            if not item:
-                continue
-            if "zone_low" in item:
-                lows.append(_float(item.get("zone_low")))
-                highs.append(_float(item.get("zone_high")))
-            if "price" in item:
-                lows.append(_float(item.get("price")) - atr * 0.2)
-                highs.append(_float(item.get("price")) + atr * 0.2)
-        return min(lows), max(highs)
-    lows = [close, _float(latest_15m.get("ema10"))]
-    highs = [_float(latest_15m.get("ema20")) + atr * 0.15]
-    for key in ("bear_fvg", "near_bear", "eqh"):
-        item = ctx_15m.get(key)
-        if not item:
-            continue
-        if "zone_low" in item:
-            lows.append(_float(item.get("zone_low")))
-            highs.append(_float(item.get("zone_high")))
-        if "price" in item:
-            lows.append(_float(item.get("price")) - atr * 0.2)
-            highs.append(_float(item.get("price")) + atr * 0.2)
-    return min(lows), max(highs)
+        low = min(close - atr * 0.20, ema10, ema20)
+        high = max(close + atr * 0.10, ema10, ema20)
+        return round(low, 2), round(high, 2)
+
+    low = min(close - atr * 0.10, ema10, ema20)
+    high = max(close + atr * 0.20, ema10, ema20)
+    return round(low, 2), round(high, 2)
 
 
-def _state_to_signal(state_1h: str) -> tuple[str | None, str | None, int]:
-    mapping = {
-        "trend_drive_long": ("A_LONG", "long", 3),
-        "trend_drive_short": ("A_SHORT", "short", 3),
-        "repair_long": ("B_PULLBACK_LONG", "long", 2),
-        "repair_short": ("B_PULLBACK_SHORT", "short", 2),
-        "probe_long": ("C_LEFT_LONG", "long", 1),
-        "probe_short": ("C_LEFT_SHORT", "short", 1),
-    }
-    return mapping.get(state_1h, (None, None, 0))
-
-
-def _type_purity(name: str, state_1h: str, trigger_15m_state: str, state_score: int) -> int:
-    score = 0
-    if name.startswith("A_"):
-        score += 3 if state_1h.startswith("trend_drive_") else -3
-        score += 3 if trigger_15m_state.startswith("confirm_") else -2
-        score += 2 if state_score >= 5 else 1 if state_score >= 4 else -1
-    elif name.startswith("B_"):
-        score += 3 if state_1h.startswith("repair_") else -3
-        score += 2 if trigger_15m_state.startswith("confirm_") else -2
-        score += 2 if state_score >= 4 else 1 if state_score >= 3 else -1
-    elif name.startswith("C_"):
-        score += 3 if state_1h.startswith("probe_") else -3
-        score += 2 if trigger_15m_state in {"probing_long", "probing_short", "repairing_long", "repairing_short"} else -1
-        score += 2 if state_score >= 3 else 1 if state_score >= 2 else -1
-    return score
-
-
-def _environment_fit(name: str, background_4h_direction: str, direction: str, heat_profile: dict[str, Any]) -> int:
-    score = 0
-    if direction == "long":
-        if background_4h_direction == "bull":
-            score += 3
-        elif background_4h_direction == "lean_bull":
-            score += 2
-        elif background_4h_direction == "neutral":
-            score += 0
-        else:
-            score -= 3
-    else:
-        if background_4h_direction == "bear":
-            score += 3
-        elif background_4h_direction == "lean_bear":
-            score += 2
-        elif background_4h_direction == "neutral":
-            score += 0
-        else:
-            score -= 3
-
-    budget = heat_profile["tai_budget_mode"]
-    if budget == "expanded":
-        score += 2 if name.startswith("A_") else 1
-    elif budget == "restricted":
-        score -= 1 if name.startswith("A_") else 2
-    elif budget == "frozen":
-        score -= 2 if name.startswith("A_") else 3
-    return score
-
-
-def _completion_strength(state_score: int, structure_basis: list[str], trigger_15m_state: str) -> int:
-    score = 0
-    score += 2 if state_score >= 5 else 1 if state_score >= 4 else 0
-    score += min(3, len(structure_basis))
-    if trigger_15m_state.startswith("confirm_"):
-        score += 2
-    elif trigger_15m_state.startswith("repairing_"):
-        score += 1
-    return score
-
-
-def _signal_confidence(
-    name: str,
+def _abc_confidence(
+    signal_name: str,
     direction: str,
-    state_1h: str,
-    state_score: int,
-    trigger_15m_state: str,
+    background_4h: str,
+    phase_context: str,
+    trigger_quality: str,
     structure_basis: list[str],
-    background_4h_direction: str,
-    heat_profile: dict[str, Any],
 ) -> int:
-    purity = _type_purity(name, state_1h, trigger_15m_state, state_score)
-    env_fit = _environment_fit(name, background_4h_direction, direction, heat_profile)
-    strength = _completion_strength(state_score, structure_basis, trigger_15m_state)
+    if signal_name.startswith("A_"):
+        base = 74
+    elif signal_name.startswith("B_"):
+        base = 62
+    else:
+        base = 54
 
-    base = 47
-    total = base + purity * 3 + env_fit * 2 + strength * 2
+    if background_4h in {"bull", "bear"}:
+        base += 6
+    elif background_4h in {"lean_bull", "lean_bear"}:
+        base += 2
 
-    if name.startswith("A_"):
-        total += 2
-    elif name.startswith("C_"):
-        total -= 2
+    if phase_context in {"trend_drive_long", "trend_drive_short"}:
+        base += 7
+    elif phase_context in {"repair_long", "repair_short"}:
+        base += 4
+    elif phase_context in {"probe_long", "probe_short"}:
+        base += 1
 
-    return max(40, min(89, int(round(total))))
+    if trigger_quality == "explosive":
+        base += 5
+    elif trigger_quality == "ready":
+        base += 3
+    elif trigger_quality == "watch":
+        base += 1
+
+    base += min(6, len(structure_basis) * 2)
+
+    if signal_name.startswith("A_"):
+        return max(60, min(89, base))
+    if signal_name.startswith("B_"):
+        return max(58, min(76, base))
+    return max(50, min(70, base))
 
 
-def _signal_dict(
-    name: str,
+def _build_signal(
+    signal: str,
     symbol: str,
     direction: str,
-    price: float,
-    trend_1h: str,
-    status: str,
-    *,
-    zone_low: float | None,
-    zone_high: float | None,
-    structure_basis: list[str],
-    background_4h_direction: str,
+    priority: int,
+    latest_15m: dict,
     state_1h: str,
+    background_4h: str,
     trigger_15m_state: str,
     heat_profile: dict[str, Any],
-    candidate_score: int,
+    structure_basis: list[str],
+    status: str,
+    zone_low: float | None,
+    zone_high: float | None,
+    trigger_level: float | None = None,
+    eta_min_minutes: int | None = None,
+    eta_max_minutes: int | None = None,
 ) -> dict[str, Any]:
-    rank = SIGNAL_CLASS[name]
-    eta_map = {1: (15, 135), 2: (25, 165), 3: (25, 165)}
-    eta_min, eta_max = eta_map.get(rank, (20, 120))
-    segment_id = f"{symbol}|15m|{state_1h}|{direction}|{heat_profile['tai_heat_1h']}"
+    if trigger_15m_state.startswith("confirm"):
+        trigger_quality = "explosive"
+    elif trigger_15m_state.startswith("repairing"):
+        trigger_quality = "ready"
+    else:
+        trigger_quality = "watch"
+
+    confidence = _abc_confidence(
+        signal_name=signal,
+        direction=direction,
+        background_4h=background_4h,
+        phase_context=state_1h,
+        trigger_quality=trigger_quality,
+        structure_basis=structure_basis,
+    )
+
     return {
-        "signal": name,
+        "signal": signal,
         "symbol": symbol,
         "timeframe": "15m",
-        "priority": rank,
         "direction": direction,
-        "price": price,
-        "trend_1h": trend_1h,
-        "status": "active" if rank <= 2 else "early",
+        "priority": priority,
+        "price": round(_float(latest_15m.get("close")), 2),
+        "state_1h": state_1h,
+        "background_4h_direction": background_4h,
+        "trigger_15m_state": trigger_15m_state,
+        "tai_budget_mode": heat_profile["tai_budget_mode"],
+        "tai_heat_15m": heat_profile["tai_heat_15m"],
+        "tai_heat_1h": heat_profile["tai_heat_1h"],
+        "tai_heat_4h": heat_profile["tai_heat_4h"],
+        "freeze_mode": heat_profile["freeze_mode"],
+        "heat_restricted": heat_profile["tai_budget_mode"] == "restricted",
+        "structure_basis": structure_basis,
+        "status": status,
         "zone_low": zone_low,
         "zone_high": zone_high,
-        "structure_basis": structure_basis,
-        "eta_min_minutes": eta_min,
-        "eta_max_minutes": eta_max,
-        "cooldown_seconds": {1: 45 * 60, 2: 35 * 60, 3: 25 * 60}.get(rank, 30 * 60),
-        "phase_rank": rank,
-        "phase_name": state_1h,
-        "phase_context": f"{background_4h_direction}|{trigger_15m_state}|{heat_profile['tai_heat_1h']}",
-        "trigger_state": trigger_15m_state,
-        "bg_bias": background_4h_direction,
-        "signature": f"{name}|{direction}|{round(zone_low or price)}-{round(zone_high or price)}|{heat_profile['tai_heat_1h']}",
-        "background_4h_direction": background_4h_direction,
-        "state_1h": state_1h,
-        "trigger_15m_state": trigger_15m_state,
-        "tai_heat_1h": heat_profile["tai_heat_1h"],
-        "tai_heat_15m": heat_profile["tai_heat_15m"],
-        "tai_heat_4h": heat_profile["tai_heat_4h"],
-        "tai_budget_mode": heat_profile["tai_budget_mode"],
-        "heat_restricted": heat_profile["tai_budget_mode"] in {"restricted", "frozen"},
-        "freeze_mode": heat_profile["freeze_mode"],
-        "segment_id": segment_id,
-        "candidate_score": candidate_score,
-        "confidence": _signal_confidence(
-            name,
-            direction,
-            state_1h,
-            candidate_score,
-            trigger_15m_state,
-            structure_basis,
-            background_4h_direction,
-            heat_profile,
-        ),
+        "trigger_level": trigger_level,
+        "eta_min_minutes": eta_min_minutes,
+        "eta_max_minutes": eta_max_minutes,
+        "confidence": confidence,
     }
 
 
-def detect_signals(symbol: str, klines_1d: list[dict], klines_4h: list[dict], klines_1h: list[dict], klines_15m: list[dict]) -> dict[str, Any]:
-    latest_4h = klines_4h[-1]
+def _near_miss(signal_name: str, failed_checks: list[str], reasons: list[str]) -> dict[str, Any]:
+    return {
+        "candidate": signal_name,
+        "failed_checks": failed_checks,
+        "blocked_reasons": reasons,
+    }
+
+
+def detect_signals(
+    symbol: str,
+    klines_1d: list[dict],
+    klines_4h: list[dict],
+    klines_1h: list[dict],
+    klines_15m: list[dict],
+) -> dict[str, Any]:
+    if min(len(klines_1d), len(klines_4h), len(klines_1h), len(klines_15m)) < 50:
+        return {
+            "signals": [],
+            "near_miss_signals": [],
+            "background_4h_direction": "neutral",
+            "state_1h": "range_neutral",
+            "trigger_15m_state": "idle",
+            "tai_budget_mode": "normal",
+            "tai_heat_1h": "neutral",
+            "tai_heat_4h": "neutral",
+            "blocked_reasons": ["insufficient_data"],
+        }
+
+    latest_4h, prev_4h = klines_4h[-1], klines_4h[-2]
     latest_1h, prev_1h = klines_1h[-1], klines_1h[-2]
     latest_15m, prev_15m = klines_15m[-1], klines_15m[-2]
 
     ctx_1h = _structure_context(klines_1h)
     ctx_15m = _structure_context(klines_15m)
-    background_4h_direction = _background_4h_direction(klines_4h)
+
+    background_4h = _background_4h_direction(klines_4h)
     trigger_long = _trigger_15m_state("long", latest_15m, prev_15m, ctx_15m)
     trigger_short = _trigger_15m_state("short", latest_15m, prev_15m, ctx_15m)
-    heat_profile = _cross_tf_heat_profile(latest_15m, latest_1h, latest_4h)
-    state_1h, state_score, structure_basis = _choose_state(
-        background_4h_direction,
+    state_1h, state_score, state_basis = _choose_state(
+        background_4h,
         latest_1h,
         prev_1h,
         ctx_1h,
@@ -539,110 +504,213 @@ def detect_signals(symbol: str, klines_1d: list[dict], klines_4h: list[dict], kl
         prev_15m,
         trigger_long,
         trigger_short,
-        heat_profile,
     )
+    heat_profile = _cross_tf_heat_profile(latest_15m, latest_1h, latest_4h)
 
-    name, direction, _ = _state_to_signal(state_1h)
     signals: list[dict[str, Any]] = []
     near_miss_signals: list[dict[str, Any]] = []
     blocked_reasons: list[str] = []
 
+    long_zone = _trigger_context("long", latest_15m)
+    short_zone = _trigger_context("short", latest_15m)
+
+    trigger_display = trigger_long if "long" in state_1h else trigger_short if "short" in state_1h else "idle"
+
+    if heat_profile["freeze_mode"]:
+        blocked_reasons.append("heat_freeze")
+
     if state_1h == "range_neutral":
         blocked_reasons.append("range_neutral")
-        return {
-            "signals": signals,
-            "near_miss_signals": near_miss_signals,
-            "blocked_reasons": blocked_reasons,
-            "background_4h_direction": background_4h_direction,
-            "state_1h": state_1h,
-            "trigger_15m_state": "idle",
-            "tai_heat_1h": heat_profile["tai_heat_1h"],
-            "tai_heat_4h": heat_profile["tai_heat_4h"],
-            "tai_budget_mode": heat_profile["tai_budget_mode"],
-        }
-
-    if not name:
-        blocked_reasons.append("no_state_mapping")
+        if heat_profile["tai_budget_mode"] == "restricted":
+            blocked_reasons.append("heat_restricted_range_silence")
         return {
             "signals": [],
-            "near_miss_signals": near_miss_signals,
-            "blocked_reasons": blocked_reasons,
-            "background_4h_direction": background_4h_direction,
+            "near_miss_signals": [],
+            "background_4h_direction": background_4h,
             "state_1h": state_1h,
-            "trigger_15m_state": trigger_long if direction == "long" else trigger_short,
+            "trigger_15m_state": trigger_display,
+            "tai_budget_mode": heat_profile["tai_budget_mode"],
             "tai_heat_1h": heat_profile["tai_heat_1h"],
             "tai_heat_4h": heat_profile["tai_heat_4h"],
-            "tai_budget_mode": heat_profile["tai_budget_mode"],
-        }
-
-    active_trigger = trigger_long if direction == "long" else trigger_short
-
-    # HOTFIX: heat only affects confidence, not emission.
-    # Keep only minimal type-consistency guards.
-    if name.startswith("B_") and not active_trigger.startswith("confirm_"):
-        blocked_reasons.append("B_requires_confirm_trigger")
-        near_miss_signals.append({"candidate": name, "failed_checks": ["needs_confirm_trigger"]})
-        return {
-            "signals": [],
-            "near_miss_signals": near_miss_signals,
             "blocked_reasons": blocked_reasons,
-            "background_4h_direction": background_4h_direction,
-            "state_1h": state_1h,
-            "trigger_15m_state": active_trigger,
-            "tai_heat_1h": heat_profile["tai_heat_1h"],
-            "tai_heat_4h": heat_profile["tai_heat_4h"],
-            "tai_budget_mode": heat_profile["tai_budget_mode"],
         }
 
-    if name.startswith("C_") and active_trigger == "idle":
-        blocked_reasons.append("C_requires_probing_trigger")
-        near_miss_signals.append({"candidate": name, "failed_checks": ["needs_probe_trigger"]})
-        return {
-            "signals": [],
-            "near_miss_signals": near_miss_signals,
-            "blocked_reasons": blocked_reasons,
-            "background_4h_direction": background_4h_direction,
-            "state_1h": state_1h,
-            "trigger_15m_state": active_trigger,
-            "tai_heat_1h": heat_profile["tai_heat_1h"],
-            "tai_heat_4h": heat_profile["tai_heat_4h"],
-            "tai_budget_mode": heat_profile["tai_budget_mode"],
-        }
+    # A signals: only with proper confirm
+    if state_1h == "trend_drive_long":
+        if trigger_long == "confirm_long":
+            signals.append(
+                _build_signal(
+                    signal="A_LONG",
+                    symbol=symbol,
+                    direction="long",
+                    priority=1,
+                    latest_15m=latest_15m,
+                    state_1h=state_1h,
+                    background_4h=background_4h,
+                    trigger_15m_state=trigger_long,
+                    heat_profile=heat_profile,
+                    structure_basis=state_basis,
+                    status="active",
+                    zone_low=long_zone[0],
+                    zone_high=long_zone[1],
+                    trigger_level=_float(latest_15m.get("high")),
+                    eta_min_minutes=5,
+                    eta_max_minutes=30,
+                )
+            )
+        else:
+            blocked_reasons.append("A_requires_confirm_trigger")
+            near_miss_signals.append(_near_miss("A_LONG", ["needs_confirm_trigger"], blocked_reasons.copy()))
 
-    zone_low, zone_high = _trigger_context(direction, ctx_15m, latest_15m)
-    trend_display_map = {
-        "trend_drive_long": "bull",
-        "trend_drive_short": "bear",
-        "repair_long": "lean_bull",
-        "repair_short": "lean_bear",
-        "probe_long": "neutral",
-        "probe_short": "neutral",
-    }
-    sig = _signal_dict(
-        name,
-        symbol,
-        direction,
-        _float(latest_15m.get("close")),
-        trend_display_map.get(state_1h, "neutral"),
-        "active",
-        zone_low=zone_low,
-        zone_high=zone_high,
-        structure_basis=structure_basis,
-        background_4h_direction=background_4h_direction,
-        state_1h=state_1h,
-        trigger_15m_state=active_trigger,
-        heat_profile=heat_profile,
-        candidate_score=state_score,
-    )
-    signals.append(sig)
+    if state_1h == "trend_drive_short":
+        if trigger_short == "confirm_short":
+            signals.append(
+                _build_signal(
+                    signal="A_SHORT",
+                    symbol=symbol,
+                    direction="short",
+                    priority=1,
+                    latest_15m=latest_15m,
+                    state_1h=state_1h,
+                    background_4h=background_4h,
+                    trigger_15m_state=trigger_short,
+                    heat_profile=heat_profile,
+                    structure_basis=state_basis,
+                    status="active",
+                    zone_low=short_zone[0],
+                    zone_high=short_zone[1],
+                    trigger_level=_float(latest_15m.get("low")),
+                    eta_min_minutes=5,
+                    eta_max_minutes=30,
+                )
+            )
+        else:
+            blocked_reasons.append("A_requires_confirm_trigger")
+            near_miss_signals.append(_near_miss("A_SHORT", ["needs_confirm_trigger"], blocked_reasons.copy()))
+
+    # B signals: relaxed from hard confirm -> allow repairing trigger in restricted mode when structure is already repair
+    if state_1h == "repair_long":
+        allow_b_long = trigger_long in {"confirm_long", "repairing_long"}
+        if allow_b_long:
+            signals.append(
+                _build_signal(
+                    signal="B_PULLBACK_LONG",
+                    symbol=symbol,
+                    direction="long",
+                    priority=2,
+                    latest_15m=latest_15m,
+                    state_1h=state_1h,
+                    background_4h=background_4h,
+                    trigger_15m_state=trigger_long,
+                    heat_profile=heat_profile,
+                    structure_basis=state_basis,
+                    status="active" if trigger_long == "confirm_long" else "early",
+                    zone_low=long_zone[0],
+                    zone_high=long_zone[1],
+                    trigger_level=_float(latest_15m.get("close")),
+                    eta_min_minutes=15,
+                    eta_max_minutes=120,
+                )
+            )
+        else:
+            blocked_reasons.append("B_requires_confirm_trigger")
+            near_miss_signals.append(_near_miss("B_PULLBACK_LONG", ["needs_confirm_trigger"], blocked_reasons.copy()))
+
+    if state_1h == "repair_short":
+        allow_b_short = trigger_short in {"confirm_short", "repairing_short"}
+        if allow_b_short:
+            signals.append(
+                _build_signal(
+                    signal="B_PULLBACK_SHORT",
+                    symbol=symbol,
+                    direction="short",
+                    priority=2,
+                    latest_15m=latest_15m,
+                    state_1h=state_1h,
+                    background_4h=background_4h,
+                    trigger_15m_state=trigger_short,
+                    heat_profile=heat_profile,
+                    structure_basis=state_basis,
+                    status="active" if trigger_short == "confirm_short" else "early",
+                    zone_low=short_zone[0],
+                    zone_high=short_zone[1],
+                    trigger_level=_float(latest_15m.get("close")),
+                    eta_min_minutes=15,
+                    eta_max_minutes=120,
+                )
+            )
+        else:
+            blocked_reasons.append("B_requires_confirm_trigger")
+            near_miss_signals.append(_near_miss("B_PULLBACK_SHORT", ["needs_confirm_trigger"], blocked_reasons.copy()))
+
+    # C signals
+    if state_1h == "probe_long":
+        signals.append(
+            _build_signal(
+                signal="C_LEFT_LONG",
+                symbol=symbol,
+                direction="long",
+                priority=3,
+                latest_15m=latest_15m,
+                state_1h=state_1h,
+                background_4h=background_4h,
+                trigger_15m_state=trigger_long,
+                heat_profile=heat_profile,
+                structure_basis=state_basis,
+                status="early",
+                zone_low=long_zone[0],
+                zone_high=long_zone[1],
+                trigger_level=_float(latest_15m.get("close")),
+                eta_min_minutes=60,
+                eta_max_minutes=360,
+            )
+        )
+
+    if state_1h == "probe_short":
+        signals.append(
+            _build_signal(
+                signal="C_LEFT_SHORT",
+                symbol=symbol,
+                direction="short",
+                priority=3,
+                latest_15m=latest_15m,
+                state_1h=state_1h,
+                background_4h=background_4h,
+                trigger_15m_state=trigger_short,
+                heat_profile=heat_profile,
+                structure_basis=state_basis,
+                status="early",
+                zone_low=short_zone[0],
+                zone_high=short_zone[1],
+                trigger_level=_float(latest_15m.get("close")),
+                eta_min_minutes=60,
+                eta_max_minutes=360,
+            )
+        )
+
+    if not signals and not blocked_reasons:
+        blocked_reasons.append("no_actionable_signal")
+
+    # keep only best directional narrative if multiple ABC appear
+    if len(signals) > 1:
+        signals.sort(
+            key=lambda s: (
+                -int(s.get("priority", 99)),
+                -int(s.get("confidence", 0)),
+            )
+        )
+        top = signals[0]
+        signals = [s for s in signals if s["direction"] == top["direction"]]
+        signals.sort(key=lambda s: (int(s.get("priority", 99)), -int(s.get("confidence", 0))))
+
     return {
         "signals": signals,
         "near_miss_signals": near_miss_signals,
-        "blocked_reasons": blocked_reasons,
-        "background_4h_direction": background_4h_direction,
+        "background_4h_direction": background_4h,
         "state_1h": state_1h,
-        "trigger_15m_state": active_trigger,
+        "trigger_15m_state": trigger_display,
+        "tai_budget_mode": heat_profile["tai_budget_mode"],
         "tai_heat_1h": heat_profile["tai_heat_1h"],
         "tai_heat_4h": heat_profile["tai_heat_4h"],
-        "tai_budget_mode": heat_profile["tai_budget_mode"],
+        "blocked_reasons": blocked_reasons,
     }
