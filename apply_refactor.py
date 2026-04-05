@@ -552,7 +552,6 @@ def send_telegram_message(token: str, chat_id: str, text: str):
 ''',
 }
 
-
 def main():
     root = Path.cwd()
     for rel_path, content in FILES.items():

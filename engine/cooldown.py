@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
+
+from config import SMCT_SIGNAL_STATE_FILE
 
 
 class SignalStateStore:
@@ -14,7 +15,7 @@ class SignalStateStore:
         state_file: str | None = None,
     ):
         self.price_change_threshold = price_change_threshold
-        self.state_file = Path(state_file or os.getenv("SMCT_SIGNAL_STATE_FILE", "/opt/smct-alert/signal_state.json"))
+        self.state_file = Path(state_file or SMCT_SIGNAL_STATE_FILE)
         self.last_sent: dict[str, dict[str, Any]] = {}
         self._load()
 
@@ -28,7 +29,7 @@ class SignalStateStore:
     def _save(self) -> None:
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps(self.last_sent, ensure_ascii=False))
+            self.state_file.write_text(json.dumps(self.last_sent, ensure_ascii=False, indent=2))
         except Exception:
             pass
 
@@ -43,18 +44,16 @@ class SignalStateStore:
             return 2
         if signal_name.startswith("C_"):
             return 1
+        if signal_name.startswith("X_"):
+            return 4
         return 0
 
     def _family_key(self, signal: dict[str, Any]) -> str:
         if signal["signal"].startswith("X_"):
-            return f"X|{signal['symbol']}|{signal['timeframe']}|{signal['signal']}|{signal['direction']}"
-        return f"ABC|{signal['symbol']}|{signal['timeframe']}|{signal['direction']}"
-
-    def _phase_rank(self, phase_name: str) -> int:
-        return {"none": 0, "early": 1, "repair": 2, "continuation": 3}.get(phase_name, 0)
-
-    def _tai_bias_rank(self, tai_bias: str) -> int:
-        return {"drag": 0, "flat": 1, "support": 2, "drive": 3}.get(tai_bias, 1)
+            return f"X|{signal['symbol']}|{signal.get('timeframe','15m')}|{signal['signal']}|{signal.get('direction','na')}"
+        if signal.get("phase_anchor"):
+            return f"ABC|{signal['symbol']}|{signal.get('timeframe','15m')}|{signal.get('direction','na')}|{signal['phase_anchor']}"
+        return f"ABC|{signal['symbol']}|{signal.get('timeframe','15m')}|{signal.get('direction','na')}"
 
     def should_send(self, signal: dict[str, Any]) -> bool:
         key = self._family_key(signal)
@@ -65,72 +64,30 @@ class SignalStateStore:
         now = time.time()
         cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
         prev_sent_at = float(previous.get("sent_at", 0.0))
-        tiny_move = self._price_change_ratio(float(previous.get("price", 0.0)), float(signal.get("price", 0.0))) <= self.price_change_threshold
+        tiny_move = self._price_change_ratio(
+            float(previous.get("price", 0.0)),
+            float(signal.get("price", 0.0)),
+        ) <= self.price_change_threshold
 
-        if signal["signal"].startswith("X_"):
-            if signal.get("signature") == previous.get("signature") and now - prev_sent_at < cooldown_seconds:
-                return False
-            if tiny_move and now - prev_sent_at < cooldown_seconds:
-                return False
+        if now - prev_sent_at >= cooldown_seconds:
             return True
+
+        if signal.get("signature") and signal.get("signature") == previous.get("signature"):
+            return False
 
         prev_rank = int(previous.get("phase_rank", self._rank(previous.get("signal", ""))))
         curr_rank = int(signal.get("phase_rank", self._rank(signal.get("signal", ""))))
-        prev_phase_rank = self._phase_rank(previous.get("phase_name", ""))
-        curr_phase_rank = self._phase_rank(signal.get("phase_name", ""))
 
-        prev_anchor = str(previous.get("phase_anchor", ""))
-        curr_anchor = str(signal.get("phase_anchor", ""))
-        same_anchor = bool(prev_anchor) and prev_anchor == curr_anchor
+        if curr_rank > prev_rank:
+            return True
 
-        prev_tai_slot = str(previous.get("h1_tai_slot", ""))
-        curr_tai_slot = str(signal.get("h1_tai_slot", ""))
-        tai_slot_changed = bool(curr_tai_slot) and curr_tai_slot != prev_tai_slot
-        prev_tai_bias_rank = self._tai_bias_rank(str(previous.get("h1_tai_bias", "flat")))
-        curr_tai_bias_rank = self._tai_bias_rank(str(signal.get("h1_tai_bias", "flat")))
-        tai_cooperative = curr_tai_bias_rank >= 2 and (tai_slot_changed or curr_tai_bias_rank > prev_tai_bias_rank)
-
-        prev_label = previous.get("signal", "")
-        curr_label = signal.get("signal", "")
-
-        if curr_phase_rank < prev_phase_rank:
+        if curr_rank <= prev_rank and tiny_move:
             return False
 
-        if same_anchor:
-            # 同一段 1h 背景下，C 只允许出生一次；后续只能升级或静默结束。
-            if prev_rank == 1 and curr_rank == 1:
-                return False
-
-            # 同一段 1h 背景下，A/B 平级不复读，除非已经切到新的 1h TAI 节奏槽位且价格/签名有明显变化。
-            if curr_rank == prev_rank:
-                if curr_label == prev_label:
-                    return False
-                if now - prev_sent_at < cooldown_seconds and not tai_slot_changed:
-                    return False
-                if tiny_move and not tai_slot_changed:
-                    return False
-                return True
-
-            # 同一段升级，必须看到 1h TAI 配合；否则不允许 15m 自己把节奏顶上去。
-            if curr_rank > prev_rank:
-                if not tai_cooperative and curr_phase_rank <= prev_phase_rank:
-                    return False
-                if prev_rank == 1 and curr_rank >= 2 and not tai_cooperative:
-                    return False
-                return True
-
-            return False
-
-        # 跨 anchor 视为新一段 1h 背景，可以重新发。
-        if curr_rank < prev_rank and now - prev_sent_at < max(cooldown_seconds, 75 * 60):
-            return False
-        if tiny_move and now - prev_sent_at < cooldown_seconds and signal.get("phase_context") == previous.get("phase_context"):
-            return False
-        return True
+        return not tiny_move
 
     def mark_sent(self, signal: dict[str, Any]):
         key = self._family_key(signal)
-        now = time.time()
         self.last_sent[key] = {
             "signal": signal["signal"],
             "status": signal.get("status", "active"),
@@ -143,11 +100,6 @@ class SignalStateStore:
             "phase_anchor": signal.get("phase_anchor", ""),
             "h1_tai_bias": signal.get("h1_tai_bias", "flat"),
             "h1_tai_slot": signal.get("h1_tai_slot", ""),
-            "last_direction": signal.get("direction", ""),
-            "last_phase_1h": signal.get("phase_name", ""),
-            "last_label": signal.get("signal", ""),
-            "last_trigger_state": signal.get("trigger_state", ""),
-            "last_sent_ts": now,
-            "sent_at": now,
+            "sent_at": time.time(),
         }
         self._save()

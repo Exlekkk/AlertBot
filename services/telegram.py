@@ -1,70 +1,53 @@
+from __future__ import annotations
+
 import requests
 
 
-TYPE_LABELS = {
-    1: "A类",
-    2: "B类",
-    3: "C类",
-    4: "X类",
-}
+TYPE_LABELS = {1: "A类", 2: "B类", 3: "C类", 4: "X类"}
 
 ACTION_LABELS = {
-    "A_LONG": "顺势做多机会",
-    "A_SHORT": "顺势做空机会",
-    "B_PULLBACK_LONG": "回踩后做多机会",
-    "B_PULLBACK_SHORT": "反弹后做空机会",
-    "C_LEFT_LONG": "左侧预警做多机会",
-    "C_LEFT_SHORT": "左侧预警做空机会",
-    "X_BREAKOUT_LONG": "异动放量上破预警",
-    "X_BREAKOUT_SHORT": "异动放量下破预警",
+    "A_LONG": "顺势做多候选",
+    "A_SHORT": "顺势做空候选",
+    "B_PULLBACK_LONG": "回踩承接候选",
+    "B_PULLBACK_SHORT": "反弹承压候选",
+    "C_LEFT_LONG": "左侧试多观察",
+    "C_LEFT_SHORT": "左侧试空观察",
+    "X_BREAKOUT_LONG": "异动上破观察",
+    "X_BREAKOUT_SHORT": "异动下破观察",
 }
 
-MARKET_LABELS = {
-    "A_LONG": "盘口主升推进",
-    "A_SHORT": "盘口主跌推进",
-    "B_PULLBACK_LONG": "盘口修复承接",
-    "B_PULLBACK_SHORT": "盘口修复承压",
-    "C_LEFT_LONG": "盘口早期试多",
-    "C_LEFT_SHORT": "盘口早期试压",
-    "X_BREAKOUT_LONG": "盘口起涨上破",
-    "X_BREAKOUT_SHORT": "盘口起跌下破",
+STATE_LABELS = {
+    "trend_drive_long": "趋势推动偏多",
+    "trend_drive_short": "趋势推动偏空",
+    "repair_long": "修复后延续偏多",
+    "repair_short": "修复后延续偏空",
+    "probe_long": "早期试多",
+    "probe_short": "早期试空",
+    "range_neutral": "震荡/中性",
 }
 
-DEFAULT_CONFIDENCE = {
-    "A_LONG": 88,
-    "A_SHORT": 88,
-    "B_PULLBACK_LONG": 72,
-    "B_PULLBACK_SHORT": 72,
-    "C_LEFT_LONG": 64,
-    "C_LEFT_SHORT": 64,
-    "X_BREAKOUT_LONG": 90,
-    "X_BREAKOUT_SHORT": 90,
+TRIGGER_LABELS = {
+    "confirm_long": "15m触发已确认",
+    "confirm_short": "15m触发已确认",
+    "repairing_long": "15m处于修复转强",
+    "repairing_short": "15m处于修复转弱",
+    "probing_long": "15m早期试多",
+    "probing_short": "15m早期试空",
+    "idle": "15m暂无有效触发",
 }
 
-DEFAULT_START_WINDOWS = {
-    1: (5, 30),
-    2: (15, 120),
-    3: (60, 360),
-    4: (5, 120),
+BUDGET_LABELS = {
+    "expanded": "热度放行",
+    "normal": "热度正常",
+    "restricted": "热度受限",
+    "frozen": "热度冻结",
 }
+
+DEFAULT_START_WINDOWS = {1: (5, 30), 2: (15, 120), 3: (60, 360), 4: (5, 120)}
 
 
 def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
-
-
-def action_label(signal: str) -> str:
-    return ACTION_LABELS.get(signal, signal)
-
-
-def market_label(signal: str, abnormal_type: str | None = None) -> str:
-    if signal.startswith("X_") and abnormal_type:
-        return abnormal_type
-    return MARKET_LABELS.get(signal, signal)
-
-
-def title_prefix(priority: int) -> str:
-    return "🧨" if priority == 4 else "🚨"
 
 
 def _format_minutes_compact(minutes: int | None) -> str:
@@ -74,187 +57,118 @@ def _format_minutes_compact(minutes: int | None) -> str:
     if minutes < 60:
         return f"{minutes}m"
     hours, remain = divmod(minutes, 60)
-    if remain == 0:
-        return f"{hours}h"
-    return f"{hours}h{remain}m"
+    return f"{hours}h" if remain == 0 else f"{hours}h{remain}m"
 
 
-def _get_window_minutes(
-    priority: int,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-) -> tuple[int, int]:
-    default_min, default_max = DEFAULT_START_WINDOWS.get(priority, (15, 45))
-    start_min = int(eta_min_minutes) if eta_min_minutes is not None else default_min
-    end_min = int(eta_max_minutes) if eta_max_minutes is not None else default_max
-    start_min = max(0, start_min)
+def _observe_window(priority: int, eta_min_minutes: int | None = None, eta_max_minutes: int | None = None) -> str:
+    start_min, end_min = DEFAULT_START_WINDOWS.get(priority, (15, 45))
+    if eta_min_minutes is not None:
+        start_min = int(eta_min_minutes)
+    if eta_max_minutes is not None:
+        end_min = int(eta_max_minutes)
     end_min = max(start_min, end_min)
-    return start_min, end_min
+    return f"{_format_minutes_compact(start_min)} - {_format_minutes_compact(end_min)}"
 
 
-def build_observe_window_text(
-    priority: int,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-    legacy_text: str | None = None,
-) -> str:
-    if legacy_text:
-        return legacy_text
-    start_min, end_min = _get_window_minutes(priority, eta_min_minutes, eta_max_minutes)
-    start_text = _format_minutes_compact(start_min)
-    end_text = _format_minutes_compact(end_min)
-    return f"{start_text} - {end_text}"
-
-
-def build_status_text(signal: str, status: str) -> str:
-    if signal == "A_LONG":
-        return "已满足突破确认，等待顺势执行"
-    if signal == "A_SHORT":
-        return "已满足跌破确认，等待顺势执行"
-    if signal == "B_PULLBACK_LONG":
-        return "回踩条件满足，等待延续确认"
-    if signal == "B_PULLBACK_SHORT":
-        return "反弹条件满足，等待延续确认"
-    if signal in ("C_LEFT_LONG", "C_LEFT_SHORT"):
-        return "前提初步满足，处于早期观察阶段"
-    if signal in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
-        return "异动已触发，进入特别关注阶段"
-    if status == "active":
-        return "条件已满足，等待执行"
-    if status == "early":
-        return "前提初步满足，处于观察阶段"
-    return status
-
-
-def _normalized_zone(
-    entry_zone_low: float | None,
-    entry_zone_high: float | None,
-    price: float,
-) -> tuple[float, float]:
-    if entry_zone_low is None or entry_zone_high is None:
+def _normalized_zone(low: float | None, high: float | None, price: float) -> tuple[float, float]:
+    if low is None or high is None:
         pad = max(abs(float(price)) * 0.0012, 12.0)
         low = float(price) - pad * 0.5
         high = float(price) + pad * 0.5
-    else:
-        low = min(float(entry_zone_low), float(entry_zone_high))
-        high = max(float(entry_zone_low), float(entry_zone_high))
-        if abs(high - low) < max(abs(float(price)) * 0.0008, 8.0):
-            pad = max(abs(float(price)) * 0.0012, 12.0)
-            low -= pad * 0.5
-            high += pad * 0.5
+    low, high = min(float(low), float(high)), max(float(low), float(high))
     return low, high
 
 
-def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
-    low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
-    return f"{low:.2f} - {high:.2f}"
+def _confidence_text(signal: dict) -> str:
+    value = int(signal.get("confidence", 0) or 0)
+    if value >= 85:
+        band = "高"
+    elif value >= 70:
+        band = "中高"
+    elif value >= 58:
+        band = "中"
+    else:
+        band = "观察"
+    return f"{band}({value})"
 
 
-def _pick_key_level(signal: str, low: float, high: float, trigger_level: float | None) -> float:
-    if trigger_level is not None:
-        return float(trigger_level)
-    if signal in {"A_SHORT", "B_PULLBACK_LONG", "C_LEFT_LONG", "X_BREAKOUT_LONG"}:
-        return low
-    return high
+def _basis_text(structure_basis: list[str] | None) -> str:
+    if not structure_basis:
+        return "结构依据不足，更多偏观察"
+    mapping = {
+        "smc_bos_up": "SMC上破结构",
+        "smc_bos_down": "SMC下破结构",
+        "ict_mss_up": "ICT偏多MSS",
+        "ict_mss_down": "ICT偏空MSS",
+        "support_zone": "位于支撑/承接区",
+        "resistance_zone": "位于阻力/承压区",
+        "trigger_repair": "15m修复触发出现",
+        "ema_support": "EMA背景未明显对冲",
+        "ema_resistance": "EMA背景未明显对冲",
+        "early_warning": "出现早期预警信号",
+        "probing_trigger": "15m已有试探动作",
+    }
+    return "、".join(mapping.get(x, x) for x in structure_basis[:4])
 
 
-def _zone_field_name(signal: str) -> str:
-    if signal.startswith("A_"):
-        return "区间"
-    if signal == "B_PULLBACK_LONG":
-        return "承接区"
-    if signal == "B_PULLBACK_SHORT":
-        return "反抽区"
-    if signal.startswith("C_"):
-        return "关注区"
-    return "观察区"
+def _status_line(signal: dict) -> str:
+    state_1h = STATE_LABELS.get(signal.get("state_1h", ""), signal.get("state_1h", "未知状态"))
+    trigger = TRIGGER_LABELS.get(signal.get("trigger_15m_state", ""), signal.get("trigger_15m_state", "未知触发"))
+    budget = BUDGET_LABELS.get(signal.get("tai_budget_mode", "normal"), signal.get("tai_budget_mode", "normal"))
+    return f"1h状态：{state_1h}｜15m触发：{trigger}｜TAI：{budget}"
 
 
-def _watch_field_name(signal: str) -> str:
-    if signal == "X_BREAKOUT_LONG":
-        return "回踩观察区"
-    if signal == "X_BREAKOUT_SHORT":
-        return "反抽观察区"
-    return _zone_field_name(signal)
+def format_engine_message(signal: dict) -> str:
+    name = signal.get("signal", "")
+    priority = int(signal.get("priority", 1) or 1)
+    symbol = signal.get("symbol", "BTCUSDT")
+    direction = signal.get("direction", "")
+    price = float(signal.get("price", 0.0) or 0.0)
+    low, high = _normalized_zone(signal.get("entry_zone_low"), signal.get("entry_zone_high"), price)
+    key_level = float(signal.get("trigger_level") or signal.get("breakout_level") or (low if direction == "long" else high))
+    title = "🧨 异动观察" if name.startswith("X_") else "🚨 读盘提示"
+    action = ACTION_LABELS.get(name, name)
+    confidence = _confidence_text(signal)
+    basis = _basis_text(signal.get("structure_basis"))
+    observe = _observe_window(priority, signal.get("eta_min_minutes"), signal.get("eta_max_minutes"))
+
+    lines = [
+        f"{title}｜{type_label(priority)}｜{symbol}",
+        f"方向：{action}｜{confidence}",
+        _status_line(signal),
+        f"当前价：{price:.2f}",
+        f"观察区：{low:.2f} - {high:.2f}",
+        f"关键位：{key_level:.2f}",
+        f"依据：{basis}",
+        f"观察窗：{observe}",
+    ]
+
+    abnormal_type = signal.get("abnormal_type")
+    if abnormal_type:
+        lines.append(f"异动类型：{abnormal_type}")
+
+    if signal.get("freeze_mode"):
+        lines.append("备注：当前热度冻结，除明显异动外不建议高频追单")
+    elif signal.get("heat_restricted"):
+        lines.append("备注：当前热度受限，优先等待更干净的结构确认")
+
+    return "\n".join(lines)
 
 
-def _confidence_text(signal: str, confidence: int | float | None) -> str:
-    value = confidence if confidence is not None else DEFAULT_CONFIDENCE.get(signal, 70)
-    try:
-        value = int(round(float(value)))
-    except Exception:
-        value = DEFAULT_CONFIDENCE.get(signal, 70)
-    value = max(1, min(99, value))
-    return f"置信度{value}"
-
-
-def format_engine_message(
-    signal: str,
-    symbol: str,
-    timeframe: str,
-    priority: int,
-    price: float,
-    trend_1h: str,
-    status: str,
-    entry_zone_low: float | None = None,
-    entry_zone_high: float | None = None,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-    trigger_level: float | None = None,
-    burst_level: float | None = None,
-    abnormal_type: str | None = None,
-    start_window_text_value: str | None = None,
-    start_window_text: str | None = None,
-    confidence: int | float | None = None,
-    **_: object,
-) -> str:
-    signal_type = type_label(priority)
-    prefix = title_prefix(priority)
-    action_text = action_label(signal)
-    market_text = market_label(signal, abnormal_type=abnormal_type)
-    confidence_text = _confidence_text(signal, confidence)
-    status_text = build_status_text(signal, status)
-    observe_text = build_observe_window_text(
-        priority,
-        eta_min_minutes,
-        eta_max_minutes,
-        legacy_text=start_window_text_value or start_window_text,
-    )
-
-    low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
-    zone_value = f"{low:.2f} - {high:.2f}"
-    key_level = _pick_key_level(signal, low, high, trigger_level)
-
-    header = f"{prefix} {'异动预警' if priority == 4 else '交易提示'}｜{signal_type}｜{symbol}"
-    background = f"背景：{action_text}｜{market_text}｜{confidence_text}"
-
-    if priority == 4 and signal in {"X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"}:
-        watch_field = _watch_field_name(signal)
-        return (
-            f"{header}\n"
-            f"{background}\n"
-            f"关键位：{key_level:.2f}\n"
-            f"{watch_field}：{zone_value}\n"
-            f"观察：{observe_text}\n"
-            f"状态：{status_text}"
-        )
-
-    zone_field = _zone_field_name(signal)
+def format_webhook_message(signal: str, symbol: str, timeframe: str, direction: str = "unknown") -> str:
+    direction_text = direction if direction and direction != "unknown" else "外部方向未注明"
     return (
-        f"{header}\n"
-        f"{background}\n"
-        f"{zone_field}：{zone_value}\n"
-        f"关键位：{key_level:.2f}\n"
-        f"观察：{observe_text}\n"
-        f"状态：{status_text}"
+        f"📩 外部Webhook信号｜{symbol}\n"
+        f"信号：{signal}\n"
+        f"周期：{timeframe}\n"
+        f"方向：{direction_text}\n"
+        f"说明：该消息来自外部触发源，未经过SMCT内部多周期分层解释。"
     )
 
 
 def send_telegram_message(token: str, chat_id: str, text: str):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-    }
+    payload = {"chat_id": chat_id, "text": text}
     response = requests.post(url, json=payload, timeout=20)
+    response.raise_for_status()
     return response.text
