@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
-from config import BINANCE_SYMBOL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
+from config import (
+    BINANCE_SYMBOL,
+    FREEZE_MODE_SEND_X_ONLY,
+    KLINE_LIMIT,
+    SEND_NEAR_MISS_SUMMARY,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    WEBHOOK_LOG_FILE,
+)
 from engine.abnormal import detect_abnormal_signals
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
+from engine.runtime_state import RuntimeStateStore
 from engine.signals import detect_signals
 from services.logger import get_logger
 from services.telegram import format_engine_message, send_telegram_message
@@ -17,10 +27,11 @@ class SMCTScanner:
         self.symbol = symbol
         self.market_data = BinanceMarketDataClient()
         self.state_store = SignalStateStore()
+        self.runtime_state = RuntimeStateStore()
         self.logger = get_logger("scanner", WEBHOOK_LOG_FILE)
 
     def _fetch_enriched(self, interval: str) -> list[dict]:
-        klines = self.market_data.get_klines(self.symbol, interval=interval, limit=300)
+        klines = self.market_data.get_klines(self.symbol, interval=interval, limit=KLINE_LIMIT)
         return enrich_klines(klines[:-1])
 
     @staticmethod
@@ -35,25 +46,20 @@ class SMCTScanner:
             high += pad * 0.5
         return round(low, 2), round(high, 2)
 
-    def _build_entry_zone(self, signal: dict, klines_15m: list[dict]) -> tuple[float, float]:
+    def _build_entry_zone(self, signal: dict[str, Any], klines_15m: list[dict]) -> tuple[float, float]:
         zone_low = signal.get("zone_low")
         zone_high = signal.get("zone_high")
         if zone_low is not None and zone_high is not None:
             return self._safe_band(zone_low, zone_high)
 
         latest = klines_15m[-1]
-        recent_6 = klines_15m[-6:]
         recent_8 = klines_15m[-8:]
-
         price = float(signal["price"])
         atr = max(float(latest.get("atr", 0.0)), price * 0.0015)
         ema10 = float(latest["ema10"])
         ema20 = float(latest["ema20"])
         recent_support = min(float(k["low"]) for k in recent_8)
         recent_resistance = max(float(k["high"]) for k in recent_8)
-        local_reclaim = max(float(k["close"]) for k in recent_6[:-1]) if len(recent_6) > 1 else price
-        local_reject = min(float(k["close"]) for k in recent_6[:-1]) if len(recent_6) > 1 else price
-
         signal_name = signal["signal"]
 
         if signal_name == "A_LONG":
@@ -61,9 +67,9 @@ class SMCTScanner:
         if signal_name == "A_SHORT":
             return self._safe_band(min(ema10, ema20, price + atr * 0.05), max(ema10, ema20, price + atr * 0.35))
         if signal_name == "B_PULLBACK_LONG":
-            return self._safe_band(min(ema10, ema20, recent_support) - atr * 0.10, max(ema10, ema20, local_reclaim) + atr * 0.08)
+            return self._safe_band(min(ema10, ema20, recent_support) - atr * 0.10, max(ema10, ema20) + atr * 0.08)
         if signal_name == "B_PULLBACK_SHORT":
-            return self._safe_band(min(ema10, ema20, local_reject) - atr * 0.08, max(ema10, ema20, recent_resistance) + atr * 0.10)
+            return self._safe_band(min(ema10, ema20) - atr * 0.08, max(ema10, ema20, recent_resistance) + atr * 0.10)
         if signal_name == "C_LEFT_LONG":
             return self._safe_band(min(recent_support, ema20) - atr * 0.18, max(ema10, ema20) + atr * 0.10)
         if signal_name == "C_LEFT_SHORT":
@@ -74,126 +80,191 @@ class SMCTScanner:
             return self._safe_band(min(ema10, recent_support) - atr * 0.08, max(ema10, ema20, price + atr * 1.10))
         return self._safe_band(price - atr * 0.12, price + atr * 0.12)
 
-    def health_check(self) -> dict:
-        klines_1d = self._fetch_enriched("1d")
-        klines_4h = self._fetch_enriched("4h")
-        klines_1h = self._fetch_enriched("1h")
-        klines_15m = self._fetch_enriched("15m")
+    def _prepare_signal(self, signal: dict[str, Any], klines_15m: list[dict]) -> dict[str, Any]:
+        low, high = self._build_entry_zone(signal, klines_15m)
+        merged = dict(signal)
+        merged["entry_zone_low"] = low
+        merged["entry_zone_high"] = high
+        merged.setdefault("trigger_level", signal.get("breakout_level"))
+        merged.setdefault("timeframe", "15m")
+        merged.setdefault("phase_name", self._phase_name_from_signal(signal.get("signal", ""), signal.get("state_1h", "")))
+        merged.setdefault("phase_rank", self._phase_rank_from_signal(signal.get("signal", "")))
+        merged.setdefault("phase_context", signal.get("state_1h", "") or signal.get("status", "active"))
+        merged.setdefault("phase_anchor", self._phase_anchor(signal))
+        merged.setdefault("cooldown_seconds", self._cooldown_for(signal))
+        merged.setdefault("narrative_kind", self._narrative_kind(signal))
+        return merged
 
-        signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-        base_signals = [s for s in signal_result.get("signals", []) if not s["signal"].startswith("X_")]
-        x_signals = detect_abnormal_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+    @staticmethod
+    def _phase_name_from_signal(signal_name: str, state_1h: str) -> str:
+        if signal_name.startswith("A_") or "trend_drive" in state_1h:
+            return "continuation"
+        if signal_name.startswith("B_") or "repair" in state_1h:
+            return "repair"
+        if signal_name.startswith("C_") or "probe" in state_1h:
+            return "early"
+        if signal_name.startswith("X_"):
+            return "abnormal"
+        return "none"
 
+    @staticmethod
+    def _phase_rank_from_signal(signal_name: str) -> int:
+        if signal_name.startswith("A_"):
+            return 3
+        if signal_name.startswith("B_"):
+            return 2
+        if signal_name.startswith("C_"):
+            return 1
+        if signal_name.startswith("X_"):
+            return 4
+        return 0
+
+    @staticmethod
+    def _phase_anchor(signal: dict[str, Any]) -> str:
+        state_1h = signal.get("state_1h", "")
+        direction = signal.get("direction", "na")
+        bg = signal.get("background_4h_direction", "neutral")
+        heat = signal.get("tai_heat_1h", "neutral")
+        return f"{state_1h}|{direction}|{bg}|{heat}"
+
+    @staticmethod
+    def _cooldown_for(signal: dict[str, Any]) -> int:
+        name = signal.get("signal", "")
+        if name.startswith("X_"):
+            return 1800
+        if name.startswith("A_"):
+            return 2400
+        if name.startswith("B_"):
+            return 1800
+        return 3600
+
+    @staticmethod
+    def _narrative_kind(signal: dict[str, Any]) -> str:
+        state_1h = signal.get("state_1h", "")
+        if state_1h.startswith("trend_drive"):
+            return "main"
+        if state_1h.startswith("repair"):
+            return "repair"
+        if state_1h.startswith("probe"):
+            return "early"
+        if signal.get("signal", "").startswith("X_"):
+            return "abnormal"
+        return "watch"
+
+    def _build_runtime_summary(
+        self,
+        signal_result: dict[str, Any],
+        sent_signals: list[dict[str, Any]],
+        x_signals: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         return {
-            "ok": True,
             "symbol": self.symbol,
-            "bars": {
-                "1d": len(klines_1d),
-                "4h": len(klines_4h),
-                "1h": len(klines_1h),
-                "15m": len(klines_15m),
-            },
-            "signals_checked": len(base_signals) + len(x_signals),
-            "watch_checked": 0,
+            "background_4h_direction": signal_result.get("background_4h_direction"),
+            "state_1h": signal_result.get("state_1h"),
+            "trigger_15m_state": signal_result.get("trigger_15m_state"),
+            "tai_budget_mode": signal_result.get("tai_budget_mode"),
+            "tai_heat_1h": signal_result.get("tai_heat_1h"),
+            "tai_heat_4h": signal_result.get("tai_heat_4h"),
+            "blocked_reasons": signal_result.get("blocked_reasons", []),
+            "signals_detected": [s.get("signal") for s in signal_result.get("signals", [])],
+            "x_signals_detected": [s.get("signal") for s in x_signals],
+            "signals_sent": [s.get("signal") for s in sent_signals],
         }
 
-    def scan_once(self) -> dict:
+    def _select_candidates(
+        self,
+        signal_result: dict[str, Any],
+        x_signals: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        base_signals = [s for s in signal_result.get("signals", []) if not s.get("signal", "").startswith("X_")]
+        budget = signal_result.get("tai_budget_mode", "normal")
+        if budget == "frozen" and FREEZE_MODE_SEND_X_ONLY:
+            return list(x_signals)
+        candidates = list(base_signals)
+        if budget != "frozen":
+            candidates.extend(x_signals)
+        return candidates
+
+    def health_check(self) -> dict[str, Any]:
+        snapshot = self.runtime_state.build_health_payload()
+        return {
+            "ok": snapshot.get("ok", False),
+            "symbol": self.symbol,
+            "runtime": snapshot,
+        }
+
+    def run_once(self) -> dict[str, Any]:
         try:
+            self.logger.info("scanner_started symbol=%s interval=%s", self.symbol, 60)
+
             klines_1d = self._fetch_enriched("1d")
             klines_4h = self._fetch_enriched("4h")
             klines_1h = self._fetch_enriched("1h")
             klines_15m = self._fetch_enriched("15m")
 
             signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-
-            base_signals = signal_result["signals"]
-            abc_signals = [s for s in base_signals if not s["signal"].startswith("X_")]
             x_signals = detect_abnormal_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+            candidates = self._select_candidates(signal_result, x_signals)
 
-            signals = abc_signals + x_signals
-            near_miss_signals = signal_result["near_miss_signals"]
-            blocked_reasons = signal_result["blocked_reasons"]
+            sent_signals: list[dict[str, Any]] = []
 
-            sent_signals = []
-            for signal in signals:
+            for raw_signal in candidates:
+                signal = self._prepare_signal(raw_signal, klines_15m)
+
                 if not self.state_store.should_send(signal):
                     self.logger.info(
-                        "scan_state_skip symbol=%s signal=%s direction=%s",
-                        signal["symbol"],
-                        signal["signal"],
-                        signal["direction"],
+                        "signal_suppressed symbol=%s signal=%s state=%s trigger=%s budget=%s",
+                        self.symbol,
+                        signal.get("signal"),
+                        signal.get("state_1h"),
+                        signal.get("trigger_15m_state"),
+                        signal.get("tai_budget_mode"),
                     )
                     continue
 
-                entry_zone_low, entry_zone_high = self._build_entry_zone(signal, klines_15m)
-                text = format_engine_message(
-                    signal=signal["signal"],
-                    symbol=signal["symbol"],
-                    timeframe=signal["timeframe"],
-                    priority=signal["priority"],
-                    price=signal["price"],
-                    trend_1h=signal["trend_1h"],
-                    status=signal["status"],
-                    entry_zone_low=entry_zone_low,
-                    entry_zone_high=entry_zone_high,
-                    start_window_text=signal.get("start_window_text"),
-                    eta_min_minutes=signal.get("eta_min_minutes"),
-                    eta_max_minutes=signal.get("eta_max_minutes"),
-                    trigger_level=signal.get("breakout_level"),
-                    abnormal_type=signal.get("abnormal_type"),
-                    confidence=signal.get("confidence") or signal.get("x_confidence"),
-                )
-                telegram_result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text)
+                message = format_engine_message(signal)
+                result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
                 self.state_store.mark_sent(signal)
-                sent_signals.append(
-                    {
-                        "signal": signal["signal"],
-                        "entry_zone": [entry_zone_low, entry_zone_high],
-                        "telegram_result": telegram_result,
-                    }
-                )
+                self.runtime_state.mark_sent_signal(signal)
+                sent_signals.append(signal)
+
                 self.logger.info(
-                    "scan_signal_sent symbol=%s signal=%s entry_zone=[%.2f, %.2f] basis=%s",
-                    signal["symbol"],
-                    signal["signal"],
-                    entry_zone_low,
-                    entry_zone_high,
-                    signal.get("structure_basis"),
+                    "signal_sent symbol=%s signal=%s state=%s trigger=%s budget=%s result=%s",
+                    self.symbol,
+                    signal.get("signal"),
+                    signal.get("state_1h"),
+                    signal.get("trigger_15m_state"),
+                    signal.get("tai_budget_mode"),
+                    result,
                 )
 
-            if not sent_signals:
+            if SEND_NEAR_MISS_SUMMARY and signal_result.get("near_miss_signals"):
                 self.logger.info(
-                    "scan_no_signal symbol=%s near_miss_signals=%s blocked_reasons=%s",
+                    "near_miss symbol=%s payload=%s",
                     self.symbol,
-                    near_miss_signals,
-                    blocked_reasons,
+                    signal_result.get("near_miss_signals"),
                 )
-                return {
-                    "ok": True,
-                    "signal": None,
-                    "near_miss_signals": near_miss_signals,
-                    "blocked_reasons": blocked_reasons,
-                }
+
+            summary = self._build_runtime_summary(signal_result, sent_signals, x_signals)
+            self.runtime_state.mark_scan(ok=True, symbol=self.symbol, summary=summary)
 
             self.logger.info(
-                "scan_summary symbol=%s sent_signals=%s near_miss_signals=%s blocked_reasons=%s",
+                "scan_cycle_complete symbol=%s state_1h=%s trigger=%s budget=%s sent=%s",
                 self.symbol,
-                sent_signals,
-                near_miss_signals,
-                blocked_reasons,
+                summary.get("state_1h"),
+                summary.get("trigger_15m_state"),
+                summary.get("tai_budget_mode"),
+                len(sent_signals),
             )
-            return {
-                "ok": True,
-                "sent": sent_signals,
-                "near_miss_signals": near_miss_signals,
-                "blocked_reasons": blocked_reasons,
-            }
+
+            return {"ok": True, "summary": summary, "sent": len(sent_signals)}
+
         except Exception as exc:
-            self.logger.exception("scan_failed error=%s", exc)
+            self.logger.exception("scanner_run_failed symbol=%s error=%s", self.symbol, exc)
+            self.runtime_state.mark_scan(ok=False, symbol=self.symbol, summary={}, error=str(exc))
             return {"ok": False, "error": str(exc)}
 
-    def run_forever(self, interval_seconds: int):
-        self.logger.info("scanner_started symbol=%s interval=%s", self.symbol, interval_seconds)
+    def run_forever(self, interval_seconds: int = 60):
         while True:
-            self.scan_once()
+            self.run_once()
             time.sleep(interval_seconds)
