@@ -20,25 +20,25 @@ ACTION_LABELS = {
 }
 
 MARKET_LABELS = {
-    "A_LONG": "盘口主升推进",
-    "A_SHORT": "盘口主跌推进",
+    "A_LONG": "盘口多头推进",
+    "A_SHORT": "盘口空头推进",
     "B_PULLBACK_LONG": "盘口修复承接",
     "B_PULLBACK_SHORT": "盘口修复承压",
     "C_LEFT_LONG": "盘口早期试多",
-    "C_LEFT_SHORT": "盘口早期试压",
+    "C_LEFT_SHORT": "盘口早期试空",
     "X_BREAKOUT_LONG": "盘口异动上破",
     "X_BREAKOUT_SHORT": "盘口异动下破",
 }
 
 DEFAULT_CONFIDENCE = {
-    "A_LONG": 88,
-    "A_SHORT": 88,
-    "B_PULLBACK_LONG": 72,
-    "B_PULLBACK_SHORT": 72,
-    "C_LEFT_LONG": 64,
-    "C_LEFT_SHORT": 64,
-    "X_BREAKOUT_LONG": 60,
-    "X_BREAKOUT_SHORT": 60,
+    "A_LONG": 82,
+    "A_SHORT": 82,
+    "B_PULLBACK_LONG": 70,
+    "B_PULLBACK_SHORT": 70,
+    "C_LEFT_LONG": 60,
+    "C_LEFT_SHORT": 60,
+    "X_BREAKOUT_LONG": 56,
+    "X_BREAKOUT_SHORT": 56,
 }
 
 DEFAULT_START_WINDOWS = {
@@ -94,16 +94,14 @@ def build_observe_window_text(
     eta_max_minutes: int | None = None,
 ) -> str:
     start_min, end_min = _get_window_minutes(priority, eta_min_minutes, eta_max_minutes)
-    start_text = _format_minutes_compact(start_min)
-    end_text = _format_minutes_compact(end_min)
-    return f"{start_text} - {end_text}"
+    return f"{_format_minutes_compact(start_min)}-{_format_minutes_compact(end_min)}"
 
 
 def build_status_text(signal: str, status: str) -> str:
     if signal == "A_LONG":
-        return "突破条件满足，等待顺势确认"
+        return "趋势条件满足，等待延续确认"
     if signal == "A_SHORT":
-        return "跌破条件满足，等待顺势确认"
+        return "趋势条件满足，等待延续确认"
     if signal == "B_PULLBACK_LONG":
         return "回踩条件满足，等待延续确认"
     if signal == "B_PULLBACK_SHORT":
@@ -111,11 +109,11 @@ def build_status_text(signal: str, status: str) -> str:
     if signal in ("C_LEFT_LONG", "C_LEFT_SHORT"):
         return "早期条件出现，先观察"
     if signal in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
-        return "异动出现，观察是否延续"
+        return "异动出现，先观察"
     if status == "active":
         return "条件满足，等待执行"
     if status == "early":
-        return "早期信号，先观察"
+        return "条件满足，等待延续确认"
     return "保持观察"
 
 
@@ -157,71 +155,52 @@ def _pick_key_level(
     return min(price, low)
 
 
-def _confidence(signal: dict) -> int:
-    value = signal.get("confidence")
-    if value is None:
-        return DEFAULT_CONFIDENCE.get(signal.get("signal", ""), 68)
+def _safe_int(value, default: int) -> int:
     try:
         return int(value)
     except Exception:
-        return DEFAULT_CONFIDENCE.get(signal.get("signal", ""), 68)
+        return default
 
 
-def _state_text(signal: dict) -> str:
-    state_1h = signal.get("state_1h", "")
-    trigger = signal.get("trigger_15m_state", "")
-    budget = signal.get("tai_budget_mode", "")
+def _display_confidence(signal: dict) -> int:
+    signal_name = str(signal.get("signal", ""))
+    base = _safe_int(signal.get("confidence"), DEFAULT_CONFIDENCE.get(signal_name, 66))
+    if base <= 0:
+        base = DEFAULT_CONFIDENCE.get(signal_name, 66)
 
-    state_map = {
-        "trend_drive_long": "趋势推动偏多",
-        "trend_drive_short": "趋势推动偏空",
-        "repair_long": "修复后延续偏多",
-        "repair_short": "修复后延续偏空",
-        "probe_long": "早期试多",
-        "probe_short": "早期试空",
-        "range_neutral": "震荡中性",
-    }
-    trigger_map = {
-        "confirm_long": "15m触发已确认",
-        "confirm_short": "15m触发已确认",
-        "repairing_long": "15m修复触发出现",
-        "repairing_short": "15m修复触发出现",
-        "probing_long": "15m早期试多",
-        "probing_short": "15m早期试空",
-        "idle": "15m触发未出现",
-    }
-    budget_map = {
-        "expanded": "热度放行",
-        "normal": "热度正常",
-        "restricted": "热度受限",
-        "frozen": "热度冻结",
-    }
+    budget = str(signal.get("tai_budget_mode", "normal"))
+    trigger = str(signal.get("trigger_15m_state", ""))
+    status = str(signal.get("status", "active"))
 
-    state_text = state_map.get(state_1h, "未知状态")
-    trigger_text = trigger_map.get(trigger, "未知触发")
-    budget_text = budget_map.get(budget, "热度未知")
-    return f"1h状态：{state_text} | 15m触发：{trigger_text} | TAI：{budget_text}"
+    # 先按预算降档
+    if budget == "restricted":
+        base -= 8
+    elif budget == "frozen":
+        base -= 14
 
+    # 再按触发质量降档
+    if trigger.startswith("repairing"):
+        base -= 3
+    elif trigger.startswith("probing") or trigger == "idle":
+        base -= 7
 
-def _basis_text(signal: dict) -> str:
-    basis = signal.get("structure_basis") or []
-    if not basis:
-        return "结构依据不足"
+    # early 状态不能太高
+    if status == "early":
+        base -= 4
 
-    mapping = {
-        "smc_bos_up": "SMC上破结构",
-        "smc_bos_down": "SMC下破结构",
-        "ict_mss_up": "ICT偏多MSS",
-        "ict_mss_down": "ICT偏空MSS",
-        "support_zone": "位于支撑/承接区",
-        "resistance_zone": "位于阻力/承压区",
-        "trigger_repair": "15m修复触发出现",
-        "ema_support": "EMA背景未明显对冲",
-        "ema_resistance": "EMA背景未明显对冲",
-        "early_warning": "出现早期预警",
-        "probing_trigger": "15m已有试探动作",
-    }
-    return "，".join(mapping.get(x, x) for x in basis[:3])
+    # 各类信号分别限制上限下限，避免 A 乱上 89，也避免 X 变 0
+    if signal_name.startswith("A_"):
+        base = max(66, min(86, base))
+    elif signal_name.startswith("B_"):
+        base = max(60, min(76, base))
+    elif signal_name.startswith("C_"):
+        base = max(52, min(66, base))
+    elif signal_name.startswith("X_"):
+        base = max(48, min(62, base))
+    else:
+        base = max(50, min(80, base))
+
+    return base
 
 
 def format_engine_message(signal: dict) -> str:
@@ -229,20 +208,14 @@ def format_engine_message(signal: dict) -> str:
     symbol = signal.get("symbol", "BTCUSDT")
     priority = int(signal.get("priority", 1) or 1)
     price = float(signal.get("price", 0.0) or 0.0)
-    confidence = _confidence(signal)
+    confidence = _display_confidence(signal)
 
     low, high = _normalized_zone(
         signal.get("entry_zone_low", signal.get("zone_low")),
         signal.get("entry_zone_high", signal.get("zone_high")),
         price,
     )
-    key_level = _pick_key_level(
-        signal_name,
-        low,
-        high,
-        signal.get("trigger_level"),
-        price,
-    )
+    key_level = _pick_key_level(signal_name, low, high, signal.get("trigger_level"), price)
 
     title = "异动观察" if signal_name.startswith("X_") else "交易提示"
     background = action_label(signal_name)
