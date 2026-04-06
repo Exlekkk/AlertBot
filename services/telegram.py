@@ -30,17 +30,6 @@ MARKET_LABELS = {
     "X_BREAKOUT_SHORT": "盘口异动下破",
 }
 
-DEFAULT_CONFIDENCE = {
-    "A_LONG": 82,
-    "A_SHORT": 82,
-    "B_PULLBACK_LONG": 70,
-    "B_PULLBACK_SHORT": 70,
-    "C_LEFT_LONG": 60,
-    "C_LEFT_SHORT": 60,
-    "X_BREAKOUT_LONG": 56,
-    "X_BREAKOUT_SHORT": 56,
-}
-
 DEFAULT_START_WINDOWS = {
     1: (5, 30),
     2: (15, 120),
@@ -155,52 +144,13 @@ def _pick_key_level(
     return min(price, low)
 
 
-def _safe_int(value, default: int) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
 def _display_confidence(signal: dict) -> int:
-    signal_name = str(signal.get("signal", ""))
-    base = _safe_int(signal.get("confidence"), DEFAULT_CONFIDENCE.get(signal_name, 66))
-    if base <= 0:
-        base = DEFAULT_CONFIDENCE.get(signal_name, 66)
-
-    budget = str(signal.get("tai_budget_mode", "normal"))
-    trigger = str(signal.get("trigger_15m_state", ""))
-    status = str(signal.get("status", "active"))
-
-    # 先按预算降档
-    if budget == "restricted":
-        base -= 8
-    elif budget == "frozen":
-        base -= 14
-
-    # 再按触发质量降档
-    if trigger.startswith("repairing"):
-        base -= 3
-    elif trigger.startswith("probing") or trigger == "idle":
-        base -= 7
-
-    # early 状态不能太高
-    if status == "early":
-        base -= 4
-
-    # 各类信号分别限制上限下限，避免 A 乱上 89，也避免 X 变 0
-    if signal_name.startswith("A_"):
-        base = max(66, min(86, base))
-    elif signal_name.startswith("B_"):
-        base = max(60, min(76, base))
-    elif signal_name.startswith("C_"):
-        base = max(52, min(66, base))
-    elif signal_name.startswith("X_"):
-        base = max(48, min(62, base))
-    else:
-        base = max(50, min(80, base))
-
-    return base
+    value = signal.get("confidence")
+    try:
+        v = int(value)
+    except Exception:
+        v = 60
+    return max(48, min(89, v))
 
 
 def format_engine_message(signal: dict) -> str:
