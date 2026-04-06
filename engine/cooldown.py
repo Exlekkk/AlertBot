@@ -11,7 +11,7 @@ from config import SMCT_SIGNAL_STATE_FILE
 class SignalStateStore:
     def __init__(
         self,
-        price_change_threshold: float = 0.001,
+        price_change_threshold: float = 0.0015,
         state_file: str | None = None,
     ):
         self.price_change_threshold = price_change_threshold
@@ -37,69 +37,144 @@ class SignalStateStore:
         base = max(abs(previous_price), 1e-9)
         return abs(current_price - previous_price) / base
 
-    def _rank(self, signal_name: str) -> int:
+    def _signal_rank(self, signal_name: str) -> int:
         if signal_name.startswith("A_"):
-            return 3
-        if signal_name.startswith("B_"):
-            return 2
-        if signal_name.startswith("C_"):
-            return 1
-        if signal_name.startswith("X_"):
             return 4
+        if signal_name.startswith("B_"):
+            return 3
+        if signal_name.startswith("C_"):
+            return 2
+        if signal_name.startswith("X_"):
+            return 1
         return 0
 
+    def _phase_rank(self, phase_name: str) -> int:
+        return {
+            "none": 0,
+            "early": 1,
+            "repair": 2,
+            "continuation": 3,
+            "abnormal": 1,
+            "external": 1,
+        }.get(phase_name, 0)
+
     def _family_key(self, signal: dict[str, Any]) -> str:
-        if signal["signal"].startswith("X_"):
-            return f"X|{signal['symbol']}|{signal.get('timeframe','15m')}|{signal['signal']}|{signal.get('direction','na')}"
-        if signal.get("phase_anchor"):
-            return f"ABC|{signal['symbol']}|{signal.get('timeframe','15m')}|{signal.get('direction','na')}|{signal['phase_anchor']}"
-        return f"ABC|{signal['symbol']}|{signal.get('timeframe','15m')}|{signal.get('direction','na')}"
+        signal_name = str(signal.get("signal", ""))
+        symbol = str(signal.get("symbol", "unknown"))
+        timeframe = str(signal.get("timeframe", "15m"))
+        direction = str(signal.get("direction", "na"))
+
+        if signal_name.startswith("X_"):
+            return f"FAMILY|X|{symbol}|{timeframe}|{signal_name}|{direction}"
+
+        phase_anchor = str(signal.get("phase_anchor", ""))
+        if phase_anchor:
+            return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}|{phase_anchor}"
+        return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}"
+
+    def _directional_slot_key(self, signal: dict[str, Any]) -> str:
+        symbol = str(signal.get("symbol", "unknown"))
+        timeframe = str(signal.get("timeframe", "15m"))
+        direction = str(signal.get("direction", "na"))
+        phase_anchor = str(signal.get("phase_anchor", ""))
+        return f"SLOT|{symbol}|{timeframe}|{direction}|{phase_anchor}"
+
+    def _get_effective_rank(self, signal: dict[str, Any]) -> int:
+        phase_rank = int(signal.get("phase_rank", 0) or 0)
+        if phase_rank > 0:
+            return phase_rank
+        return self._signal_rank(str(signal.get("signal", "")))
 
     def should_send(self, signal: dict[str, Any]) -> bool:
-        key = self._family_key(signal)
-        previous = self.last_sent.get(key)
-        if not previous:
-            return True
+        self._load()
+
+        family_key = self._family_key(signal)
+        slot_key = self._directional_slot_key(signal)
+
+        previous_family = self.last_sent.get(family_key)
+        previous_slot = self.last_sent.get(slot_key)
 
         now = time.time()
         cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
-        prev_sent_at = float(previous.get("sent_at", 0.0))
-        tiny_move = self._price_change_ratio(
-            float(previous.get("price", 0.0)),
-            float(signal.get("price", 0.0)),
-        ) <= self.price_change_threshold
+        signal_name = str(signal.get("signal", ""))
+        signal_price = float(signal.get("price", 0.0) or 0.0)
+        signal_signature = str(signal.get("signature", ""))
 
-        if now - prev_sent_at >= cooldown_seconds:
-            return True
+        # 1) 同 family 去重
+        if previous_family:
+            prev_sent_at = float(previous_family.get("sent_at", 0.0))
+            prev_price = float(previous_family.get("price", 0.0))
+            prev_signature = str(previous_family.get("signature", ""))
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= self.price_change_threshold
 
-        if signal.get("signature") and signal.get("signature") == previous.get("signature"):
-            return False
+            if now - prev_sent_at < cooldown_seconds:
+                if signal_signature and prev_signature and signal_signature == prev_signature:
+                    return False
+                if tiny_move:
+                    return False
 
-        prev_rank = int(previous.get("phase_rank", self._rank(previous.get("signal", ""))))
-        curr_rank = int(signal.get("phase_rank", self._rank(signal.get("signal", ""))))
+        # 2) 同方向同 anchor 压成单叙事
+        if previous_slot:
+            prev_sent_at = float(previous_slot.get("sent_at", 0.0))
+            prev_price = float(previous_slot.get("price", 0.0))
+            prev_signal = str(previous_slot.get("signal", ""))
+            prev_rank = int(previous_slot.get("rank", self._signal_rank(prev_signal)))
+            curr_rank = self._get_effective_rank(signal)
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= self.price_change_threshold
+            same_signal = prev_signal == signal_name
+            within_cooldown = now - prev_sent_at < cooldown_seconds
 
-        if curr_rank > prev_rank:
-            return True
+            # 同一段里完全相同信号，直接压掉
+            if same_signal and within_cooldown:
+                return False
 
-        if curr_rank <= prev_rank and tiny_move:
-            return False
+            # A/B/C 已经发过时，X 不应该紧跟着把同一段再讲一遍
+            if signal_name.startswith("X_") and not prev_signal.startswith("X_") and within_cooldown and tiny_move:
+                return False
 
-        return not tiny_move
+            # 如果前一条是 X，后一条是 A/B/C，允许主叙事覆盖异动叙事
+            if prev_signal.startswith("X_") and not signal_name.startswith("X_"):
+                return True
+
+            # 同一 anchor 下，低等级不能覆盖高等级
+            if curr_rank < prev_rank and within_cooldown:
+                return False
+
+            # 同等级小波动重复，压掉
+            if curr_rank == prev_rank and within_cooldown and tiny_move:
+                return False
+
+            # 高等级升级允许一次
+            if curr_rank > prev_rank:
+                return True
+
+            # 同段里不是升级，而且价格变化也很小，就不再播
+            if within_cooldown and tiny_move:
+                return False
+
+        return True
 
     def mark_sent(self, signal: dict[str, Any]):
-        key = self._family_key(signal)
-        self.last_sent[key] = {
-            "signal": signal["signal"],
+        family_key = self._family_key(signal)
+        slot_key = self._directional_slot_key(signal)
+        signal_name = str(signal.get("signal", ""))
+
+        payload = {
+            "signal": signal_name,
             "status": signal.get("status", "active"),
-            "price": signal.get("price", 0.0),
-            "signature": signal.get("signature", ""),
+            "price": float(signal.get("price", 0.0) or 0.0),
+            "signature": str(signal.get("signature", "")),
             "cooldown_seconds": int(signal.get("cooldown_seconds", 1800) or 1800),
-            "phase_rank": int(signal.get("phase_rank", self._rank(signal.get("signal", "")))),
-            "phase_name": signal.get("phase_name", ""),
-            "phase_context": signal.get("phase_context", ""),
-            "phase_anchor": signal.get("phase_anchor", ""),
-            "h1_tai_bias": signal.get("h1_tai_bias", "flat"),
-            "h1_tai_slot": signal.get("h1_tai_slot", ""),
+            "phase_rank": int(signal.get("phase_rank", self._phase_rank(str(signal.get("phase_name", ""))))),
+            "phase_name": str(signal.get("phase_name", "")),
+            "phase_context": str(signal.get("phase_context", "")),
+            "phase_anchor": str(signal.get("phase_anchor", "")),
+            "h1_tai_bias": str(signal.get("h1_tai_bias", "flat")),
+            "h1_tai_slot": str(signal.get("h1_tai_slot", "")),
+            "rank": self._get_effective_rank(signal),
             "sent_at": time.time(),
         }
+
+        self.last_sent[family_key] = payload
+        self.last_sent[slot_key] = payload
         self._save()
