@@ -360,40 +360,92 @@ def _abc_confidence(
     phase_context: str,
     trigger_quality: str,
     structure_basis: list[str],
+    signal_meta: dict[str, Any] | None = None,
 ) -> int:
+    meta = signal_meta or {}
+
+    budget = str(meta.get("tai_budget_mode", "normal"))
+    state_1h = str(meta.get("state_1h", ""))
+    trigger_15m_state = str(meta.get("trigger_15m_state", ""))
+    heat_1h = str(meta.get("tai_heat_1h", "neutral"))
+    heat_4h = str(meta.get("tai_heat_4h", "neutral"))
+    status = str(meta.get("status", "active"))
+
     if signal_name.startswith("A_"):
-        base = 74
+        score = 68
     elif signal_name.startswith("B_"):
-        base = 62
+        score = 62
+    elif signal_name.startswith("C_"):
+        score = 54
+    elif signal_name.startswith("X_"):
+        score = 52
     else:
-        base = 54
+        score = 55
 
     if background_4h in {"bull", "bear"}:
-        base += 6
+        score += 6
     elif background_4h in {"lean_bull", "lean_bear"}:
-        base += 2
+        score += 3
+    else:
+        score -= 4
 
     if phase_context in {"trend_drive_long", "trend_drive_short"}:
-        base += 7
+        score += 7
     elif phase_context in {"repair_long", "repair_short"}:
-        base += 4
+        score += 4
     elif phase_context in {"probe_long", "probe_short"}:
-        base += 1
+        score += 1
+    elif phase_context == "range_neutral":
+        score -= 8
 
     if trigger_quality == "explosive":
-        base += 5
+        score += 7
     elif trigger_quality == "ready":
-        base += 3
+        score += 3
     elif trigger_quality == "watch":
-        base += 1
+        score -= 2
 
-    base += min(6, len(structure_basis) * 2)
+    if trigger_15m_state in {"confirm_long", "confirm_short"}:
+        score += 4
+    elif trigger_15m_state in {"repairing_long", "repairing_short"}:
+        score += 1
+    elif trigger_15m_state in {"probing_long", "probing_short", "idle"}:
+        score -= 4
+
+    score += min(8, len(structure_basis) * 2)
+
+    if budget == "restricted":
+        score -= 8
+    elif budget == "frozen":
+        score -= 14
+
+    if heat_1h in {"cold", "cool"} and heat_4h in {"cold", "cool"}:
+        score -= 4
+
+    if status == "early":
+        score -= 4
 
     if signal_name.startswith("A_"):
-        return max(60, min(89, base))
-    if signal_name.startswith("B_"):
-        return max(58, min(76, base))
-    return max(50, min(70, base))
+        if state_1h not in {"trend_drive_long", "trend_drive_short"}:
+            score -= 6
+        if trigger_15m_state not in {"confirm_long", "confirm_short"}:
+            score -= 6
+        score = max(64, min(86, score))
+
+    elif signal_name.startswith("B_"):
+        if state_1h not in {"repair_long", "repair_short"}:
+            score -= 5
+        if trigger_15m_state not in {"confirm_long", "confirm_short", "repairing_long", "repairing_short"}:
+            score -= 5
+        score = max(58, min(76, score))
+
+    elif signal_name.startswith("C_"):
+        score = max(50, min(64, score))
+
+    elif signal_name.startswith("X_"):
+        score = max(48, min(62, score))
+
+    return int(score)
 
 
 def _build_signal(
@@ -421,6 +473,15 @@ def _build_signal(
     else:
         trigger_quality = "watch"
 
+    meta = {
+        "tai_budget_mode": heat_profile["tai_budget_mode"],
+        "state_1h": state_1h,
+        "trigger_15m_state": trigger_15m_state,
+        "tai_heat_1h": heat_profile["tai_heat_1h"],
+        "tai_heat_4h": heat_profile["tai_heat_4h"],
+        "status": status,
+    }
+
     confidence = _abc_confidence(
         signal_name=signal,
         direction=direction,
@@ -428,6 +489,7 @@ def _build_signal(
         phase_context=state_1h,
         trigger_quality=trigger_quality,
         structure_basis=structure_basis,
+        signal_meta=meta,
     )
 
     return {
@@ -485,7 +547,7 @@ def detect_signals(
             "blocked_reasons": ["insufficient_data"],
         }
 
-    latest_4h, prev_4h = klines_4h[-1], klines_4h[-2]
+    latest_4h = klines_4h[-1]
     latest_1h, prev_1h = klines_1h[-1], klines_1h[-2]
     latest_15m, prev_15m = klines_15m[-1], klines_15m[-2]
 
@@ -495,7 +557,7 @@ def detect_signals(
     background_4h = _background_4h_direction(klines_4h)
     trigger_long = _trigger_15m_state("long", latest_15m, prev_15m, ctx_15m)
     trigger_short = _trigger_15m_state("short", latest_15m, prev_15m, ctx_15m)
-    state_1h, state_score, state_basis = _choose_state(
+    state_1h, _, state_basis = _choose_state(
         background_4h,
         latest_1h,
         prev_1h,
@@ -535,7 +597,6 @@ def detect_signals(
             "blocked_reasons": blocked_reasons,
         }
 
-    # A signals: only with proper confirm
     if state_1h == "trend_drive_long":
         if trigger_long == "confirm_long":
             signals.append(
@@ -588,7 +649,6 @@ def detect_signals(
             blocked_reasons.append("A_requires_confirm_trigger")
             near_miss_signals.append(_near_miss("A_SHORT", ["needs_confirm_trigger"], blocked_reasons.copy()))
 
-    # B signals: relaxed from hard confirm -> allow repairing trigger in restricted mode when structure is already repair
     if state_1h == "repair_long":
         allow_b_long = trigger_long in {"confirm_long", "repairing_long"}
         if allow_b_long:
@@ -643,7 +703,6 @@ def detect_signals(
             blocked_reasons.append("B_requires_confirm_trigger")
             near_miss_signals.append(_near_miss("B_PULLBACK_SHORT", ["needs_confirm_trigger"], blocked_reasons.copy()))
 
-    # C signals
     if state_1h == "probe_long":
         signals.append(
             _build_signal(
@@ -691,11 +750,10 @@ def detect_signals(
     if not signals and not blocked_reasons:
         blocked_reasons.append("no_actionable_signal")
 
-    # keep only best directional narrative if multiple ABC appear
     if len(signals) > 1:
         signals.sort(
             key=lambda s: (
-                -int(s.get("priority", 99)),
+                int(s.get("priority", 99)),
                 -int(s.get("confidence", 0)),
             )
         )
