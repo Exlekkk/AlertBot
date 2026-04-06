@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+MIN_15M_ABNORMAL_VOLUME = 8000.0
+MIN_1H_ABNORMAL_VOLUME = 12000.0
+
 
 def _float(v: Any, default: float = 0.0) -> float:
     try:
@@ -64,7 +67,6 @@ def _body_ratio(k: dict) -> float:
 
 def _impulse_up(k: dict, prev: dict) -> bool:
     close = _float(k.get("close"))
-    high = _float(k.get("high"))
     prev_high = _float(prev.get("high"))
     atr = _atr(k)
     return (
@@ -77,7 +79,6 @@ def _impulse_up(k: dict, prev: dict) -> bool:
 
 def _impulse_down(k: dict, prev: dict) -> bool:
     close = _float(k.get("close"))
-    low = _float(k.get("low"))
     prev_low = _float(prev.get("low"))
     atr = _atr(k)
     return (
@@ -130,6 +131,12 @@ def _h1_force_down(k_1h: dict, prev_1h: dict) -> bool:
         and _volume_ratio(k_1h) >= 1.6
         and _body_ratio(k_1h) >= 0.5
     )
+
+
+def _passes_hard_volume_gate(k_15m: dict, k_1h: dict) -> bool:
+    vol_15m = _float(k_15m.get("volume"), 0.0)
+    vol_1h = _float(k_1h.get("volume"), 0.0)
+    return vol_15m > MIN_15M_ABNORMAL_VOLUME and vol_1h > MIN_1H_ABNORMAL_VOLUME
 
 
 def _base_signal(
@@ -210,6 +217,10 @@ def detect_abnormal_signals(
     prev_15m = klines_15m[-2]
     prev2_15m = klines_15m[-3]
 
+    # 硬门槛：15m volume > 8k 且 1h volume > 12k，否则直接不允许报 X
+    if not _passes_hard_volume_gate(k_15m, k_1h):
+        return []
+
     price = _float(k_15m.get("close"))
     atr15 = _atr(k_15m)
 
@@ -222,7 +233,6 @@ def detect_abnormal_signals(
     h1_force_up = _h1_force_up(k_1h, prev_1h)
     h1_force_down = _h1_force_down(k_1h, prev_1h)
 
-    # 1) 放量上破
     if impulse_up and (h1_force_up or _volume_ratio(k_15m) >= 2.1):
         basis = ["impulse_breakout_up"]
         if h1_force_up:
@@ -247,7 +257,6 @@ def detect_abnormal_signals(
             )
         )
 
-    # 2) 放量下破
     if impulse_down and (h1_force_down or _volume_ratio(k_15m) >= 2.1):
         basis = ["impulse_breakout_down"]
         if h1_force_down:
@@ -272,7 +281,6 @@ def detect_abnormal_signals(
             )
         )
 
-    # 3) 扫上方流动性后回落，偏空异动
     if sweep_up and not impulse_up:
         zone_low = price - atr15 * 0.15
         zone_high = _float(k_15m.get("high"))
@@ -293,7 +301,6 @@ def detect_abnormal_signals(
             )
         )
 
-    # 4) 扫下方流动性后收回，偏多异动
     if sweep_down and not impulse_down:
         zone_low = _float(k_15m.get("low"))
         zone_high = price + atr15 * 0.15
@@ -314,7 +321,6 @@ def detect_abnormal_signals(
             )
         )
 
-    # 同一轮最多只保留一个最强 X，避免 X 自己也刷屏
     if len(signals) > 1:
         signals.sort(key=lambda s: (-int(s.get("confidence", 0)), s.get("signal", "")))
         top = signals[0]
