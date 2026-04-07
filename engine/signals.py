@@ -94,12 +94,22 @@ def _cross_tf_heat_profile(k_15m: dict, k_1h: dict, k_4h: dict) -> dict[str, Any
     heat_15m = _tai_heat(k_15m)
     heat_1h = _tai_heat(k_1h)
     heat_4h = _tai_heat(k_4h)
+
     orders = [_heat_order(heat_15m), _heat_order(heat_1h), _heat_order(heat_4h)]
     coldish = sum(1 for x in orders if x <= 1)
     warmish = sum(1 for x in orders if x >= 3)
     avg_order = sum(orders) / 3.0
 
-    freeze_mode = coldish == 3 or (coldish >= 2 and avg_order <= 1.0)
+    tai_1h = _float(k_1h.get("tai_value"), 0.0)
+    tai_1h_p20 = _float(k_1h.get("tai_p20"), 0.0)
+
+    # 铁律：只有 1h TAI 真正跌到 p20 以下，frozen 才有触发资格
+    frozen_eligible = tai_1h <= tai_1h_p20
+
+    freeze_mode = False
+    if frozen_eligible:
+        freeze_mode = coldish == 3 or (coldish >= 2 and avg_order <= 1.0)
+
     if freeze_mode:
         budget = "frozen"
     elif coldish >= 2 or avg_order <= 1.45:
@@ -360,9 +370,6 @@ def _phase_name_from_state(state_1h: str) -> str:
 
 
 def _h1_tai_bias_from_heat(heat_1h: str, state_1h: str) -> str:
-    """
-    这里只做发布层协同用的稳定标签，不改 A/B/C 判定桶。
-    """
     if state_1h.startswith("trend_drive_"):
         if heat_1h in {"warm", "hot"}:
             return "drive"
@@ -404,9 +411,6 @@ def _phase_anchor(
     trigger_15m_state: str,
     heat_1h: str,
 ) -> str:
-    """
-    同一段 1h 背景叙事的识别键，仅供 cooldown same_anchor 去重。
-    """
     phase_name = _phase_name_from_state(state_1h)
 
     trigger_bucket = "confirm"
@@ -613,6 +617,7 @@ def detect_signals(
     background_4h = _background_4h_direction(klines_4h)
     trigger_long = _trigger_15m_state("long", latest_15m, prev_15m, ctx_15m)
     trigger_short = _trigger_15m_state("short", latest_15m, prev_15m, ctx_15m)
+
     state_1h, candidate_score, state_basis = _choose_state(
         background_4h,
         latest_1h,
@@ -632,6 +637,8 @@ def detect_signals(
             blocked.append("range_neutral")
             if heat_profile["tai_budget_mode"] == "restricted":
                 blocked.append("heat_restricted_range_silence")
+            if heat_profile["tai_budget_mode"] == "frozen":
+                blocked.append("heat_frozen_range_silence")
         return {
             "signals": [],
             "near_miss_signals": [],
@@ -646,12 +653,28 @@ def detect_signals(
 
     atr15 = _atr(latest_15m)
     if direction == "long":
-        zone_low = min(_float(latest_15m.get("ema10")), _float(latest_15m.get("ema20")), _float(latest_15m.get("close")) - atr15 * 0.2)
-        zone_high = max(_float(latest_15m.get("ema10")), _float(latest_15m.get("ema20")), _float(latest_15m.get("close")) + atr15 * 0.08)
+        zone_low = min(
+            _float(latest_15m.get("ema10")),
+            _float(latest_15m.get("ema20")),
+            _float(latest_15m.get("close")) - atr15 * 0.2,
+        )
+        zone_high = max(
+            _float(latest_15m.get("ema10")),
+            _float(latest_15m.get("ema20")),
+            _float(latest_15m.get("close")) + atr15 * 0.08,
+        )
         trigger_display = trigger_long
     else:
-        zone_low = min(_float(latest_15m.get("ema10")), _float(latest_15m.get("ema20")), _float(latest_15m.get("close")) - atr15 * 0.08)
-        zone_high = max(_float(latest_15m.get("ema10")), _float(latest_15m.get("ema20")), _float(latest_15m.get("close")) + atr15 * 0.2)
+        zone_low = min(
+            _float(latest_15m.get("ema10")),
+            _float(latest_15m.get("ema20")),
+            _float(latest_15m.get("close")) - atr15 * 0.08,
+        )
+        zone_high = max(
+            _float(latest_15m.get("ema10")),
+            _float(latest_15m.get("ema20")),
+            _float(latest_15m.get("close")) + atr15 * 0.2,
+        )
         trigger_display = trigger_short
 
     signal = _signal_dict(
