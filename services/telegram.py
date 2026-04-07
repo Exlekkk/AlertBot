@@ -61,27 +61,27 @@ def _format_minutes_compact(minutes: int | None) -> str:
     return f"{hours}h{remain}m"
 
 
-def _stage_text(signal: str, status: str, trigger_state: str | None = None) -> str:
+def _stage_text(signal_name: str, status: str, trigger_state: str | None = None) -> str:
     trigger_state = trigger_state or ""
 
-    if signal.startswith("A_"):
+    if signal_name.startswith("A_"):
         if trigger_state.startswith("confirm_"):
             return "确认"
         return "关注"
 
-    if signal.startswith("B_"):
+    if signal_name.startswith("B_"):
         if trigger_state.startswith("confirm_"):
             return "确认"
         if trigger_state.startswith("repairing_"):
             return "修复"
         return "关注"
 
-    if signal.startswith("C_"):
+    if signal_name.startswith("C_"):
         if trigger_state.startswith("probing_"):
             return "早期"
         return "观察"
 
-    if signal.startswith("X_"):
+    if signal_name.startswith("X_"):
         return "异动"
 
     if status == "active":
@@ -91,18 +91,18 @@ def _stage_text(signal: str, status: str, trigger_state: str | None = None) -> s
     return "观察"
 
 
-def build_status_text(signal: str, status: str) -> str:
-    if signal == "A_LONG":
+def build_status_text(signal_name: str, status: str) -> str:
+    if signal_name == "A_LONG":
         return "已满足突破确认，等待顺势执行"
-    if signal == "A_SHORT":
+    if signal_name == "A_SHORT":
         return "已满足跌破确认，等待顺势执行"
-    if signal == "B_PULLBACK_LONG":
+    if signal_name == "B_PULLBACK_LONG":
         return "回踩条件满足，等待延续确认"
-    if signal == "B_PULLBACK_SHORT":
+    if signal_name == "B_PULLBACK_SHORT":
         return "反弹条件满足，等待延续确认"
-    if signal in ("C_LEFT_LONG", "C_LEFT_SHORT"):
+    if signal_name in ("C_LEFT_LONG", "C_LEFT_SHORT"):
         return "前提初步满足，处于早期观察阶段"
-    if signal in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
+    if signal_name in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
         return "异动已触发，进入特别关注阶段"
     if status == "active":
         return "条件已满足，等待执行"
@@ -112,7 +112,7 @@ def build_status_text(signal: str, status: str) -> str:
 
 
 def _dynamic_window_minutes(
-    signal: str,
+    signal_name: str,
     priority: int,
     trigger_state: str | None = None,
     status: str | None = None,
@@ -122,37 +122,32 @@ def _dynamic_window_minutes(
     status = status or "active"
     abnormal_type = abnormal_type or ""
 
-    # A 类：更快
-    if signal.startswith("A_"):
+    if signal_name.startswith("A_"):
         if trigger_state.startswith("confirm_"):
             return 5, 20
         if status == "early":
             return 10, 35
         return 10, 40
 
-    # B 类：修复型，中等时长
-    if signal.startswith("B_"):
+    if signal_name.startswith("B_"):
         if trigger_state.startswith("confirm_"):
             return 15, 60
         if trigger_state.startswith("repairing_"):
             return 25, 90
         return 30, 120
 
-    # C 类：更偏早期观察，时间更长
-    if signal.startswith("C_"):
+    if signal_name.startswith("C_"):
         if trigger_state.startswith("probing_"):
             return 30, 120
         return 45, 180
 
-    # X 类：按异动类型区分
-    if signal.startswith("X_"):
+    if signal_name.startswith("X_"):
         if "扫流动性" in abnormal_type:
             return 10, 60
         if "上破" in abnormal_type or "下破" in abnormal_type:
             return 5, 45
         return 10, 75
 
-    # fallback
     if priority == 1:
         return 5, 30
     if priority == 2:
@@ -162,34 +157,26 @@ def _dynamic_window_minutes(
     return 5, 120
 
 
-def build_observe_window_text(
-    signal: str,
-    priority: int,
-    trigger_state: str | None = None,
-    status: str | None = None,
-    abnormal_type: str | None = None,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-    legacy_text: str | None = None,
-) -> str:
+def build_observe_window_text(signal: dict) -> str:
+    legacy_text = signal.get("start_window_text_value") or signal.get("start_window_text")
     if legacy_text:
-        return legacy_text
+        return str(legacy_text)
 
-    if eta_min_minutes is not None and eta_max_minutes is not None:
-        start_min = max(0, int(eta_min_minutes))
-        end_min = max(start_min, int(eta_max_minutes))
+    eta_min = signal.get("eta_min_minutes")
+    eta_max = signal.get("eta_max_minutes")
+    if eta_min is not None and eta_max is not None:
+        start_min = max(0, int(eta_min))
+        end_min = max(start_min, int(eta_max))
     else:
         start_min, end_min = _dynamic_window_minutes(
-            signal=signal,
-            priority=priority,
-            trigger_state=trigger_state,
-            status=status,
-            abnormal_type=abnormal_type,
+            signal_name=str(signal.get("signal", "")),
+            priority=int(signal.get("priority", 1) or 1),
+            trigger_state=str(signal.get("trigger_state") or signal.get("trigger_15m_state") or ""),
+            status=str(signal.get("status", "active")),
+            abnormal_type=str(signal.get("abnormal_type", "")),
         )
 
-    start_text = _format_minutes_compact(start_min)
-    end_text = _format_minutes_compact(end_min)
-    return f"{start_text} - {end_text}"
+    return f"{_format_minutes_compact(start_min)} - {_format_minutes_compact(end_min)}"
 
 
 def _normalized_zone(
@@ -216,81 +203,62 @@ def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price
     return f"{low:.2f} - {high:.2f}"
 
 
-def _pick_key_level(signal: str, low: float, high: float, trigger_level: float | None) -> float:
+def _pick_key_level(signal_name: str, low: float, high: float, trigger_level: float | None) -> float:
     if trigger_level is not None:
         return float(trigger_level)
-    if signal in {"A_SHORT", "B_PULLBACK_LONG", "C_LEFT_LONG", "X_BREAKOUT_LONG"}:
+    if signal_name in {"A_SHORT", "B_PULLBACK_LONG", "C_LEFT_LONG", "X_BREAKOUT_LONG"}:
         return low
     return high
 
 
-def _zone_field_name(signal: str) -> str:
-    if signal.startswith("A_"):
+def _zone_field_name(signal_name: str) -> str:
+    if signal_name.startswith("A_"):
         return "区间"
-    if signal == "B_PULLBACK_LONG":
+    if signal_name == "B_PULLBACK_LONG":
         return "承接区"
-    if signal == "B_PULLBACK_SHORT":
+    if signal_name == "B_PULLBACK_SHORT":
         return "反抽区"
-    if signal.startswith("C_"):
+    if signal_name.startswith("C_"):
         return "关注区"
     return "观察区"
 
 
-def _watch_field_name(signal: str) -> str:
-    if signal == "X_BREAKOUT_LONG":
+def _watch_field_name(signal_name: str) -> str:
+    if signal_name == "X_BREAKOUT_LONG":
         return "回踩观察区"
-    if signal == "X_BREAKOUT_SHORT":
+    if signal_name == "X_BREAKOUT_SHORT":
         return "反抽观察区"
-    return _zone_field_name(signal)
+    return _zone_field_name(signal_name)
 
 
-def format_engine_message(
-    signal: str,
-    symbol: str,
-    timeframe: str,
-    priority: int,
-    price: float,
-    trend_1h: str,
-    status: str,
-    entry_zone_low: float | None = None,
-    entry_zone_high: float | None = None,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-    trigger_level: float | None = None,
-    burst_level: float | None = None,
-    abnormal_type: str | None = None,
-    start_window_text_value: str | None = None,
-    start_window_text: str | None = None,
-    confidence: int | float | None = None,
-    trigger_state: str | None = None,
-    **_: object,
-) -> str:
+def format_engine_message(signal: dict) -> str:
+    signal_name = str(signal.get("signal", ""))
+    symbol = str(signal.get("symbol", "BTCUSDT"))
+    priority = int(signal.get("priority", 1) or 1)
+    price = float(signal.get("price", 0.0) or 0.0)
+    status = str(signal.get("status", "active"))
+    abnormal_type = signal.get("abnormal_type")
+    trigger_state = str(signal.get("trigger_state") or signal.get("trigger_15m_state") or "")
+
     signal_type = type_label(priority)
     prefix = title_prefix(priority)
-    action_text = action_label(signal)
-    market_text = market_label(signal, abnormal_type=abnormal_type)
-    stage_text = _stage_text(signal, status, trigger_state)
-    status_text = build_status_text(signal, status)
-    observe_text = build_observe_window_text(
-        signal=signal,
-        priority=priority,
-        trigger_state=trigger_state,
-        status=status,
-        abnormal_type=abnormal_type,
-        eta_min_minutes=eta_min_minutes,
-        eta_max_minutes=eta_max_minutes,
-        legacy_text=start_window_text_value or start_window_text,
-    )
+    action_text = action_label(signal_name)
+    market_text = market_label(signal_name, abnormal_type=abnormal_type)
+    stage_text = _stage_text(signal_name, status, trigger_state)
+    status_text = build_status_text(signal_name, status)
+    observe_text = build_observe_window_text(signal)
 
+    entry_zone_low = signal.get("entry_zone_low", signal.get("zone_low"))
+    entry_zone_high = signal.get("entry_zone_high", signal.get("zone_high"))
     low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
     zone_value = f"{low:.2f} - {high:.2f}"
-    key_level = _pick_key_level(signal, low, high, trigger_level)
+    key_level = _pick_key_level(signal_name, low, high, signal.get("trigger_level"))
 
     header = f"{prefix} {'异动预警' if priority == 4 else '交易提示'}｜{signal_type}｜{symbol}"
     background = f"背景：{action_text}｜{market_text}｜阶段{stage_text}"
 
-    if priority == 4 and signal in {"X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"}:
-        watch_field = _watch_field_name(signal)
+    if priority == 4 and signal_name in {"X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"}:
+        watch_field = _watch_field_name(signal_name)
         return (
             f"{header}\n"
             f"{background}\n"
@@ -300,7 +268,7 @@ def format_engine_message(
             f"状态：{status_text}"
         )
 
-    zone_field = _zone_field_name(signal)
+    zone_field = _zone_field_name(signal_name)
     return (
         f"{header}\n"
         f"{background}\n"
@@ -308,6 +276,16 @@ def format_engine_message(
         f"关键位：{key_level:.2f}\n"
         f"观察：{observe_text}\n"
         f"状态：{status_text}"
+    )
+
+
+def format_webhook_message(signal: str, symbol: str, timeframe: str, direction: str = "unknown") -> str:
+    direction_text = direction if direction and direction != "unknown" else "未注明"
+    return (
+        f"📩 外部信号 | {symbol}\n"
+        f"信号：{signal}\n"
+        f"周期：{timeframe}\n"
+        f"方向：{direction_text}"
     )
 
 
