@@ -106,18 +106,22 @@ def _stage_text(signal: str, status: str, trigger_state: str | None = None) -> s
     if signal.startswith("B_"):
         if trigger_state.startswith("confirm_"):
             return "确认"
+        if trigger_state.startswith("repairing_"):
+            return "修复"
         return "关注"
 
     if signal.startswith("C_"):
+        if trigger_state.startswith("probing_"):
+            return "早期"
         return "观察"
 
     if signal.startswith("X_"):
-        return "观察"
+        return "异动"
 
     if status == "active":
         return "确认"
     if status == "early":
-        return "观察"
+        return "早期"
     return "观察"
 
 
