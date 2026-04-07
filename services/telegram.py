@@ -30,13 +30,6 @@ MARKET_LABELS = {
     "X_BREAKOUT_SHORT": "盘口起跌下破",
 }
 
-DEFAULT_START_WINDOWS = {
-    1: (5, 30),
-    2: (15, 120),
-    3: (60, 360),
-    4: (5, 120),
-}
-
 
 def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
@@ -66,33 +59,6 @@ def _format_minutes_compact(minutes: int | None) -> str:
     if remain == 0:
         return f"{hours}h"
     return f"{hours}h{remain}m"
-
-
-def _get_window_minutes(
-    priority: int,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-) -> tuple[int, int]:
-    default_min, default_max = DEFAULT_START_WINDOWS.get(priority, (15, 45))
-    start_min = int(eta_min_minutes) if eta_min_minutes is not None else default_min
-    end_min = int(eta_max_minutes) if eta_max_minutes is not None else default_max
-    start_min = max(0, start_min)
-    end_min = max(start_min, end_min)
-    return start_min, end_min
-
-
-def build_observe_window_text(
-    priority: int,
-    eta_min_minutes: int | None = None,
-    eta_max_minutes: int | None = None,
-    legacy_text: str | None = None,
-) -> str:
-    if legacy_text:
-        return legacy_text
-    start_min, end_min = _get_window_minutes(priority, eta_min_minutes, eta_max_minutes)
-    start_text = _format_minutes_compact(start_min)
-    end_text = _format_minutes_compact(end_min)
-    return f"{start_text} - {end_text}"
 
 
 def _stage_text(signal: str, status: str, trigger_state: str | None = None) -> str:
@@ -143,6 +109,87 @@ def build_status_text(signal: str, status: str) -> str:
     if status == "early":
         return "前提初步满足，处于观察阶段"
     return status
+
+
+def _dynamic_window_minutes(
+    signal: str,
+    priority: int,
+    trigger_state: str | None = None,
+    status: str | None = None,
+    abnormal_type: str | None = None,
+) -> tuple[int, int]:
+    trigger_state = trigger_state or ""
+    status = status or "active"
+    abnormal_type = abnormal_type or ""
+
+    # A 类：更快
+    if signal.startswith("A_"):
+        if trigger_state.startswith("confirm_"):
+            return 5, 20
+        if status == "early":
+            return 10, 35
+        return 10, 40
+
+    # B 类：修复型，中等时长
+    if signal.startswith("B_"):
+        if trigger_state.startswith("confirm_"):
+            return 15, 60
+        if trigger_state.startswith("repairing_"):
+            return 25, 90
+        return 30, 120
+
+    # C 类：更偏早期观察，时间更长
+    if signal.startswith("C_"):
+        if trigger_state.startswith("probing_"):
+            return 30, 120
+        return 45, 180
+
+    # X 类：按异动类型区分
+    if signal.startswith("X_"):
+        if "扫流动性" in abnormal_type:
+            return 10, 60
+        if "上破" in abnormal_type or "下破" in abnormal_type:
+            return 5, 45
+        return 10, 75
+
+    # fallback
+    if priority == 1:
+        return 5, 30
+    if priority == 2:
+        return 15, 120
+    if priority == 3:
+        return 60, 360
+    return 5, 120
+
+
+def build_observe_window_text(
+    signal: str,
+    priority: int,
+    trigger_state: str | None = None,
+    status: str | None = None,
+    abnormal_type: str | None = None,
+    eta_min_minutes: int | None = None,
+    eta_max_minutes: int | None = None,
+    legacy_text: str | None = None,
+) -> str:
+    if legacy_text:
+        return legacy_text
+
+    if eta_min_minutes is not None and eta_max_minutes is not None:
+        start_min = max(0, int(eta_min_minutes))
+        end_min = max(start_min, int(eta_max_minutes))
+    else:
+        start_min, end_min = _dynamic_window_minutes(
+            signal=signal,
+            priority=priority,
+            trigger_state=trigger_state,
+            status=status,
+            abnormal_type=abnormal_type,
+        )
+
+    start_text = _format_minutes_compact(start_min)
+    end_text = _format_minutes_compact(end_min)
+    return f"{start_text} - {end_text}"
 
 
 def _normalized_zone(
@@ -225,9 +272,13 @@ def format_engine_message(
     stage_text = _stage_text(signal, status, trigger_state)
     status_text = build_status_text(signal, status)
     observe_text = build_observe_window_text(
-        priority,
-        eta_min_minutes,
-        eta_max_minutes,
+        signal=signal,
+        priority=priority,
+        trigger_state=trigger_state,
+        status=status,
+        abnormal_type=abnormal_type,
+        eta_min_minutes=eta_min_minutes,
+        eta_max_minutes=eta_max_minutes,
         legacy_text=start_window_text_value or start_window_text,
     )
 
