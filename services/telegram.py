@@ -15,26 +15,26 @@ ACTION_LABELS = {
     "B_PULLBACK_SHORT": "反弹后做空机会",
     "C_LEFT_LONG": "左侧预警做多机会",
     "C_LEFT_SHORT": "左侧预警做空机会",
-    "X_BREAKOUT_LONG": "异动上破观察",
-    "X_BREAKOUT_SHORT": "异动下破观察",
+    "X_BREAKOUT_LONG": "异动放量上破预警",
+    "X_BREAKOUT_SHORT": "异动放量下破预警",
 }
 
 MARKET_LABELS = {
-    "A_LONG": "盘口多头推进",
-    "A_SHORT": "盘口空头推进",
+    "A_LONG": "盘口主升推进",
+    "A_SHORT": "盘口主跌推进",
     "B_PULLBACK_LONG": "盘口修复承接",
     "B_PULLBACK_SHORT": "盘口修复承压",
     "C_LEFT_LONG": "盘口早期试多",
-    "C_LEFT_SHORT": "盘口早期试空",
-    "X_BREAKOUT_LONG": "盘口异动上破",
-    "X_BREAKOUT_SHORT": "盘口异动下破",
+    "C_LEFT_SHORT": "盘口早期试压",
+    "X_BREAKOUT_LONG": "盘口起涨上破",
+    "X_BREAKOUT_SHORT": "盘口起跌下破",
 }
 
 DEFAULT_START_WINDOWS = {
     1: (5, 30),
     2: (15, 120),
     3: (60, 360),
-    4: (15, 95),
+    4: (5, 120),
 }
 
 
@@ -50,6 +50,10 @@ def market_label(signal: str, abnormal_type: str | None = None) -> str:
     if signal.startswith("X_") and abnormal_type:
         return abnormal_type
     return MARKET_LABELS.get(signal, signal)
+
+
+def title_prefix(priority: int) -> str:
+    return "🧨" if priority == 4 else "🚨"
 
 
 def _format_minutes_compact(minutes: int | None) -> str:
@@ -81,29 +85,60 @@ def build_observe_window_text(
     priority: int,
     eta_min_minutes: int | None = None,
     eta_max_minutes: int | None = None,
+    legacy_text: str | None = None,
 ) -> str:
+    if legacy_text:
+        return legacy_text
     start_min, end_min = _get_window_minutes(priority, eta_min_minutes, eta_max_minutes)
-    return f"{_format_minutes_compact(start_min)}-{_format_minutes_compact(end_min)}"
+    start_text = _format_minutes_compact(start_min)
+    end_text = _format_minutes_compact(end_min)
+    return f"{start_text} - {end_text}"
+
+
+def _stage_text(signal: str, status: str, trigger_state: str | None = None) -> str:
+    trigger_state = trigger_state or ""
+
+    if signal.startswith("A_"):
+        if trigger_state.startswith("confirm_"):
+            return "确认"
+        return "关注"
+
+    if signal.startswith("B_"):
+        if trigger_state.startswith("confirm_"):
+            return "确认"
+        return "关注"
+
+    if signal.startswith("C_"):
+        return "观察"
+
+    if signal.startswith("X_"):
+        return "观察"
+
+    if status == "active":
+        return "确认"
+    if status == "early":
+        return "观察"
+    return "观察"
 
 
 def build_status_text(signal: str, status: str) -> str:
     if signal == "A_LONG":
-        return "趋势条件满足，等待延续确认"
+        return "已满足突破确认，等待顺势执行"
     if signal == "A_SHORT":
-        return "趋势条件满足，等待延续确认"
+        return "已满足跌破确认，等待顺势执行"
     if signal == "B_PULLBACK_LONG":
         return "回踩条件满足，等待延续确认"
     if signal == "B_PULLBACK_SHORT":
         return "反弹条件满足，等待延续确认"
     if signal in ("C_LEFT_LONG", "C_LEFT_SHORT"):
-        return "早期条件出现，先观察"
+        return "前提初步满足，处于早期观察阶段"
     if signal in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
-        return "异动出现，先观察"
+        return "异动已触发，进入特别关注阶段"
     if status == "active":
-        return "条件满足，等待执行"
+        return "条件已满足，等待执行"
     if status == "early":
-        return "条件满足，等待延续确认"
-    return "保持观察"
+        return "前提初步满足，处于观察阶段"
+    return status
 
 
 def _normalized_zone(
@@ -127,81 +162,105 @@ def _normalized_zone(
 
 def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
     low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
-    return f"{low:.2f}-{high:.2f}"
+    return f"{low:.2f} - {high:.2f}"
 
 
-def _pick_key_level(
-    signal: str,
-    low: float,
-    high: float,
-    trigger_level: float | None,
-    price: float,
-) -> float:
+def _pick_key_level(signal: str, low: float, high: float, trigger_level: float | None) -> float:
     if trigger_level is not None:
         return float(trigger_level)
-    if signal.endswith("_LONG"):
-        return max(price, high)
-    return min(price, low)
+    if signal in {"A_SHORT", "B_PULLBACK_LONG", "C_LEFT_LONG", "X_BREAKOUT_LONG"}:
+        return low
+    return high
 
 
-def _display_confidence(signal: dict) -> int:
-    value = signal.get("confidence")
-    try:
-        v = int(value)
-    except Exception:
-        v = 60
-    return max(48, min(89, v))
+def _zone_field_name(signal: str) -> str:
+    if signal.startswith("A_"):
+        return "区间"
+    if signal == "B_PULLBACK_LONG":
+        return "承接区"
+    if signal == "B_PULLBACK_SHORT":
+        return "反抽区"
+    if signal.startswith("C_"):
+        return "关注区"
+    return "观察区"
 
 
-def format_engine_message(signal: dict) -> str:
-    signal_name = signal.get("signal", "")
-    symbol = signal.get("symbol", "BTCUSDT")
-    priority = int(signal.get("priority", 1) or 1)
-    price = float(signal.get("price", 0.0) or 0.0)
-    confidence = _display_confidence(signal)
+def _watch_field_name(signal: str) -> str:
+    if signal == "X_BREAKOUT_LONG":
+        return "回踩观察区"
+    if signal == "X_BREAKOUT_SHORT":
+        return "反抽观察区"
+    return _zone_field_name(signal)
 
-    low, high = _normalized_zone(
-        signal.get("entry_zone_low", signal.get("zone_low")),
-        signal.get("entry_zone_high", signal.get("zone_high")),
-        price,
-    )
-    key_level = _pick_key_level(signal_name, low, high, signal.get("trigger_level"), price)
 
-    title = "异动观察" if signal_name.startswith("X_") else "交易提示"
-    background = action_label(signal_name)
-    market = market_label(signal_name, signal.get("abnormal_type"))
-    observe = build_observe_window_text(
+def format_engine_message(
+    signal: str,
+    symbol: str,
+    timeframe: str,
+    priority: int,
+    price: float,
+    trend_1h: str,
+    status: str,
+    entry_zone_low: float | None = None,
+    entry_zone_high: float | None = None,
+    eta_min_minutes: int | None = None,
+    eta_max_minutes: int | None = None,
+    trigger_level: float | None = None,
+    burst_level: float | None = None,
+    abnormal_type: str | None = None,
+    start_window_text_value: str | None = None,
+    start_window_text: str | None = None,
+    confidence: int | float | None = None,
+    trigger_state: str | None = None,
+    **_: object,
+) -> str:
+    signal_type = type_label(priority)
+    prefix = title_prefix(priority)
+    action_text = action_label(signal)
+    market_text = market_label(signal, abnormal_type=abnormal_type)
+    stage_text = _stage_text(signal, status, trigger_state)
+    status_text = build_status_text(signal, status)
+    observe_text = build_observe_window_text(
         priority,
-        signal.get("eta_min_minutes"),
-        signal.get("eta_max_minutes"),
+        eta_min_minutes,
+        eta_max_minutes,
+        legacy_text=start_window_text_value or start_window_text,
     )
-    status_text = build_status_text(signal_name, signal.get("status", "active"))
 
-    lines = [
-        f"🚨 {title} | {type_label(priority)} | {symbol}",
-        f"背景：{background} | {market} | 置信度{confidence}",
-        f"承接区：{zone_text(low, high, price)}",
-        f"关键位：{key_level:.2f}",
-        f"观察：{observe}",
-        f"状态：{status_text}",
-    ]
+    low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
+    zone_value = f"{low:.2f} - {high:.2f}"
+    key_level = _pick_key_level(signal, low, high, trigger_level)
 
-    return "\n".join(lines)
+    header = f"{prefix} {'异动预警' if priority == 4 else '交易提示'}｜{signal_type}｜{symbol}"
+    background = f"背景：{action_text}｜{market_text}｜阶段{stage_text}"
 
+    if priority == 4 and signal in {"X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"}:
+        watch_field = _watch_field_name(signal)
+        return (
+            f"{header}\n"
+            f"{background}\n"
+            f"关键位：{key_level:.2f}\n"
+            f"{watch_field}：{zone_value}\n"
+            f"观察：{observe_text}\n"
+            f"状态：{status_text}"
+        )
 
-def format_webhook_message(signal: str, symbol: str, timeframe: str, direction: str = "unknown") -> str:
-    direction_text = direction if direction and direction != "unknown" else "未注明"
+    zone_field = _zone_field_name(signal)
     return (
-        f"📩 外部信号 | {symbol}\n"
-        f"信号：{signal}\n"
-        f"周期：{timeframe}\n"
-        f"方向：{direction_text}"
+        f"{header}\n"
+        f"{background}\n"
+        f"{zone_field}：{zone_value}\n"
+        f"关键位：{key_level:.2f}\n"
+        f"观察：{observe_text}\n"
+        f"状态：{status_text}"
     )
 
 
 def send_telegram_message(token: str, chat_id: str, text: str):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+    }
     response = requests.post(url, json=payload, timeout=20)
-    response.raise_for_status()
     return response.text
