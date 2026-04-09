@@ -37,6 +37,26 @@ def _count(*conds: bool) -> int:
     return sum(bool(c) for c in conds)
 
 
+def _body_size(k: dict) -> float:
+    return abs(_float(k.get("close")) - _float(k.get("open")))
+
+
+def _range_size(k: dict) -> float:
+    return max(_float(k.get("high")) - _float(k.get("low")), 1e-9)
+
+
+def _body_ratio(k: dict) -> float:
+    return _body_size(k) / _range_size(k)
+
+
+def _upper_wick(k: dict) -> float:
+    return _float(k.get("high")) - max(_float(k.get("open")), _float(k.get("close")))
+
+
+def _lower_wick(k: dict) -> float:
+    return min(_float(k.get("open")), _float(k.get("close"))) - _float(k.get("low"))
+
+
 def _momentum_up(k: dict, prev: dict | None = None) -> bool:
     prev_hist = _float(prev.get("cm_hist"), 0.0) if prev else _float(k.get("cm_hist"), 0.0)
     return bool(k.get("cm_macd_above_signal")) and (
@@ -103,7 +123,7 @@ def _cross_tf_heat_profile(k_15m: dict, k_1h: dict, k_4h: dict) -> dict[str, Any
     tai_1h = _float(k_1h.get("tai_value"), 0.0)
     tai_1h_p20 = _float(k_1h.get("tai_p20"), 0.0)
 
-    # 铁律：只有 1h TAI 真正跌到 p20 以下，frozen 才有触发资格
+    # frozen 只有在 1h TAI <= p20 时才有触发资格
     frozen_eligible = tai_1h <= tai_1h_p20
 
     freeze_mode = False
@@ -211,6 +231,94 @@ def _trigger_15m_state(direction: str, latest: dict, prev: dict, ctx_15m: dict[s
     return "idle"
 
 
+def _long_failure_pressure(
+    latest_1h: dict,
+    prev_1h: dict,
+    ctx_1h: dict[str, Any],
+    latest_15m: dict,
+    prev_15m: dict,
+    ctx_15m: dict[str, Any],
+) -> int:
+    atr15 = _atr(latest_15m)
+    close15 = _float(latest_15m.get("close"))
+    ema20_15 = _float(latest_15m.get("ema20"))
+    prev_close15 = _float(prev_15m.get("close"))
+    high15 = _float(latest_15m.get("high"))
+
+    return _count(
+        bool(ctx_15m["bear_sweep"] or ctx_15m["eqh"] or ctx_1h["eqh"] or ctx_1h["near_bear"]),
+        bool(ctx_15m["bos_down"] or ctx_15m["mss_down"]),
+        _momentum_down(latest_15m, prev_15m),
+        close15 < ema20_15,
+        close15 < prev_close15,
+        _upper_wick(latest_15m) >= atr15 * 0.18 and _body_ratio(latest_15m) < 0.55,
+        (not _momentum_up(latest_1h, prev_1h)) and _momentum_down(latest_1h, prev_1h),
+        high15 <= _float(prev_15m.get("high")) + atr15 * 0.08,
+    )
+
+
+def _short_failure_pressure(
+    latest_1h: dict,
+    prev_1h: dict,
+    ctx_1h: dict[str, Any],
+    latest_15m: dict,
+    prev_15m: dict,
+    ctx_15m: dict[str, Any],
+) -> int:
+    atr15 = _atr(latest_15m)
+    close15 = _float(latest_15m.get("close"))
+    ema20_15 = _float(latest_15m.get("ema20"))
+    prev_close15 = _float(prev_15m.get("close"))
+    low15 = _float(latest_15m.get("low"))
+
+    return _count(
+        bool(ctx_15m["bull_sweep"] or ctx_15m["eql"] or ctx_1h["eql"] or ctx_1h["near_bull"]),
+        bool(ctx_15m["bos_up"] or ctx_15m["mss_up"]),
+        _momentum_up(latest_15m, prev_15m),
+        close15 > ema20_15,
+        close15 > prev_close15,
+        _lower_wick(latest_15m) >= atr15 * 0.18 and _body_ratio(latest_15m) < 0.55,
+        (not _momentum_down(latest_1h, prev_1h)) and _momentum_up(latest_1h, prev_1h),
+        low15 >= _float(prev_15m.get("low")) - atr15 * 0.08,
+    )
+
+
+def _reversal_boost_short(
+    latest_1h: dict,
+    prev_1h: dict,
+    ctx_1h: dict[str, Any],
+    latest_15m: dict,
+    prev_15m: dict,
+    ctx_15m: dict[str, Any],
+    trigger_short: str,
+) -> int:
+    return _count(
+        _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m) >= 3,
+        trigger_short in {"confirm_short", "repairing_short", "probing_short"},
+        bool(ctx_15m["bos_down"] or ctx_15m["mss_down"] or ctx_1h["mss_down"]),
+        _momentum_down(latest_15m, prev_15m),
+        _ema_alignment(latest_15m, "short") != "opposing",
+    )
+
+
+def _reversal_boost_long(
+    latest_1h: dict,
+    prev_1h: dict,
+    ctx_1h: dict[str, Any],
+    latest_15m: dict,
+    prev_15m: dict,
+    ctx_15m: dict[str, Any],
+    trigger_long: str,
+) -> int:
+    return _count(
+        _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m) >= 3,
+        trigger_long in {"confirm_long", "repairing_long", "probing_long"},
+        bool(ctx_15m["bos_up"] or ctx_15m["mss_up"] or ctx_1h["mss_up"]),
+        _momentum_up(latest_15m, prev_15m),
+        _ema_alignment(latest_15m, "long") != "opposing",
+    )
+
+
 def _state_candidate(
     direction: str,
     background_4h: str,
@@ -219,54 +327,71 @@ def _state_candidate(
     ctx_1h: dict[str, Any],
     latest_15m: dict,
     prev_15m: dict,
-    trigger_state: str,
+    ctx_15m: dict[str, Any],
+    trigger_long: str,
+    trigger_short: str,
 ) -> tuple[str, int, list[str]]:
     support_ctx = bool(ctx_1h["bull_fvg"] or ctx_1h["bull_sweep"] or ctx_1h["near_bull"] or ctx_1h["eql"])
     resist_ctx = bool(ctx_1h["bear_fvg"] or ctx_1h["bear_sweep"] or ctx_1h["near_bear"] or ctx_1h["eqh"])
+
+    long_fail = _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
+    short_fail = _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
+    short_reversal_boost = _reversal_boost_short(
+        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_short
+    )
+    long_reversal_boost = _reversal_boost_long(
+        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_long
+    )
 
     long_drive = _count(
         background_4h in {"bull", "lean_bull"},
         bool(ctx_1h["bos_up"] or ctx_1h["mss_up"]),
         _ema_alignment(latest_1h, "long") == "supportive",
         _momentum_up(latest_1h, prev_1h),
-        trigger_state == "confirm_long",
-    )
+        trigger_long == "confirm_long",
+    ) - max(0, long_fail - 1)
+
     short_drive = _count(
         background_4h in {"bear", "lean_bear"},
         bool(ctx_1h["bos_down"] or ctx_1h["mss_down"]),
         _ema_alignment(latest_1h, "short") == "supportive",
         _momentum_down(latest_1h, prev_1h),
-        trigger_state == "confirm_short",
-    )
+        trigger_short == "confirm_short",
+    ) - max(0, short_fail - 1)
 
     long_repair = _count(
         background_4h != "bear",
         support_ctx,
         _ema_alignment(latest_1h, "long") != "opposing",
-        trigger_state in {"confirm_long", "repairing_long"},
+        trigger_long in {"confirm_long", "repairing_long"},
         _float(latest_15m.get("close")) >= _float(prev_15m.get("close")),
-    )
+    ) - long_fail
+
     short_repair = _count(
         background_4h != "bull",
         resist_ctx,
         _ema_alignment(latest_1h, "short") != "opposing",
-        trigger_state in {"confirm_short", "repairing_short"},
+        trigger_short in {"confirm_short", "repairing_short"},
         _float(latest_15m.get("close")) <= _float(prev_15m.get("close")),
-    )
+    ) - short_fail
 
     long_probe = _count(
         support_ctx,
-        trigger_state in {"confirm_long", "repairing_long", "probing_long"},
+        trigger_long in {"confirm_long", "repairing_long", "probing_long"},
         bool(latest_15m.get("sss_bull_div") or latest_15m.get("sss_oversold_warning") or latest_15m.get("fl_buy_signal")),
-    )
+    ) + long_reversal_boost - max(0, short_fail - 2)
+
     short_probe = _count(
         resist_ctx,
-        trigger_state in {"confirm_short", "repairing_short", "probing_short"},
+        trigger_short in {"confirm_short", "repairing_short", "probing_short"},
         bool(latest_15m.get("sss_bear_div") or latest_15m.get("sss_overbought_warning") or latest_15m.get("fl_sell_signal")),
-    )
+    ) + short_reversal_boost - max(0, long_fail - 2)
 
     if direction == "long":
-        if long_drive >= 4 and short_drive <= 1:
+        if long_fail >= 4:
+            return "range_neutral", 0, ["long_failed_exit"]
+
+        if long_drive >= 4 and short_drive <= 2:
             return "trend_drive_long", long_drive, [
                 x for x, ok in [
                     ("smc_bos_up", bool(ctx_1h["bos_up"])),
@@ -274,25 +399,31 @@ def _state_candidate(
                     ("support_zone", support_ctx),
                 ] if ok
             ]
-        if long_repair >= 3 and short_drive <= 2:
+
+        if long_repair >= 3 and short_reversal_boost <= 2 and short_drive <= 2:
             return "repair_long", long_repair, [
                 x for x, ok in [
                     ("support_zone", support_ctx),
-                    ("trigger_repair", trigger_state in {"confirm_long", "repairing_long"}),
+                    ("trigger_repair", trigger_long in {"confirm_long", "repairing_long"}),
                     ("ema_support", _ema_alignment(latest_1h, "long") != "opposing"),
                 ] if ok
             ]
+
         if long_probe >= 2:
             return "probe_long", long_probe, [
                 x for x, ok in [
                     ("support_zone", support_ctx),
                     ("early_warning", bool(latest_15m.get("sss_bull_div") or latest_15m.get("sss_oversold_warning"))),
-                    ("probing_trigger", trigger_state in {"probing_long", "repairing_long", "confirm_long"}),
+                    ("probing_trigger", trigger_long in {"probing_long", "repairing_long", "confirm_long"}),
                 ] if ok
             ]
+
         return "range_neutral", max(long_drive, long_repair, long_probe), []
 
-    if short_drive >= 4 and long_drive <= 1:
+    if short_fail >= 4:
+        return "range_neutral", 0, ["short_failed_exit"]
+
+    if short_drive >= 4 and long_drive <= 2:
         return "trend_drive_short", short_drive, [
             x for x, ok in [
                 ("smc_bos_down", bool(ctx_1h["bos_down"])),
@@ -300,22 +431,26 @@ def _state_candidate(
                 ("resistance_zone", resist_ctx),
             ] if ok
         ]
-    if short_repair >= 3 and long_drive <= 2:
+
+    if short_repair >= 3 and long_reversal_boost <= 2 and long_drive <= 2:
         return "repair_short", short_repair, [
             x for x, ok in [
                 ("resistance_zone", resist_ctx),
-                ("trigger_repair", trigger_state in {"confirm_short", "repairing_short"}),
+                ("trigger_repair", trigger_short in {"confirm_short", "repairing_short"}),
                 ("ema_resistance", _ema_alignment(latest_1h, "short") != "opposing"),
             ] if ok
         ]
+
     if short_probe >= 2:
         return "probe_short", short_probe, [
             x for x, ok in [
                 ("resistance_zone", resist_ctx),
                 ("early_warning", bool(latest_15m.get("sss_bear_div") or latest_15m.get("sss_overbought_warning"))),
-                ("probing_trigger", trigger_state in {"probing_short", "repairing_short", "confirm_short"}),
+                ("probing_trigger", trigger_short in {"probing_short", "repairing_short", "confirm_short"}),
+                ("failed_long_reversal", short_reversal_boost >= 2),
             ] if ok
         ]
+
     return "range_neutral", max(short_drive, short_repair, short_probe), []
 
 
@@ -326,20 +461,64 @@ def _choose_state(
     ctx_1h: dict[str, Any],
     latest_15m: dict,
     prev_15m: dict,
+    ctx_15m: dict[str, Any],
     trigger_long: str,
     trigger_short: str,
 ) -> tuple[str, int, list[str]]:
     long_state, long_score, long_basis = _state_candidate(
-        "long", background_4h, latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, trigger_long
+        "long",
+        background_4h,
+        latest_1h,
+        prev_1h,
+        ctx_1h,
+        latest_15m,
+        prev_15m,
+        ctx_15m,
+        trigger_long,
+        trigger_short,
     )
     short_state, short_score, short_basis = _state_candidate(
-        "short", background_4h, latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, trigger_short
+        "short",
+        background_4h,
+        latest_1h,
+        prev_1h,
+        ctx_1h,
+        latest_15m,
+        prev_15m,
+        ctx_15m,
+        trigger_long,
+        trigger_short,
     )
+
+    long_fail = _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
+    short_fail = _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
+    short_reversal_boost = _reversal_boost_short(
+        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_short
+    )
+    long_reversal_boost = _reversal_boost_long(
+        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_long
+    )
+
+    # long 修复失败时，让 short 有更快接管权
+    if long_fail >= 4 and short_score >= 2:
+        return short_state, short_score + 1, short_basis
+
+    if short_fail >= 4 and long_score >= 2:
+        return long_state, long_score + 1, long_basis
+
+    # 反向接管优先
+    if short_reversal_boost >= 3 and short_score >= max(2, long_score - 1):
+        return short_state, short_score + 1, short_basis
+
+    if long_reversal_boost >= 3 and long_score >= max(2, short_score - 1):
+        return long_state, long_score + 1, long_basis
 
     if max(long_score, short_score) <= 1:
         return "range_neutral", max(long_score, short_score), []
+
     if long_state != "range_neutral" and short_state != "range_neutral" and abs(long_score - short_score) <= 1:
         return "range_neutral", max(long_score, short_score), []
+
     if long_score > short_score:
         return long_state, long_score, long_basis
     if short_score > long_score:
@@ -478,7 +657,7 @@ def _signal_confidence(
         score -= 4
 
     score += min(8, len(structure_basis) * 2)
-    score += min(6, max(0, candidate_score - 2) * 2)
+    score += min(8, max(0, candidate_score - 2) * 2)
 
     budget = heat_profile["tai_budget_mode"]
     heat_1h = heat_profile["tai_heat_1h"]
@@ -497,7 +676,7 @@ def _signal_confidence(
     elif signal_name.startswith("B_"):
         score = max(58, min(76, score))
     elif signal_name.startswith("C_"):
-        score = max(50, min(64, score))
+        score = max(50, min(66, score))
     else:
         score = max(48, min(62, score))
 
@@ -625,6 +804,7 @@ def detect_signals(
         ctx_1h,
         latest_15m,
         prev_15m,
+        ctx_15m,
         trigger_long,
         trigger_short,
     )
