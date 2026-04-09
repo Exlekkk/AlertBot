@@ -19,17 +19,6 @@ ACTION_LABELS = {
     "X_BREAKOUT_SHORT": "异动放量下破预警",
 }
 
-MARKET_LABELS = {
-    "A_LONG": "盘口主升推进",
-    "A_SHORT": "盘口主跌推进",
-    "B_PULLBACK_LONG": "盘口修复承接",
-    "B_PULLBACK_SHORT": "盘口修复承压",
-    "C_LEFT_LONG": "盘口早期试多",
-    "C_LEFT_SHORT": "盘口早期试压",
-    "X_BREAKOUT_LONG": "盘口起涨上破",
-    "X_BREAKOUT_SHORT": "盘口起跌下破",
-}
-
 
 def type_label(priority: int) -> str:
     return TYPE_LABELS.get(priority, f"{priority}类")
@@ -37,12 +26,6 @@ def type_label(priority: int) -> str:
 
 def action_label(signal: str) -> str:
     return ACTION_LABELS.get(signal, signal)
-
-
-def market_label(signal: str, abnormal_type: str | None = None) -> str:
-    if signal.startswith("X_") and abnormal_type:
-        return abnormal_type
-    return MARKET_LABELS.get(signal, signal)
 
 
 def title_prefix(priority: int) -> str:
@@ -61,56 +44,6 @@ def _format_minutes_compact(minutes: int | None) -> str:
     return f"{hours}h{remain}m"
 
 
-def _stage_text(signal_name: str, status: str, trigger_state: str | None = None) -> str:
-    trigger_state = trigger_state or ""
-
-    if signal_name.startswith("A_"):
-        if trigger_state.startswith("confirm_"):
-            return "确认"
-        return "关注"
-
-    if signal_name.startswith("B_"):
-        if trigger_state.startswith("confirm_"):
-            return "确认"
-        if trigger_state.startswith("repairing_"):
-            return "修复"
-        return "关注"
-
-    if signal_name.startswith("C_"):
-        if trigger_state.startswith("probing_"):
-            return "早期"
-        return "观察"
-
-    if signal_name.startswith("X_"):
-        return "异动"
-
-    if status == "active":
-        return "确认"
-    if status == "early":
-        return "早期"
-    return "观察"
-
-
-def build_status_text(signal_name: str, status: str) -> str:
-    if signal_name == "A_LONG":
-        return "已满足突破确认，等待顺势执行"
-    if signal_name == "A_SHORT":
-        return "已满足跌破确认，等待顺势执行"
-    if signal_name == "B_PULLBACK_LONG":
-        return "回踩条件满足，等待延续确认"
-    if signal_name == "B_PULLBACK_SHORT":
-        return "反弹条件满足，等待延续确认"
-    if signal_name in ("C_LEFT_LONG", "C_LEFT_SHORT"):
-        return "前提初步满足，处于早期观察阶段"
-    if signal_name in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
-        return "异动已触发，进入特别关注阶段"
-    if status == "active":
-        return "条件已满足，等待执行"
-    if status == "early":
-        return "前提初步满足，处于观察阶段"
-    return status
-
-
 def _dynamic_window_minutes(
     signal_name: str,
     priority: int,
@@ -124,22 +57,22 @@ def _dynamic_window_minutes(
 
     if signal_name.startswith("A_"):
         if trigger_state.startswith("confirm_"):
-            return 5, 20
+            return 15, 135
         if status == "early":
-            return 10, 35
-        return 10, 40
+            return 20, 120
+        return 20, 135
 
     if signal_name.startswith("B_"):
         if trigger_state.startswith("confirm_"):
-            return 15, 60
+            return 25, 165
         if trigger_state.startswith("repairing_"):
-            return 25, 90
-        return 30, 120
+            return 25, 165
+        return 30, 180
 
     if signal_name.startswith("C_"):
         if trigger_state.startswith("probing_"):
-            return 30, 120
-        return 45, 180
+            return 25, 165
+        return 30, 180
 
     if signal_name.startswith("X_"):
         if "扫流动性" in abnormal_type:
@@ -149,11 +82,11 @@ def _dynamic_window_minutes(
         return 10, 75
 
     if priority == 1:
-        return 5, 30
+        return 15, 135
     if priority == 2:
-        return 15, 120
+        return 25, 165
     if priority == 3:
-        return 60, 360
+        return 25, 165
     return 5, 120
 
 
@@ -179,6 +112,26 @@ def build_observe_window_text(signal: dict) -> str:
     return f"{_format_minutes_compact(start_min)} - {_format_minutes_compact(end_min)}"
 
 
+def build_status_text(signal_name: str, status: str) -> str:
+    if signal_name == "A_LONG":
+        return "已满足突破确认，等待顺势执行"
+    if signal_name == "A_SHORT":
+        return "已满足跌破确认，等待顺势执行"
+    if signal_name == "B_PULLBACK_LONG":
+        return "回踩条件满足，等待延续确认"
+    if signal_name == "B_PULLBACK_SHORT":
+        return "反弹条件满足，等待延续确认"
+    if signal_name in ("C_LEFT_LONG", "C_LEFT_SHORT"):
+        return "前提初步满足，处于早期观察阶段"
+    if signal_name in ("X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"):
+        return "异动已触发，进入特别关注阶段"
+    if status == "active":
+        return "条件已满足，等待执行"
+    if status == "early":
+        return "前提初步满足，处于观察阶段"
+    return status
+
+
 def _normalized_zone(
     entry_zone_low: float | None,
     entry_zone_high: float | None,
@@ -196,19 +149,6 @@ def _normalized_zone(
             low -= pad * 0.5
             high += pad * 0.5
     return low, high
-
-
-def zone_text(entry_zone_low: float | None, entry_zone_high: float | None, price: float) -> str:
-    low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
-    return f"{low:.2f} - {high:.2f}"
-
-
-def _pick_key_level(signal_name: str, low: float, high: float, trigger_level: float | None) -> float:
-    if trigger_level is not None:
-        return float(trigger_level)
-    if signal_name in {"A_SHORT", "B_PULLBACK_LONG", "C_LEFT_LONG", "X_BREAKOUT_LONG"}:
-        return low
-    return high
 
 
 def _zone_field_name(signal_name: str) -> str:
@@ -231,47 +171,85 @@ def _watch_field_name(signal_name: str) -> str:
     return _zone_field_name(signal_name)
 
 
+def _pick_key_level(signal_name: str, low: float, high: float, trigger_level: float | None) -> float:
+    if trigger_level is not None:
+        return float(trigger_level)
+
+    if signal_name == "A_LONG":
+        return high
+    if signal_name == "A_SHORT":
+        return low
+    if signal_name == "B_PULLBACK_LONG":
+        return low
+    if signal_name == "B_PULLBACK_SHORT":
+        return high
+    if signal_name == "C_LEFT_LONG":
+        return low
+    if signal_name == "C_LEFT_SHORT":
+        return high
+    if signal_name == "X_BREAKOUT_LONG":
+        return high
+    if signal_name == "X_BREAKOUT_SHORT":
+        return low
+
+    return high
+
+
+def _start_line(signal_name: str, low: float, high: float, key_level: float) -> str:
+    if signal_name == "A_LONG":
+        return f"自 {low:.2f} 一带启动上拉，上看 {high:.2f} 延续确认"
+    if signal_name == "A_SHORT":
+        return f"自 {high:.2f} 一带准备下杀，下看 {low:.2f} 延续确认"
+
+    if signal_name == "B_PULLBACK_LONG":
+        return f"自 {high:.2f} 开始回踩，下探 {low:.2f} 一带承接"
+    if signal_name == "B_PULLBACK_SHORT":
+        return f"自 {low:.2f} 开始反抽，上看 {high:.2f} 一带承压"
+
+    if signal_name == "C_LEFT_LONG":
+        return f"自 {high:.2f} 区域开始关注，下方 {key_level:.2f} 为首个承接参考"
+    if signal_name == "C_LEFT_SHORT":
+        return f"自 {low:.2f} 区域开始关注，上方 {key_level:.2f} 为首个压力参考"
+
+    if signal_name == "X_BREAKOUT_LONG":
+        return f"自 {low:.2f} 一带出现异动，上方 {key_level:.2f} 为首个突破参考"
+    if signal_name == "X_BREAKOUT_SHORT":
+        return f"自 {high:.2f} 一带出现异动，下方 {key_level:.2f} 为首个跌破参考"
+
+    return f"自 {low:.2f} - {high:.2f} 区域开始关注"
+
+
 def format_engine_message(signal: dict) -> str:
     signal_name = str(signal.get("signal", ""))
     symbol = str(signal.get("symbol", "BTCUSDT"))
     priority = int(signal.get("priority", 1) or 1)
     price = float(signal.get("price", 0.0) or 0.0)
     status = str(signal.get("status", "active"))
-    abnormal_type = signal.get("abnormal_type")
-    trigger_state = str(signal.get("trigger_state") or signal.get("trigger_15m_state") or "")
 
     signal_type = type_label(priority)
     prefix = title_prefix(priority)
     action_text = action_label(signal_name)
-    market_text = market_label(signal_name, abnormal_type=abnormal_type)
-    stage_text = _stage_text(signal_name, status, trigger_state)
     status_text = build_status_text(signal_name, status)
     observe_text = build_observe_window_text(signal)
 
     entry_zone_low = signal.get("entry_zone_low", signal.get("zone_low"))
     entry_zone_high = signal.get("entry_zone_high", signal.get("zone_high"))
     low, high = _normalized_zone(entry_zone_low, entry_zone_high, price)
+
+    trigger_level = signal.get("trigger_level")
+    key_level = _pick_key_level(signal_name, low, high, trigger_level)
+
+    zone_field = _watch_field_name(signal_name) if priority == 4 else _zone_field_name(signal_name)
     zone_value = f"{low:.2f} - {high:.2f}"
-    key_level = _pick_key_level(signal_name, low, high, signal.get("trigger_level"))
+    start_text = _start_line(signal_name, low, high, key_level)
 
     header = f"{prefix} {'异动预警' if priority == 4 else '交易提示'}｜{signal_type}｜{symbol}"
-    background = f"背景：{action_text}｜{market_text}｜阶段{stage_text}"
+    background = f"背景：{action_text}"
 
-    if priority == 4 and signal_name in {"X_BREAKOUT_LONG", "X_BREAKOUT_SHORT"}:
-        watch_field = _watch_field_name(signal_name)
-        return (
-            f"{header}\n"
-            f"{background}\n"
-            f"关键位：{key_level:.2f}\n"
-            f"{watch_field}：{zone_value}\n"
-            f"观察：{observe_text}\n"
-            f"状态：{status_text}"
-        )
-
-    zone_field = _zone_field_name(signal_name)
     return (
         f"{header}\n"
         f"{background}\n"
+        f"起点：{start_text}\n"
         f"{zone_field}：{zone_value}\n"
         f"关键位：{key_level:.2f}\n"
         f"观察：{observe_text}\n"
