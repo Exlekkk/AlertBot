@@ -116,19 +116,21 @@ def _cross_tf_heat_profile(k_15m: dict, k_1h: dict, k_4h: dict) -> dict[str, Any
     heat_4h = _tai_heat(k_4h)
 
     orders = [_heat_order(heat_15m), _heat_order(heat_1h), _heat_order(heat_4h)]
+    avg_order = sum(orders) / 3.0
     coldish = sum(1 for x in orders if x <= 1)
     warmish = sum(1 for x in orders if x >= 3)
-    avg_order = sum(orders) / 3.0
 
     tai_1h = _float(k_1h.get("tai_value"), 0.0)
+    tai_1h_prev = _float(k_1h.get("tai_prev"), tai_1h)
     tai_1h_p20 = _float(k_1h.get("tai_p20"), 0.0)
+    tai_15m = _float(k_15m.get("tai_value"), 0.0)
+    tai_15m_prev = _float(k_15m.get("tai_prev"), tai_15m)
 
-    # frozen 只有在 1h TAI <= p20 时才有触发资格
+    h1_rising = bool(k_1h.get("tai_rising")) or tai_1h > tai_1h_prev
+    m15_rising = bool(k_15m.get("tai_rising")) or tai_15m > tai_15m_prev
+
     frozen_eligible = tai_1h <= tai_1h_p20
-
-    freeze_mode = False
-    if frozen_eligible:
-        freeze_mode = coldish == 3 or (coldish >= 2 and avg_order <= 1.0)
+    freeze_mode = frozen_eligible and coldish == 3 and avg_order <= 0.9 and not h1_rising
 
     if freeze_mode:
         budget = "frozen"
@@ -145,6 +147,10 @@ def _cross_tf_heat_profile(k_15m: dict, k_1h: dict, k_4h: dict) -> dict[str, Any
         "tai_heat_4h": heat_4h,
         "tai_budget_mode": budget,
         "freeze_mode": freeze_mode,
+        "strict_low_heat": heat_1h in {"cold", "cool"},
+        "h1_tai_rising": h1_rising,
+        "m15_tai_rising": m15_rising,
+        "allow_low_heat_probe": h1_rising or m15_rising,
     }
 
 
@@ -207,7 +213,7 @@ def _trigger_15m_state(direction: str, latest: dict, prev: dict, ctx_15m: dict[s
             close >= prev_close,
             bool(ctx_15m["bull_sweep"] or ctx_15m["bull_fvg"]),
         )
-        if score >= 4 and vol_ratio >= 1.05:
+        if score >= 4 and vol_ratio >= 1.03:
             return "confirm_long"
         if score >= 2:
             return "repairing_long"
@@ -222,7 +228,7 @@ def _trigger_15m_state(direction: str, latest: dict, prev: dict, ctx_15m: dict[s
         close <= prev_close,
         bool(ctx_15m["bear_sweep"] or ctx_15m["bear_fvg"]),
     )
-    if score >= 4 and vol_ratio >= 1.05:
+    if score >= 4 and vol_ratio >= 1.03:
         return "confirm_short"
     if score >= 2:
         return "repairing_short"
@@ -283,39 +289,23 @@ def _short_failure_pressure(
     )
 
 
-def _reversal_boost_short(
-    latest_1h: dict,
-    prev_1h: dict,
-    ctx_1h: dict[str, Any],
-    latest_15m: dict,
-    prev_15m: dict,
-    ctx_15m: dict[str, Any],
-    trigger_short: str,
-) -> int:
-    return _count(
-        _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m) >= 3,
-        trigger_short in {"confirm_short", "repairing_short", "probing_short"},
-        bool(ctx_15m["bos_down"] or ctx_15m["mss_down"] or ctx_1h["mss_down"]),
-        _momentum_down(latest_15m, prev_15m),
-        _ema_alignment(latest_15m, "short") != "opposing",
-    )
+def _direction_context(ctx: dict[str, Any], direction: str) -> bool:
+    if direction == "long":
+        return bool(ctx["bull_fvg"] or ctx["bull_sweep"] or ctx["near_bull"] or ctx["eql"])
+    return bool(ctx["bear_fvg"] or ctx["bear_sweep"] or ctx["near_bear"] or ctx["eqh"])
 
 
-def _reversal_boost_long(
-    latest_1h: dict,
-    prev_1h: dict,
-    ctx_1h: dict[str, Any],
-    latest_15m: dict,
-    prev_15m: dict,
-    ctx_15m: dict[str, Any],
-    trigger_long: str,
-) -> int:
-    return _count(
-        _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m) >= 3,
-        trigger_long in {"confirm_long", "repairing_long", "probing_long"},
-        bool(ctx_15m["bos_up"] or ctx_15m["mss_up"] or ctx_1h["mss_up"]),
-        _momentum_up(latest_15m, prev_15m),
-        _ema_alignment(latest_15m, "long") != "opposing",
+def _early_warning(latest_15m: dict, direction: str) -> bool:
+    if direction == "long":
+        return bool(
+            latest_15m.get("sss_bull_div")
+            or latest_15m.get("sss_oversold_warning")
+            or latest_15m.get("fl_buy_signal")
+        )
+    return bool(
+        latest_15m.get("sss_bear_div")
+        or latest_15m.get("sss_overbought_warning")
+        or latest_15m.get("fl_sell_signal")
     )
 
 
@@ -330,128 +320,64 @@ def _state_candidate(
     ctx_15m: dict[str, Any],
     trigger_long: str,
     trigger_short: str,
+    heat_profile: dict[str, Any],
 ) -> tuple[str, int, list[str]]:
-    support_ctx = bool(ctx_1h["bull_fvg"] or ctx_1h["bull_sweep"] or ctx_1h["near_bull"] or ctx_1h["eql"])
-    resist_ctx = bool(ctx_1h["bear_fvg"] or ctx_1h["bear_sweep"] or ctx_1h["near_bear"] or ctx_1h["eqh"])
+    support_ctx = _direction_context(ctx_1h, direction)
+    trigger_state = trigger_long if direction == "long" else trigger_short
+    ema_support = _ema_alignment(latest_1h, direction)
+    background_support = background_4h in {"bull", "lean_bull"} if direction == "long" else background_4h in {"bear", "lean_bear"}
+    momentum_ok = _momentum_up(latest_1h, prev_1h) if direction == "long" else _momentum_down(latest_1h, prev_1h)
+    fail_pressure = _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m) if direction == "long" else _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
+    struct_up = bool(ctx_1h["bos_up"] or ctx_1h["mss_up"]) if direction == "long" else bool(ctx_1h["bos_down"] or ctx_1h["mss_down"])
+    basis: list[str] = []
+    if struct_up:
+        basis.append("smc_bos" if direction == "long" else "smc_bos_down")
+    if support_ctx:
+        basis.append("zone")
+    if _early_warning(latest_15m, direction):
+        basis.append("early_warning")
 
-    long_fail = _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
-    short_fail = _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
-    short_reversal_boost = _reversal_boost_short(
-        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_short
-    )
-    long_reversal_boost = _reversal_boost_long(
-        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_long
-    )
+    drive_score = _count(
+        background_support,
+        struct_up,
+        ema_support == "supportive",
+        momentum_ok,
+        trigger_state == f"confirm_{direction}",
+    ) - max(0, fail_pressure - 1)
 
-    long_drive = _count(
-        background_4h in {"bull", "lean_bull"},
-        bool(ctx_1h["bos_up"] or ctx_1h["mss_up"]),
-        _ema_alignment(latest_1h, "long") == "supportive",
-        _momentum_up(latest_1h, prev_1h),
-        trigger_long == "confirm_long",
-    ) - max(0, long_fail - 1)
-
-    short_drive = _count(
-        background_4h in {"bear", "lean_bear"},
-        bool(ctx_1h["bos_down"] or ctx_1h["mss_down"]),
-        _ema_alignment(latest_1h, "short") == "supportive",
-        _momentum_down(latest_1h, prev_1h),
-        trigger_short == "confirm_short",
-    ) - max(0, short_fail - 1)
-
-    long_repair = _count(
-        background_4h != "bear",
+    repair_score = _count(
+        background_4h != ("bear" if direction == "long" else "bull"),
         support_ctx,
-        _ema_alignment(latest_1h, "long") != "opposing",
-        trigger_long in {"confirm_long", "repairing_long"},
-        _float(latest_15m.get("close")) >= _float(prev_15m.get("close")),
-    ) - long_fail
+        ema_support != "opposing",
+        trigger_state in {f"confirm_{direction}", f"repairing_{direction}"},
+        (_float(latest_15m.get("close")) >= _float(prev_15m.get("close"))) if direction == "long" else (_float(latest_15m.get("close")) <= _float(prev_15m.get("close"))),
+    ) - fail_pressure
 
-    short_repair = _count(
-        background_4h != "bull",
-        resist_ctx,
-        _ema_alignment(latest_1h, "short") != "opposing",
-        trigger_short in {"confirm_short", "repairing_short"},
-        _float(latest_15m.get("close")) <= _float(prev_15m.get("close")),
-    ) - short_fail
-
-    long_probe = _count(
+    probe_score = _count(
         support_ctx,
-        trigger_long in {"confirm_long", "repairing_long", "probing_long"},
-        bool(latest_15m.get("sss_bull_div") or latest_15m.get("sss_oversold_warning") or latest_15m.get("fl_buy_signal")),
-    ) + long_reversal_boost - max(0, short_fail - 2)
+        trigger_state in {f"confirm_{direction}", f"repairing_{direction}", f"probing_{direction}"},
+        _early_warning(latest_15m, direction),
+        ema_support != "opposing",
+    ) - max(0, fail_pressure - 2)
 
-    short_probe = _count(
-        resist_ctx,
-        trigger_short in {"confirm_short", "repairing_short", "probing_short"},
-        bool(latest_15m.get("sss_bear_div") or latest_15m.get("sss_overbought_warning") or latest_15m.get("fl_sell_signal")),
-    ) + short_reversal_boost - max(0, long_fail - 2)
+    restricted = heat_profile["tai_budget_mode"] in {"restricted", "frozen"}
+    low_heat_probe_ok = heat_profile["allow_low_heat_probe"] and support_ctx and _early_warning(latest_15m, direction)
 
-    if direction == "long":
-        if long_fail >= 4:
-            return "range_neutral", 0, ["long_failed_exit"]
+    if fail_pressure >= 4 and not low_heat_probe_ok:
+        return "range_neutral", 0, [f"{direction}_failed_exit"]
 
-        if long_drive >= 4 and short_drive <= 2:
-            return "trend_drive_long", long_drive, [
-                x for x, ok in [
-                    ("smc_bos_up", bool(ctx_1h["bos_up"])),
-                    ("ict_mss_up", bool(ctx_1h["mss_up"])),
-                    ("support_zone", support_ctx),
-                ] if ok
-            ]
+    if drive_score >= 4 and fail_pressure <= 2:
+        return (f"trend_drive_{direction}", drive_score, basis + ["trigger_confirm"])
 
-        if long_repair >= 3 and short_reversal_boost <= 2 and short_drive <= 2:
-            return "repair_long", long_repair, [
-                x for x, ok in [
-                    ("support_zone", support_ctx),
-                    ("trigger_repair", trigger_long in {"confirm_long", "repairing_long"}),
-                    ("ema_support", _ema_alignment(latest_1h, "long") != "opposing"),
-                ] if ok
-            ]
+    repair_threshold = 4 if restricted else 3
+    if repair_score >= repair_threshold and fail_pressure <= (1 if restricted else 2):
+        return (f"repair_{direction}", repair_score, basis + ["repair"])
 
-        if long_probe >= 2:
-            return "probe_long", long_probe, [
-                x for x, ok in [
-                    ("support_zone", support_ctx),
-                    ("early_warning", bool(latest_15m.get("sss_bull_div") or latest_15m.get("sss_oversold_warning"))),
-                    ("probing_trigger", trigger_long in {"probing_long", "repairing_long", "confirm_long"}),
-                ] if ok
-            ]
+    probe_threshold = 3 if restricted else 2
+    if probe_score >= probe_threshold and (not restricted or low_heat_probe_ok):
+        return (f"probe_{direction}", probe_score, basis + ["probe"])
 
-        return "range_neutral", max(long_drive, long_repair, long_probe), []
-
-    if short_fail >= 4:
-        return "range_neutral", 0, ["short_failed_exit"]
-
-    if short_drive >= 4 and long_drive <= 2:
-        return "trend_drive_short", short_drive, [
-            x for x, ok in [
-                ("smc_bos_down", bool(ctx_1h["bos_down"])),
-                ("ict_mss_down", bool(ctx_1h["mss_down"])),
-                ("resistance_zone", resist_ctx),
-            ] if ok
-        ]
-
-    if short_repair >= 3 and long_reversal_boost <= 2 and long_drive <= 2:
-        return "repair_short", short_repair, [
-            x for x, ok in [
-                ("resistance_zone", resist_ctx),
-                ("trigger_repair", trigger_short in {"confirm_short", "repairing_short"}),
-                ("ema_resistance", _ema_alignment(latest_1h, "short") != "opposing"),
-            ] if ok
-        ]
-
-    if short_probe >= 2:
-        return "probe_short", short_probe, [
-            x for x, ok in [
-                ("resistance_zone", resist_ctx),
-                ("early_warning", bool(latest_15m.get("sss_bear_div") or latest_15m.get("sss_overbought_warning"))),
-                ("probing_trigger", trigger_short in {"probing_short", "repairing_short", "confirm_short"}),
-                ("failed_long_reversal", short_reversal_boost >= 2),
-            ] if ok
-        ]
-
-    return "range_neutral", max(short_drive, short_repair, short_probe), []
+    return "range_neutral", max(drive_score, repair_score, probe_score), basis
 
 
 def _choose_state(
@@ -464,6 +390,7 @@ def _choose_state(
     ctx_15m: dict[str, Any],
     trigger_long: str,
     trigger_short: str,
+    heat_profile: dict[str, Any],
 ) -> tuple[str, int, list[str]]:
     long_state, long_score, long_basis = _state_candidate(
         "long",
@@ -476,6 +403,7 @@ def _choose_state(
         ctx_15m,
         trigger_long,
         trigger_short,
+        heat_profile,
     )
     short_state, short_score, short_basis = _state_candidate(
         "short",
@@ -488,42 +416,37 @@ def _choose_state(
         ctx_15m,
         trigger_long,
         trigger_short,
+        heat_profile,
     )
 
-    long_fail = _long_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
-    short_fail = _short_failure_pressure(latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m)
-    short_reversal_boost = _reversal_boost_short(
-        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_short
-    )
-    long_reversal_boost = _reversal_boost_long(
-        latest_1h, prev_1h, ctx_1h, latest_15m, prev_15m, ctx_15m, trigger_long
-    )
-
-    # long 修复失败时，让 short 有更快接管权
-    if long_fail >= 4 and short_score >= 2:
-        return short_state, short_score + 1, short_basis
-
-    if short_fail >= 4 and long_score >= 2:
-        return long_state, long_score + 1, long_basis
-
-    # 反向接管优先
-    if short_reversal_boost >= 3 and short_score >= max(2, long_score - 1):
-        return short_state, short_score + 1, short_basis
-
-    if long_reversal_boost >= 3 and long_score >= max(2, short_score - 1):
-        return long_state, long_score + 1, long_basis
-
-    if max(long_score, short_score) <= 1:
-        return "range_neutral", max(long_score, short_score), []
+    best_score = max(long_score, short_score)
+    if best_score <= 1:
+        return "range_neutral", best_score, []
 
     if long_state != "range_neutral" and short_state != "range_neutral" and abs(long_score - short_score) <= 1:
-        return "range_neutral", max(long_score, short_score), []
+        return "range_neutral", best_score, ["dual_conflict"]
+
+    if heat_profile["freeze_mode"] and best_score < 4:
+        return "range_neutral", best_score, ["freeze_mode"]
+
+    if heat_profile["strict_low_heat"] and best_score < 3:
+        return "range_neutral", best_score, ["low_heat_no_lock"]
 
     if long_score > short_score:
         return long_state, long_score, long_basis
     if short_score > long_score:
         return short_state, short_score, short_basis
-    return "range_neutral", max(long_score, short_score), []
+    return "range_neutral", best_score, []
+
+
+def _phase_name_from_state(state_1h: str) -> str:
+    if state_1h.startswith("trend_drive_"):
+        return "continuation"
+    if state_1h.startswith("repair_"):
+        return "repair"
+    if state_1h.startswith("probe_"):
+        return "early"
+    return "none"
 
 
 def _state_to_signal(state_1h: str) -> tuple[str | None, str | None]:
@@ -538,16 +461,6 @@ def _state_to_signal(state_1h: str) -> tuple[str | None, str | None]:
     return mapping.get(state_1h, (None, None))
 
 
-def _phase_name_from_state(state_1h: str) -> str:
-    if state_1h.startswith("trend_drive_"):
-        return "continuation"
-    if state_1h.startswith("repair_"):
-        return "repair"
-    if state_1h.startswith("probe_"):
-        return "early"
-    return "none"
-
-
 def _h1_tai_bias_from_heat(heat_1h: str, state_1h: str) -> str:
     if state_1h.startswith("trend_drive_"):
         if heat_1h in {"warm", "hot"}:
@@ -559,9 +472,7 @@ def _h1_tai_bias_from_heat(heat_1h: str, state_1h: str) -> str:
     if state_1h.startswith("repair_"):
         if heat_1h in {"warm", "neutral"}:
             return "support"
-        if heat_1h in {"cool", "cold"}:
-            return "flat"
-        return "support"
+        return "flat"
 
     if state_1h.startswith("probe_"):
         if heat_1h in {"warm", "hot"}:
@@ -572,14 +483,13 @@ def _h1_tai_bias_from_heat(heat_1h: str, state_1h: str) -> str:
 
 
 def _h1_tai_slot_from_heat(heat_1h: str) -> str:
-    mapping = {
+    return {
         "cold": "ice",
         "cool": "cool",
         "neutral": "mid",
         "warm": "warm",
         "hot": "hot",
-    }
-    return mapping.get(heat_1h, "mid")
+    }.get(heat_1h, "mid")
 
 
 def _phase_anchor(
@@ -589,9 +499,9 @@ def _phase_anchor(
     background_4h_direction: str,
     trigger_15m_state: str,
     heat_1h: str,
+    structure_basis: list[str],
 ) -> str:
     phase_name = _phase_name_from_state(state_1h)
-
     trigger_bucket = "confirm"
     if trigger_15m_state.startswith("repairing_"):
         trigger_bucket = "repair"
@@ -599,17 +509,8 @@ def _phase_anchor(
         trigger_bucket = "probe"
     elif trigger_15m_state == "idle":
         trigger_bucket = "idle"
-
-    return "|".join(
-        [
-            symbol,
-            direction,
-            phase_name,
-            background_4h_direction,
-            trigger_bucket,
-            heat_1h,
-        ]
-    )
+    basis_key = ",".join(sorted(structure_basis[:3])) or "none"
+    return "|".join([symbol, direction, phase_name, background_4h_direction, trigger_bucket, heat_1h, basis_key])
 
 
 def _signal_confidence(
@@ -631,19 +532,28 @@ def _signal_confidence(
     else:
         score = 55
 
-    if background_4h_direction in {"bull", "bear"}:
-        score += 6
-    elif background_4h_direction in {"lean_bull", "lean_bear"}:
-        score += 3
+    supportive_bg = (
+        (direction == "long" and background_4h_direction in {"bull", "lean_bull"})
+        or (direction == "short" and background_4h_direction in {"bear", "lean_bear"})
+    )
+    opposing_bg = (
+        (direction == "long" and background_4h_direction in {"bear", "lean_bear"})
+        or (direction == "short" and background_4h_direction in {"bull", "lean_bull"})
+    )
+
+    if supportive_bg:
+        score += 6 if background_4h_direction in {"bull", "bear"} else 3
+    elif opposing_bg:
+        score -= 8 if background_4h_direction in {"bull", "bear"} else 5
     else:
         score -= 4
 
     if state_1h in {"trend_drive_long", "trend_drive_short"}:
-        score += 7
+        score += 8
     elif state_1h in {"repair_long", "repair_short"}:
-        score += 4
+        score += 5
     elif state_1h in {"probe_long", "probe_short"}:
-        score += 1
+        score += 2
     elif state_1h == "range_neutral":
         score -= 8
 
@@ -660,23 +570,20 @@ def _signal_confidence(
     score += min(8, max(0, candidate_score - 2) * 2)
 
     budget = heat_profile["tai_budget_mode"]
-    heat_1h = heat_profile["tai_heat_1h"]
-    heat_4h = heat_profile["tai_heat_4h"]
-
     if budget == "restricted":
-        score -= 8
+        score -= 10
     elif budget == "frozen":
-        score -= 14
+        score -= 16
 
-    if heat_1h in {"cold", "cool"} and heat_4h in {"cold", "cool"}:
-        score -= 4
+    if heat_profile["tai_heat_1h"] in {"cold", "cool"} and heat_profile["tai_heat_4h"] in {"cold", "cool"}:
+        score -= 5
 
     if signal_name.startswith("A_"):
-        score = max(64, min(86, score))
+        score = max(62, min(88, score))
     elif signal_name.startswith("B_"):
-        score = max(58, min(76, score))
+        score = max(56, min(78, score))
     elif signal_name.startswith("C_"):
-        score = max(50, min(66, score))
+        score = max(48, min(68, score))
     else:
         score = max(48, min(62, score))
 
@@ -688,8 +595,6 @@ def _signal_dict(
     symbol: str,
     direction: str,
     price: float,
-    trend_1h: str,
-    status: str,
     *,
     zone_low: float | None,
     zone_high: float | None,
@@ -701,7 +606,7 @@ def _signal_dict(
     candidate_score: int,
 ) -> dict[str, Any]:
     rank = SIGNAL_CLASS[name]
-    eta_map = {1: (15, 135), 2: (25, 165), 3: (25, 165)}
+    eta_map = {1: (15, 135), 2: (30, 180), 3: (45, 210)}
     eta_min, eta_max = eta_map.get(rank, (20, 120))
 
     heat_1h = heat_profile["tai_heat_1h"]
@@ -713,6 +618,7 @@ def _signal_dict(
         background_4h_direction=background_4h_direction,
         trigger_15m_state=trigger_15m_state,
         heat_1h=heat_1h,
+        structure_basis=structure_basis,
     )
     h1_tai_bias = _h1_tai_bias_from_heat(heat_1h, state_1h)
     h1_tai_slot = _h1_tai_slot_from_heat(heat_1h)
@@ -725,15 +631,15 @@ def _signal_dict(
         "priority": rank,
         "direction": direction,
         "price": price,
-        "trend_1h": trend_1h,
+        "trend_1h": state_1h,
         "status": "active" if rank <= 2 else "early",
         "zone_low": zone_low,
         "zone_high": zone_high,
         "structure_basis": structure_basis,
         "eta_min_minutes": eta_min,
         "eta_max_minutes": eta_max,
-        "cooldown_seconds": {1: 45 * 60, 2: 35 * 60, 3: 25 * 60}.get(rank, 30 * 60),
-        "phase_rank": rank,
+        "cooldown_seconds": {1: 45 * 60, 2: 60 * 60, 3: 90 * 60}.get(rank, 30 * 60),
+        "phase_rank": {"continuation": 3, "repair": 2, "early": 1}.get(phase_name, 0),
         "phase_name": phase_name,
         "phase_context": f"{state_1h}|{background_4h_direction}|{trigger_15m_state}|{heat_1h}",
         "phase_anchor": phase_anchor,
@@ -766,6 +672,77 @@ def _signal_dict(
     }
 
 
+def _build_zone(direction: str, signal_name: str, latest_15m: dict) -> tuple[float, float]:
+    price = _float(latest_15m.get("close"))
+    ema10 = _float(latest_15m.get("ema10"))
+    ema20 = _float(latest_15m.get("ema20"))
+    atr15 = _atr(latest_15m)
+    if signal_name.startswith("A_"):
+        if direction == "long":
+            return (
+                round(min(ema10, ema20, price - atr15 * 0.25), 2),
+                round(max(ema10, ema20, price - atr15 * 0.03), 2),
+            )
+        return (
+            round(min(ema10, ema20, price + atr15 * 0.03), 2),
+            round(max(ema10, ema20, price + atr15 * 0.25), 2),
+        )
+    if signal_name.startswith("B_"):
+        if direction == "long":
+            return (
+                round(min(ema10, ema20, price - atr15 * 0.35), 2),
+                round(max(ema10, ema20, price + atr15 * 0.05), 2),
+            )
+        return (
+            round(min(ema10, ema20, price - atr15 * 0.05), 2),
+            round(max(ema10, ema20, price + atr15 * 0.35), 2),
+        )
+    if direction == "long":
+        return (
+            round(min(ema10, ema20, price - atr15 * 0.45), 2),
+            round(max(ema10, ema20, price + atr15 * 0.08), 2),
+        )
+    return (
+        round(min(ema10, ema20, price - atr15 * 0.08), 2),
+        round(max(ema10, ema20, price + atr15 * 0.45), 2),
+    )
+
+
+def _candidate_allowed(signal_name: str, state_1h: str, direction: str, trigger_state: str, heat_profile: dict[str, Any], candidate_score: int, structure_basis: list[str], latest_15m: dict) -> bool:
+    low_heat = heat_profile["strict_low_heat"]
+    allow_probe = heat_profile["allow_low_heat_probe"]
+    early_warning = _early_warning(latest_15m, direction)
+
+    if signal_name.startswith("A_"):
+        if not state_1h.startswith("trend_drive_"):
+            return False
+        if trigger_state != f"confirm_{direction}":
+            return False
+        if low_heat and not (allow_probe and candidate_score >= 5):
+            return False
+        return True
+
+    if signal_name.startswith("B_"):
+        if not state_1h.startswith("repair_"):
+            return False
+        if trigger_state not in {f"confirm_{direction}", f"repairing_{direction}"}:
+            return False
+        if low_heat and not (candidate_score >= 4 and allow_probe and len(structure_basis) >= 2):
+            return False
+        return True
+
+    if signal_name.startswith("C_"):
+        if not (state_1h.startswith("probe_") or state_1h == "range_neutral"):
+            return False
+        if low_heat and not (allow_probe and early_warning and candidate_score >= 2):
+            return False
+        if state_1h == "range_neutral":
+            return early_warning and len(structure_basis) >= 2
+        return True
+
+    return True
+
+
 def detect_signals(
     symbol: str,
     klines_1d: list[dict],
@@ -796,6 +773,7 @@ def detect_signals(
     background_4h = _background_4h_direction(klines_4h)
     trigger_long = _trigger_15m_state("long", latest_15m, prev_15m, ctx_15m)
     trigger_short = _trigger_15m_state("short", latest_15m, prev_15m, ctx_15m)
+    heat_profile = _cross_tf_heat_profile(latest_15m, latest_1h, latest_4h)
 
     state_1h, candidate_score, state_basis = _choose_state(
         background_4h,
@@ -807,65 +785,104 @@ def detect_signals(
         ctx_15m,
         trigger_long,
         trigger_short,
+        heat_profile,
     )
-    heat_profile = _cross_tf_heat_profile(latest_15m, latest_1h, latest_4h)
 
     signal_name, direction = _state_to_signal(state_1h)
     if not signal_name or not direction:
-        blocked = []
-        if state_1h == "range_neutral":
-            blocked.append("range_neutral")
-            if heat_profile["tai_budget_mode"] == "restricted":
-                blocked.append("heat_restricted_range_silence")
-            if heat_profile["tai_budget_mode"] == "frozen":
-                blocked.append("heat_frozen_range_silence")
+        blocked = ["range_neutral"]
+        if heat_profile["tai_budget_mode"] == "restricted":
+            blocked.append("heat_restricted")
+        if heat_profile["tai_budget_mode"] == "frozen":
+            blocked.append("heat_frozen")
+        # rare high quality range-neutral C
+        rare_candidates = []
+        for rare_name, rare_direction, rare_trigger in (
+            ("C_LEFT_LONG", "long", trigger_long),
+            ("C_LEFT_SHORT", "short", trigger_short),
+        ):
+            rare_basis = []
+            if _direction_context(ctx_1h, rare_direction):
+                rare_basis.append("zone")
+            if _early_warning(latest_15m, rare_direction):
+                rare_basis.append("early_warning")
+            rare_score = _count(
+                _direction_context(ctx_1h, rare_direction),
+                rare_trigger in {f"probing_{rare_direction}", f"repairing_{rare_direction}", f"confirm_{rare_direction}"},
+                _early_warning(latest_15m, rare_direction),
+            )
+            if _candidate_allowed(
+                rare_name,
+                "range_neutral",
+                rare_direction,
+                rare_trigger,
+                heat_profile,
+                rare_score,
+                rare_basis,
+                latest_15m,
+            ):
+                zone_low, zone_high = _build_zone(rare_direction, rare_name, latest_15m)
+                rare_candidates.append(
+                    _signal_dict(
+                        name=rare_name,
+                        symbol=symbol,
+                        direction=rare_direction,
+                        price=round(_float(latest_15m.get("close")), 2),
+                        zone_low=zone_low,
+                        zone_high=zone_high,
+                        structure_basis=rare_basis,
+                        background_4h_direction=background_4h,
+                        state_1h="range_neutral",
+                        trigger_15m_state=rare_trigger,
+                        heat_profile=heat_profile,
+                        candidate_score=rare_score,
+                    )
+                )
+        rare_candidates.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        return {
+            "signals": rare_candidates[:1],
+            "near_miss_signals": [],
+            "background_4h_direction": background_4h,
+            "state_1h": "range_neutral",
+            "trigger_15m_state": "idle",
+            "tai_budget_mode": heat_profile["tai_budget_mode"],
+            "tai_heat_1h": heat_profile["tai_heat_1h"],
+            "tai_heat_4h": heat_profile["tai_heat_4h"],
+            "blocked_reasons": blocked if not rare_candidates else [],
+        }
+
+    trigger_display = trigger_long if direction == "long" else trigger_short
+    allowed = _candidate_allowed(
+        signal_name,
+        state_1h,
+        direction,
+        trigger_display,
+        heat_profile,
+        candidate_score,
+        state_basis,
+        latest_15m,
+    )
+    if not allowed:
         return {
             "signals": [],
             "near_miss_signals": [],
             "background_4h_direction": background_4h,
             "state_1h": state_1h,
-            "trigger_15m_state": trigger_long if "long" in state_1h else trigger_short if "short" in state_1h else "idle",
+            "trigger_15m_state": trigger_display,
             "tai_budget_mode": heat_profile["tai_budget_mode"],
             "tai_heat_1h": heat_profile["tai_heat_1h"],
             "tai_heat_4h": heat_profile["tai_heat_4h"],
-            "blocked_reasons": blocked,
+            "blocked_reasons": [f"{signal_name.lower()}_not_publishable"],
         }
 
-    atr15 = _atr(latest_15m)
-    if direction == "long":
-        zone_low = min(
-            _float(latest_15m.get("ema10")),
-            _float(latest_15m.get("ema20")),
-            _float(latest_15m.get("close")) - atr15 * 0.2,
-        )
-        zone_high = max(
-            _float(latest_15m.get("ema10")),
-            _float(latest_15m.get("ema20")),
-            _float(latest_15m.get("close")) + atr15 * 0.08,
-        )
-        trigger_display = trigger_long
-    else:
-        zone_low = min(
-            _float(latest_15m.get("ema10")),
-            _float(latest_15m.get("ema20")),
-            _float(latest_15m.get("close")) - atr15 * 0.08,
-        )
-        zone_high = max(
-            _float(latest_15m.get("ema10")),
-            _float(latest_15m.get("ema20")),
-            _float(latest_15m.get("close")) + atr15 * 0.2,
-        )
-        trigger_display = trigger_short
-
+    zone_low, zone_high = _build_zone(direction, signal_name, latest_15m)
     signal = _signal_dict(
         name=signal_name,
         symbol=symbol,
         direction=direction,
         price=round(_float(latest_15m.get("close")), 2),
-        trend_1h=state_1h,
-        status="active" if SIGNAL_CLASS[signal_name] <= 2 else "early",
-        zone_low=round(zone_low, 2),
-        zone_high=round(zone_high, 2),
+        zone_low=zone_low,
+        zone_high=zone_high,
         structure_basis=state_basis,
         background_4h_direction=background_4h,
         state_1h=state_1h,
@@ -885,3 +902,42 @@ def detect_signals(
         "tai_heat_4h": heat_profile["tai_heat_4h"],
         "blocked_reasons": [],
     }
+
+
+# compatibility with older tests / helpers
+def _abc_confidence(
+    signal_name: str,
+    direction: str,
+    background_4h_direction: str,
+    phase_name: str,
+    trigger_state_hint: str,
+    structure_basis: list[str],
+) -> int:
+    trigger_state = {
+        ("continuation", "explosive"): f"confirm_{direction}",
+        ("repair", "ready"): f"repairing_{direction}",
+        ("early", "probe"): f"probing_{direction}",
+    }.get((phase_name, trigger_state_hint), "idle")
+    heat_profile = {
+        "tai_budget_mode": "normal",
+        "tai_heat_1h": "neutral",
+        "tai_heat_4h": "neutral",
+    }
+    state_1h = {
+        "A_LONG": "trend_drive_long",
+        "A_SHORT": "trend_drive_short",
+        "B_PULLBACK_LONG": "repair_long",
+        "B_PULLBACK_SHORT": "repair_short",
+        "C_LEFT_LONG": "probe_long",
+        "C_LEFT_SHORT": "probe_short",
+    }.get(signal_name, "range_neutral")
+    return _signal_confidence(
+        signal_name,
+        direction,
+        state_1h,
+        candidate_score=max(2, len(structure_basis)),
+        trigger_15m_state=trigger_state,
+        structure_basis=structure_basis,
+        background_4h_direction=background_4h_direction,
+        heat_profile=heat_profile,
+    )
