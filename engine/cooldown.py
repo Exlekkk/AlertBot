@@ -48,6 +48,16 @@ class SignalStateStore:
             return 1
         return 0
 
+    def _threshold_for(self, signal: dict[str, Any]) -> float:
+        name = str(signal.get("signal", ""))
+        if name.startswith("C_"):
+            return max(self.price_change_threshold * 2.2, 0.0035)
+        if name.startswith("B_"):
+            return max(self.price_change_threshold * 1.8, 0.0025)
+        if name.startswith("A_"):
+            return max(self.price_change_threshold * 1.3, 0.0020)
+        return self.price_change_threshold
+
     def _phase_rank(self, phase_name: str) -> int:
         return {
             "none": 0,
@@ -68,9 +78,7 @@ class SignalStateStore:
             return f"FAMILY|X|{symbol}|{timeframe}|{signal_name}|{direction}"
 
         phase_anchor = str(signal.get("phase_anchor", ""))
-        if phase_anchor:
-            return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}|{phase_anchor}"
-        return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}"
+        return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}|{signal_name}|{phase_anchor}"
 
     def _directional_slot_key(self, signal: dict[str, Any]) -> str:
         symbol = str(signal.get("symbol", "unknown"))
@@ -99,13 +107,16 @@ class SignalStateStore:
         signal_name = str(signal.get("signal", ""))
         signal_price = float(signal.get("price", 0.0) or 0.0)
         signal_signature = str(signal.get("signature", ""))
+        curr_phase = str(signal.get("phase_name", ""))
+        curr_state = str(signal.get("state_1h", ""))
+        curr_threshold = self._threshold_for(signal)
 
-        # 1) 同 family 去重
+        # 1) 同 family 去重：同桶同锚点，C/B 特别严格
         if previous_family:
             prev_sent_at = float(previous_family.get("sent_at", 0.0))
             prev_price = float(previous_family.get("price", 0.0))
             prev_signature = str(previous_family.get("signature", ""))
-            tiny_move = self._price_change_ratio(prev_price, signal_price) <= self.price_change_threshold
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= curr_threshold
 
             if now - prev_sent_at < cooldown_seconds:
                 if signal_signature and prev_signature and signal_signature == prev_signature:
@@ -113,42 +124,46 @@ class SignalStateStore:
                 if tiny_move:
                     return False
 
-        # 2) 同方向同 anchor 压成单叙事
+        # 2) 同方向同锚点维持单叙事：不允许无理由 C/B/A 来回切
         if previous_slot:
             prev_sent_at = float(previous_slot.get("sent_at", 0.0))
             prev_price = float(previous_slot.get("price", 0.0))
             prev_signal = str(previous_slot.get("signal", ""))
-            prev_rank = int(previous_slot.get("rank", self._signal_rank(prev_signal)))
+            prev_phase = str(previous_slot.get("phase_name", ""))
+            prev_state = str(previous_slot.get("state_1h", ""))
+            prev_rank = int(previous_slot.get("rank", 0))
             curr_rank = self._get_effective_rank(signal)
-            tiny_move = self._price_change_ratio(prev_price, signal_price) <= self.price_change_threshold
-            same_signal = prev_signal == signal_name
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= curr_threshold
             within_cooldown = now - prev_sent_at < cooldown_seconds
 
-            # 同一段里完全相同信号，直接压掉
-            if same_signal and within_cooldown:
+            if prev_signal == signal_name and within_cooldown:
                 return False
 
-            # A/B/C 已经发过时，X 不应该紧跟着把同一段再讲一遍
+            # X 不复述同段主叙事；主叙事可覆盖 X
             if signal_name.startswith("X_") and not prev_signal.startswith("X_") and within_cooldown and tiny_move:
                 return False
-
-            # 如果前一条是 X，后一条是 A/B/C，允许主叙事覆盖异动叙事
             if prev_signal.startswith("X_") and not signal_name.startswith("X_"):
                 return True
 
-            # 同一 anchor 下，低等级不能覆盖高等级
-            if curr_rank < prev_rank and within_cooldown:
+            # 同一 state / 同一锚点里，不允许 ABC 乱切
+            if prev_state == curr_state and prev_signal != signal_name and within_cooldown:
                 return False
 
-            # 同等级小波动重复，压掉
-            if curr_rank == prev_rank and within_cooldown and tiny_move:
+            # 已锁定 continuation / repair 时，不允许回退成 early
+            if prev_phase in {"continuation", "repair"} and curr_phase == "early" and within_cooldown:
                 return False
 
-            # 高等级升级允许一次
-            if curr_rank > prev_rank:
+            # 同阶段低质量重复
+            if prev_phase == curr_phase and within_cooldown and tiny_move:
+                return False
+
+            # 明确状态升级才允许切换
+            upgraded = prev_phase == "early" and curr_phase == "repair"
+            upgraded = upgraded or (prev_phase in {"early", "repair"} and curr_phase == "continuation")
+            if upgraded and curr_rank >= prev_rank:
                 return True
 
-            # 同段里不是升级，而且价格变化也很小，就不再播
+            # 未升级、价格又没真正走开，就不重复讲故事
             if within_cooldown and tiny_move:
                 return False
 
@@ -169,6 +184,7 @@ class SignalStateStore:
             "phase_name": str(signal.get("phase_name", "")),
             "phase_context": str(signal.get("phase_context", "")),
             "phase_anchor": str(signal.get("phase_anchor", "")),
+            "state_1h": str(signal.get("state_1h", "")),
             "h1_tai_bias": str(signal.get("h1_tai_bias", "flat")),
             "h1_tai_slot": str(signal.get("h1_tai_slot", "")),
             "rank": self._get_effective_rank(signal),
