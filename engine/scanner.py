@@ -12,7 +12,7 @@ from config import (
     TELEGRAM_CHAT_ID,
     WEBHOOK_LOG_FILE,
 )
-from engine.abnormal import detect_abnormal_signals
+from engine.x_signals import detect_x_signals
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
@@ -180,9 +180,9 @@ class SMCTScanner:
         budget = signal_result.get("tai_budget_mode", "normal")
         if budget == "frozen" and FREEZE_MODE_SEND_X_ONLY:
             return list(x_signals)
-        candidates = list(base_signals)
+        candidates = list(x_signals)
         if budget != "frozen":
-            candidates.extend(x_signals)
+            candidates.extend(base_signals)
         return candidates
 
     def health_check(self) -> dict[str, Any]:
@@ -203,7 +203,7 @@ class SMCTScanner:
             klines_15m = self._fetch_enriched("15m")
 
             signal_result = detect_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
-            x_signals = detect_abnormal_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
+            x_signals = detect_x_signals(self.symbol, klines_1d, klines_4h, klines_1h, klines_15m)
             candidates = self._select_candidates(signal_result, x_signals)
 
             sent_signals: list[dict[str, Any]] = []
