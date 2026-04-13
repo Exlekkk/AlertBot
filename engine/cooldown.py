@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -38,138 +37,205 @@ class SignalStateStore:
         base = max(abs(previous_price), 1e-9)
         return abs(current_price - previous_price) / base
 
+    def _signal_rank(self, signal_name: str) -> int:
+        if signal_name.startswith("A_"):
+            return 4
+        if signal_name.startswith("B_"):
+            return 3
+        if signal_name.startswith("C_"):
+            return 2
+        if signal_name.startswith("X_"):
+            return 1
+        return 0
+
     def _threshold_for(self, signal: dict[str, Any]) -> float:
-        stage = int(signal.get("stage_rank", signal.get("phase_rank", 0)) or 0)
-        if stage <= 1:
-            return max(self.price_change_threshold * 2.6, 0.0038)
-        if stage == 2:
+        name = str(signal.get("signal", ""))
+        if name.startswith("X_"):
+            return max(self.price_change_threshold * 0.9, 0.0012)
+        if name.startswith("C_"):
+            return max(self.price_change_threshold * 2.2, 0.0035)
+        if name.startswith("B_"):
             return max(self.price_change_threshold * 1.8, 0.0025)
-        return max(self.price_change_threshold * 1.2, 0.0018)
+        if name.startswith("A_"):
+            return max(self.price_change_threshold * 1.3, 0.0020)
+        return self.price_change_threshold
+
+    def _phase_rank(self, phase_name: str) -> int:
+        return {
+            "none": 0,
+            "early": 1,
+            "repair": 2,
+            "continuation": 3,
+            "abnormal": 1,
+            "external": 1,
+        }.get(phase_name, 0)
+
+    @staticmethod
+    def _is_x_signal(signal: dict[str, Any]) -> bool:
+        return str(signal.get("signal", "")).startswith("X_") or bool(signal.get("x_lane"))
 
     def _family_key(self, signal: dict[str, Any]) -> str:
-        symbol = str(signal.get("symbol", "unknown"))
-        timeframe = str(signal.get("timeframe", "15m"))
         signal_name = str(signal.get("signal", ""))
-        direction = str(signal.get("direction", "na"))
-        signature = str(signal.get("signature", ""))
-        return f"FAMILY|{symbol}|{timeframe}|{signal_name}|{direction}|{signature}"
-
-    def _market_key(self, signal: dict[str, Any]) -> str:
-        key = str(signal.get("market_lock_key", "")).strip()
-        if key:
-            return f"MARKET|{key}"
         symbol = str(signal.get("symbol", "unknown"))
         timeframe = str(signal.get("timeframe", "15m"))
-        return f"MARKET|{symbol}|{timeframe}"
+        direction = str(signal.get("direction", "na"))
 
-    def _state_rank(self, signal: dict[str, Any]) -> int:
-        return int(signal.get("stage_rank", signal.get("phase_rank", 0)) or 0)
+        if self._is_x_signal(signal):
+            abnormal_type = str(signal.get("abnormal_type", "")) or signal_name
+            return f"FAMILY|X|{symbol}|{timeframe}|{direction}|{abnormal_type}"
 
-    def should_send(self, signal: dict[str, Any]) -> bool:
-        self._load()
+        phase_anchor = str(signal.get("phase_anchor", ""))
+        return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}|{signal_name}|{phase_anchor}"
 
+    def _directional_slot_key(self, signal: dict[str, Any]) -> str:
+        symbol = str(signal.get("symbol", "unknown"))
+        timeframe = str(signal.get("timeframe", "15m"))
+        direction = str(signal.get("direction", "na"))
+        phase_anchor = str(signal.get("phase_anchor", ""))
+
+        if self._is_x_signal(signal):
+            abnormal_type = str(signal.get("abnormal_type", "")) or str(signal.get("signal", ""))
+            return f"SLOT|X|{symbol}|{timeframe}|{direction}|{abnormal_type}"
+
+        return f"SLOT|ABC|{symbol}|{timeframe}|{direction}|{phase_anchor}"
+
+    def _get_effective_rank(self, signal: dict[str, Any]) -> int:
+        if self._is_x_signal(signal):
+            return 1
+        phase_rank = int(signal.get("phase_rank", 0) or 0)
+        if phase_rank > 0:
+            return phase_rank
+        return self._signal_rank(str(signal.get("signal", "")))
+
+    def _should_send_x(self, signal: dict[str, Any]) -> bool:
         family_key = self._family_key(signal)
-        market_key = self._market_key(signal)
+        slot_key = self._directional_slot_key(signal)
 
         previous_family = self.last_sent.get(family_key)
-        previous_market = self.last_sent.get(market_key)
+        previous_slot = self.last_sent.get(slot_key)
 
         now = time.time()
         cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
-        signal_price = float(signal.get("price", 0.0) or 0.0)
         signal_name = str(signal.get("signal", ""))
-        signal_direction = str(signal.get("direction", "na"))
-        signal_state = str(signal.get("state_1h", ""))
-        signal_budget = str(signal.get("tai_budget_mode", "normal"))
-        signal_trigger = str(signal.get("trigger_15m_state", "idle"))
-        signal_reversal_strength = int(signal.get("reversal_strength", 0) or 0)
-        stage_rank = self._state_rank(signal)
+        signal_price = float(signal.get("price", 0.0) or 0.0)
+        signal_signature = str(signal.get("signature", ""))
+        curr_threshold = self._threshold_for(signal)
 
-        # Exact-family duplicate suppression.
         if previous_family:
             prev_sent_at = float(previous_family.get("sent_at", 0.0))
             prev_price = float(previous_family.get("price", 0.0))
-            tiny_move = self._price_change_ratio(prev_price, signal_price) <= self._threshold_for(signal)
-            if now - prev_sent_at < cooldown_seconds and tiny_move:
+            prev_signature = str(previous_family.get("signature", ""))
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= curr_threshold
+
+            if now - prev_sent_at < cooldown_seconds:
+                if signal_signature and prev_signature and signal_signature == prev_signature:
+                    return False
+                if tiny_move:
+                    return False
+
+        if previous_slot:
+            prev_sent_at = float(previous_slot.get("sent_at", 0.0))
+            prev_price = float(previous_slot.get("price", 0.0))
+            prev_signal = str(previous_slot.get("signal", ""))
+            within_cooldown = now - prev_sent_at < cooldown_seconds
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= curr_threshold
+
+            if prev_signal == signal_name and within_cooldown:
                 return False
-
-        if not previous_market:
-            return True
-
-        prev_sent_at = float(previous_market.get("sent_at", 0.0))
-        prev_price = float(previous_market.get("price", 0.0))
-        prev_direction = str(previous_market.get("direction", "na"))
-        prev_signal = str(previous_market.get("signal", ""))
-        prev_state = str(previous_market.get("state_1h", ""))
-        prev_budget = str(previous_market.get("tai_budget_mode", "normal"))
-        prev_trigger = str(previous_market.get("trigger_15m_state", "idle"))
-        prev_stage_rank = int(previous_market.get("stage_rank", previous_market.get("phase_rank", 0)) or 0)
-
-        within_cooldown = now - prev_sent_at < max(cooldown_seconds, int(previous_market.get("cooldown_seconds", cooldown_seconds)))
-        tiny_move = self._price_change_ratio(prev_price, signal_price) <= self._threshold_for(signal)
-
-        if not within_cooldown:
-            return True
-
-        same_direction = prev_direction == signal_direction
-
-        # Same-side narrative: allow only if the phase truly matures or price expands enough.
-        if same_direction:
-            if prev_signal == signal_name and tiny_move:
+            if within_cooldown and tiny_move:
                 return False
-            if stage_rank < prev_stage_rank:
-                return False
-            if stage_rank == prev_stage_rank and tiny_move:
-                return False
-            return True
-
-        # Opposite-side publication: no fixed ladder, but reversal must be real.
-        cold_environment = signal_budget in {"restricted", "frozen"} or prev_budget in {"restricted", "frozen"}
-        required_reversal = 4 if cold_environment else 3
-
-        decisive_state_flip = (
-            signal_state != prev_state
-            and (
-                signal_trigger.startswith("confirm_")
-                or prev_trigger.startswith("confirm_")
-                or stage_rank >= prev_stage_rank
-            )
-        )
-
-        if signal_reversal_strength < required_reversal:
-            return False
-
-        if not decisive_state_flip:
-            return False
-
-        if cold_environment and tiny_move:
-            return False
 
         return True
 
-    def mark_sent(self, signal: dict[str, Any]) -> None:
+    def _should_send_abc(self, signal: dict[str, Any]) -> bool:
         family_key = self._family_key(signal)
-        market_key = self._market_key(signal)
+        slot_key = self._directional_slot_key(signal)
+
+        previous_family = self.last_sent.get(family_key)
+        previous_slot = self.last_sent.get(slot_key)
+
+        now = time.time()
+        cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
+        signal_name = str(signal.get("signal", ""))
+        signal_price = float(signal.get("price", 0.0) or 0.0)
+        signal_signature = str(signal.get("signature", ""))
+        curr_phase = str(signal.get("phase_name", ""))
+        curr_state = str(signal.get("state_1h", ""))
+        curr_threshold = self._threshold_for(signal)
+
+        if previous_family:
+            prev_sent_at = float(previous_family.get("sent_at", 0.0))
+            prev_price = float(previous_family.get("price", 0.0))
+            prev_signature = str(previous_family.get("signature", ""))
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= curr_threshold
+
+            if now - prev_sent_at < cooldown_seconds:
+                if signal_signature and prev_signature and signal_signature == prev_signature:
+                    return False
+                if tiny_move:
+                    return False
+
+        if previous_slot:
+            prev_sent_at = float(previous_slot.get("sent_at", 0.0))
+            prev_price = float(previous_slot.get("price", 0.0))
+            prev_signal = str(previous_slot.get("signal", ""))
+            prev_phase = str(previous_slot.get("phase_name", ""))
+            prev_state = str(previous_slot.get("state_1h", ""))
+            prev_rank = int(previous_slot.get("rank", 0))
+            curr_rank = self._get_effective_rank(signal)
+            tiny_move = self._price_change_ratio(prev_price, signal_price) <= curr_threshold
+            within_cooldown = now - prev_sent_at < cooldown_seconds
+
+            if prev_signal == signal_name and within_cooldown:
+                return False
+
+            if prev_state == curr_state and prev_signal != signal_name and within_cooldown:
+                return False
+
+            if prev_phase in {"continuation", "repair"} and curr_phase == "early" and within_cooldown:
+                return False
+
+            if prev_phase == curr_phase and within_cooldown and tiny_move:
+                return False
+
+            upgraded = prev_phase == "early" and curr_phase == "repair"
+            upgraded = upgraded or (prev_phase in {"early", "repair"} and curr_phase == "continuation")
+            if upgraded and curr_rank >= prev_rank:
+                return True
+
+            if within_cooldown and tiny_move:
+                return False
+
+        return True
+
+    def should_send(self, signal: dict[str, Any]) -> bool:
+        self._load()
+        if self._is_x_signal(signal):
+            return self._should_send_x(signal)
+        return self._should_send_abc(signal)
+
+    def mark_sent(self, signal: dict[str, Any]):
+        family_key = self._family_key(signal)
+        slot_key = self._directional_slot_key(signal)
+        signal_name = str(signal.get("signal", ""))
 
         payload = {
-            "signal": str(signal.get("signal", "")),
-            "direction": str(signal.get("direction", "na")),
-            "state_1h": str(signal.get("state_1h", "")),
-            "trigger_15m_state": str(signal.get("trigger_15m_state", "idle")),
+            "signal": signal_name,
+            "status": signal.get("status", "active"),
             "price": float(signal.get("price", 0.0) or 0.0),
             "signature": str(signal.get("signature", "")),
             "cooldown_seconds": int(signal.get("cooldown_seconds", 1800) or 1800),
-            "phase_rank": int(signal.get("phase_rank", 0) or 0),
-            "stage_rank": int(signal.get("stage_rank", signal.get("phase_rank", 0)) or 0),
+            "phase_rank": int(signal.get("phase_rank", self._phase_rank(str(signal.get("phase_name", ""))))),
             "phase_name": str(signal.get("phase_name", "")),
             "phase_context": str(signal.get("phase_context", "")),
             "phase_anchor": str(signal.get("phase_anchor", "")),
-            "tai_budget_mode": str(signal.get("tai_budget_mode", "normal")),
-            "reversal_strength": int(signal.get("reversal_strength", 0) or 0),
-            "market_lock_key": str(signal.get("market_lock_key", "")),
+            "state_1h": str(signal.get("state_1h", "")),
+            "h1_tai_bias": str(signal.get("h1_tai_bias", "flat")),
+            "h1_tai_slot": str(signal.get("h1_tai_slot", "")),
+            "rank": self._get_effective_rank(signal),
             "sent_at": time.time(),
         }
 
         self.last_sent[family_key] = payload
-        self.last_sent[market_key] = payload
+        self.last_sent[slot_key] = payload
         self._save()
