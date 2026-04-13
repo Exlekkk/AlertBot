@@ -4,7 +4,7 @@ from typing import Any
 
 
 MIN_15M_ABNORMAL_VOLUME = 8000.0
-MIN_1H_ABNORMAL_VOLUME = 12000.0
+MIN_1H_ABNORMAL_VOLUME = 14000.0
 
 
 def _float(v: Any, default: float = 0.0) -> float:
@@ -66,15 +66,52 @@ def _body_ratio(k: dict) -> float:
     return _body_size(k) / _range_size(k)
 
 
+def _avg_recent_range(klines: list[dict], count: int = 4) -> float:
+    sample = klines[-(count + 1):-1] if len(klines) > count else klines[:-1]
+    if not sample:
+        return 0.0
+    return sum(_range_size(k) for k in sample) / max(len(sample), 1)
+
+
+def _compression_break(klines_15m: list[dict], direction: str) -> bool:
+    if len(klines_15m) < 5:
+        return False
+    k = klines_15m[-1]
+    prev_window = klines_15m[-5:-1]
+    recent_range = _avg_recent_range(klines_15m, 4)
+    if recent_range <= 0:
+        return False
+    bar_range = _range_size(k)
+    close = _float(k.get("close"))
+    if direction == "long":
+        local_high = max(_float(x.get("high")) for x in prev_window)
+        return close > local_high and bar_range >= recent_range * 1.35
+    local_low = min(_float(x.get("low")) for x in prev_window)
+    return close < local_low and bar_range >= recent_range * 1.35
+
+
+def _recent_level_break(klines_15m: list[dict], direction: str) -> bool:
+    if len(klines_15m) < 4:
+        return False
+    k = klines_15m[-1]
+    prev_window = klines_15m[-4:-1]
+    close = _float(k.get("close"))
+    if direction == "long":
+        recent_high = max(_float(x.get("high")) for x in prev_window)
+        return close > recent_high
+    recent_low = min(_float(x.get("low")) for x in prev_window)
+    return close < recent_low
+
+
 def _impulse_up(k: dict, prev: dict) -> bool:
     close = _float(k.get("close"))
     prev_high = _float(prev.get("high"))
     atr = _atr(k)
     return (
         close > prev_high
-        and (close - _float(prev.get("close"))) >= atr * 0.45
-        and _body_ratio(k) >= 0.55
-        and _volume_ratio(k) >= 1.8
+        and (close - _float(prev.get("close"))) >= atr * 0.32
+        and _body_ratio(k) >= 0.48
+        and _volume_ratio(k) >= 1.45
     )
 
 
@@ -84,9 +121,9 @@ def _impulse_down(k: dict, prev: dict) -> bool:
     atr = _atr(k)
     return (
         close < prev_low
-        and (_float(prev.get("close")) - close) >= atr * 0.45
-        and _body_ratio(k) >= 0.55
-        and _volume_ratio(k) >= 1.8
+        and (_float(prev.get("close")) - close) >= atr * 0.32
+        and _body_ratio(k) >= 0.48
+        and _volume_ratio(k) >= 1.45
     )
 
 
@@ -97,10 +134,10 @@ def _wick_sweep_up(k: dict, prev: dict) -> bool:
     atr = _atr(k)
     upper_wick = high - max(_float(k.get("open")), close)
     return (
-        high > prev_high + atr * 0.12
-        and close < high - atr * 0.22
-        and upper_wick >= atr * 0.18
-        and _volume_ratio(k) >= 1.4
+        high > prev_high + atr * 0.10
+        and close < high - atr * 0.18
+        and upper_wick >= atr * 0.15
+        and _volume_ratio(k) >= 1.25
     )
 
 
@@ -111,26 +148,26 @@ def _wick_sweep_down(k: dict, prev: dict) -> bool:
     atr = _atr(k)
     lower_wick = min(_float(k.get("open")), close) - low
     return (
-        low < prev_low - atr * 0.12
-        and close > low + atr * 0.22
-        and lower_wick >= atr * 0.18
-        and _volume_ratio(k) >= 1.4
+        low < prev_low - atr * 0.10
+        and close > low + atr * 0.18
+        and lower_wick >= atr * 0.15
+        and _volume_ratio(k) >= 1.25
     )
 
 
 def _h1_force_up(k_1h: dict, prev_1h: dict) -> bool:
     return (
         _float(k_1h.get("close")) > _float(prev_1h.get("high"))
-        and _volume_ratio(k_1h) >= 1.6
-        and _body_ratio(k_1h) >= 0.5
+        and _volume_ratio(k_1h) >= 1.35
+        and _body_ratio(k_1h) >= 0.42
     )
 
 
 def _h1_force_down(k_1h: dict, prev_1h: dict) -> bool:
     return (
         _float(k_1h.get("close")) < _float(prev_1h.get("low"))
-        and _volume_ratio(k_1h) >= 1.6
-        and _body_ratio(k_1h) >= 0.5
+        and _volume_ratio(k_1h) >= 1.35
+        and _body_ratio(k_1h) >= 0.42
     )
 
 
@@ -144,15 +181,33 @@ def _passes_relative_force_gate(k_15m: dict, k_1h: dict) -> bool:
     atr = _atr(k_15m)
     displacement = abs(_float(k_15m.get("close")) - _float(k_15m.get("open")))
     return (
-        _volume_ratio(k_15m) >= 2.2
-        and _body_ratio(k_15m) >= 0.62
-        and displacement >= atr * 0.60
-        and (_volume_ratio(k_1h) >= 1.35 or _body_ratio(k_1h) >= 0.55)
+        _volume_ratio(k_15m) >= 1.45
+        and _body_ratio(k_15m) >= 0.48
+        and displacement >= atr * 0.38
+        and (_volume_ratio(k_1h) >= 1.12 or _body_ratio(k_1h) >= 0.40)
     )
 
 
-def _passes_x_gate(k_15m: dict, k_1h: dict) -> bool:
-    return _passes_hard_volume_gate(k_15m, k_1h) or _passes_relative_force_gate(k_15m, k_1h)
+def _passes_first_burst_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], direction: str) -> bool:
+    atr = _atr(k_15m)
+    displacement = abs(_float(k_15m.get("close")) - _float(k_15m.get("open")))
+    range_expanded = _range_size(k_15m) >= max(_avg_recent_range(klines_15m, 4) * 1.25, atr * 0.60)
+    directional_break = _recent_level_break(klines_15m, direction) or _compression_break(klines_15m, direction)
+    return (
+        directional_break
+        and range_expanded
+        and displacement >= atr * 0.24
+        and _volume_ratio(k_15m) >= 1.18
+        and (_volume_ratio(k_1h) >= 1.0 or _body_ratio(k_1h) >= 0.34)
+    )
+
+
+def _passes_x_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], direction: str) -> bool:
+    return (
+        _passes_hard_volume_gate(k_15m, k_1h)
+        or _passes_relative_force_gate(k_15m, k_1h)
+        or _passes_first_burst_gate(k_15m, k_1h, klines_15m, direction)
+    )
 
 
 def _base_signal(
@@ -168,7 +223,7 @@ def _base_signal(
     trigger_level: float,
 ) -> dict[str, Any]:
     budget = _cross_tf_budget(k_15m, k_1h)
-    confidence = 56
+    confidence = 58
 
     if "impulse_breakout_up" in basis or "impulse_breakout_down" in basis:
         confidence += 4
@@ -178,14 +233,19 @@ def _base_signal(
         confidence += 2
     if "relative_force_gate" in basis:
         confidence += 2
+    if "first_burst_gate" in basis:
+        confidence += 3
+    if "compression_break" in basis:
+        confidence += 2
+    if "recent_level_break" in basis:
+        confidence += 1
 
     if budget == "restricted":
-        confidence -= 2
+        confidence -= 1
     elif budget == "expanded":
         confidence += 2
 
-    confidence = max(52, min(68, confidence))
-
+    confidence = max(54, min(74, confidence))
     signature = f"{signal}|{abnormal_type}|{round(trigger_level, 2)}|{round(price, 2)}"
 
     return {
@@ -209,8 +269,8 @@ def _base_signal(
         "zone_low": round(zone_low, 2),
         "zone_high": round(zone_high, 2),
         "trigger_level": round(trigger_level, 2),
-        "eta_min_minutes": 10,
-        "eta_max_minutes": 75,
+        "eta_min_minutes": 5,
+        "eta_max_minutes": 60,
         "confidence": confidence,
         "abnormal_type": abnormal_type,
         "phase_name": "abnormal",
@@ -223,6 +283,16 @@ def _base_signal(
     }
 
 
+def _append_burst_basis(basis: list[str], klines_15m: list[dict], direction: str) -> list[str]:
+    out = list(basis)
+    if _compression_break(klines_15m, direction):
+        out.append("compression_break")
+    elif _recent_level_break(klines_15m, direction):
+        out.append("recent_level_break")
+    out.append("first_burst_gate")
+    return out
+
+
 def detect_x_signals(
     symbol: str,
     klines_1d: list[dict],
@@ -230,7 +300,7 @@ def detect_x_signals(
     klines_1h: list[dict],
     klines_15m: list[dict],
 ) -> list[dict]:
-    if len(klines_1h) < 3 or len(klines_15m) < 4:
+    if len(klines_1h) < 3 or len(klines_15m) < 5:
         return []
 
     k_1h = klines_1h[-1]
@@ -239,9 +309,6 @@ def detect_x_signals(
     k_15m = klines_15m[-1]
     prev_15m = klines_15m[-2]
     prev2_15m = klines_15m[-3]
-
-    if not _passes_x_gate(k_15m, k_1h):
-        return []
 
     price = _float(k_15m.get("close"))
     atr15 = _atr(k_15m)
@@ -254,14 +321,20 @@ def detect_x_signals(
     h1_force_up = _h1_force_up(k_1h, prev_1h)
     h1_force_down = _h1_force_down(k_1h, prev_1h)
     relative_force = _passes_relative_force_gate(k_15m, k_1h)
+    first_burst_up = _passes_first_burst_gate(k_15m, k_1h, klines_15m, "long")
+    first_burst_down = _passes_first_burst_gate(k_15m, k_1h, klines_15m, "short")
+    x_gate_up = _passes_x_gate(k_15m, k_1h, klines_15m, "long")
+    x_gate_down = _passes_x_gate(k_15m, k_1h, klines_15m, "short")
 
-    if impulse_up and (h1_force_up or _volume_ratio(k_15m) >= 2.1 or relative_force):
-        basis = ["impulse_breakout_up"]
+    if x_gate_up and (impulse_up or first_burst_up) and (h1_force_up or _volume_ratio(k_15m) >= 1.35 or relative_force):
+        basis = ["impulse_breakout_up"] if impulse_up else ["early_breakout_up"]
         if h1_force_up:
             basis.insert(0, "h1_volume_force_x")
         if relative_force:
             basis.append("relative_force_gate")
-        zone_low = min(_float(prev_15m.get("close")), price - atr15 * 0.35)
+        if first_burst_up:
+            basis = _append_burst_basis(basis, klines_15m, "long")
+        zone_low = min(_float(prev_15m.get("close")), price - atr15 * 0.25)
         zone_high = max(price, _float(k_15m.get("high")))
         trigger_level = max(_float(prev_15m.get("high")), _float(prev2_15m.get("high")))
         signals.append(_base_signal(
@@ -277,14 +350,16 @@ def detect_x_signals(
             trigger_level=trigger_level,
         ))
 
-    if impulse_down and (h1_force_down or _volume_ratio(k_15m) >= 2.1 or relative_force):
-        basis = ["impulse_breakout_down"]
+    if x_gate_down and (impulse_down or first_burst_down) and (h1_force_down or _volume_ratio(k_15m) >= 1.35 or relative_force):
+        basis = ["impulse_breakout_down"] if impulse_down else ["early_breakout_down"]
         if h1_force_down:
             basis.insert(0, "h1_volume_force_x")
         if relative_force:
             basis.append("relative_force_gate")
+        if first_burst_down:
+            basis = _append_burst_basis(basis, klines_15m, "short")
         zone_low = min(price, _float(k_15m.get("low")))
-        zone_high = max(_float(prev_15m.get("close")), price + atr15 * 0.35)
+        zone_high = max(_float(prev_15m.get("close")), price + atr15 * 0.25)
         trigger_level = min(_float(prev_15m.get("low")), _float(prev2_15m.get("low")))
         signals.append(_base_signal(
             signal="X_BREAKOUT_SHORT",
@@ -299,8 +374,8 @@ def detect_x_signals(
             trigger_level=trigger_level,
         ))
 
-    if sweep_up and not impulse_up:
-        zone_low = price - atr15 * 0.15
+    if x_gate_down and sweep_up and not impulse_up:
+        zone_low = price - atr15 * 0.12
         zone_high = _float(k_15m.get("high"))
         trigger_level = _float(prev_15m.get("high"))
         basis = ["wick_sweep_resolve_down"]
@@ -319,9 +394,9 @@ def detect_x_signals(
             trigger_level=trigger_level,
         ))
 
-    if sweep_down and not impulse_down:
+    if x_gate_up and sweep_down and not impulse_down:
         zone_low = _float(k_15m.get("low"))
-        zone_high = price + atr15 * 0.15
+        zone_high = price + atr15 * 0.12
         trigger_level = _float(prev_15m.get("low"))
         basis = ["wick_sweep_resolve_up"]
         if relative_force:
