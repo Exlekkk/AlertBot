@@ -194,45 +194,93 @@ def follow_line_components(klines: list[dict], atr_period: int = 5, bb_period: i
 
 
 def rsi_series(values: list[float], period: int = 14) -> list[float]:
+    """TradingView-style RSI using Wilder/RMA smoothing.
+
+    The old bot implementation used EMA smoothing, which was close enough for
+    rough oscillator texture but did not match the LuxAlgo RAR source.  RAR is
+    the only current caller, so keeping this closer to Pine keeps the exported
+    chart value and bot value aligned without touching ABC/X classifiers.
+    """
     if not values:
         return []
-    gains = [0.0]
-    losses = [0.0]
+
+    period = max(1, int(period))
+    out: list[float] = [50.0]
+    gains: list[float] = []
+    losses: list[float] = []
+    avg_gain = 0.0
+    avg_loss = 0.0
+
     for i in range(1, len(values)):
         delta = values[i] - values[i - 1]
-        gains.append(max(delta, 0.0))
-        losses.append(max(-delta, 0.0))
+        gain = max(delta, 0.0)
+        loss = max(-delta, 0.0)
+        gains.append(gain)
+        losses.append(loss)
 
-    avg_gain = ema(gains, period)
-    avg_loss = ema(losses, period)
-
-    out = []
-    for g, l in zip(avg_gain, avg_loss):
-        if l == 0:
-            out.append(100.0)
+        if len(gains) < period:
+            avg_gain = sum(gains) / len(gains)
+            avg_loss = sum(losses) / len(losses)
+        elif len(gains) == period:
+            avg_gain = sum(gains[-period:]) / period
+            avg_loss = sum(losses[-period:]) / period
         else:
-            rs = g / l
+            avg_gain = (avg_gain * (period - 1) + gain) / period
+            avg_loss = (avg_loss * (period - 1) + loss) / period
+
+        if avg_loss <= 1e-12:
+            out.append(100.0 if avg_gain > 1e-12 else 50.0)
+        else:
+            rs = avg_gain / avg_loss
             out.append(100 - 100 / (1 + rs))
+
     return out
 
 
 def rar_components(values: list[float], length: int = 15, power: float = 1.0):
-    ama = []
-    current_ama = values[0]
+    """Rainbow Adaptive RSI components aligned with LuxAlgo Pine logic.
+
+    Pine source:
+      alpha   = abs(rsi(src - ama[1], length) / 100 - 0.5)
+      ama     := nz(ama[1] + pow(alpha, power) * (src - ama[1]), src)
+      rsi     = rsi(ama, length)
+      trigger = ema(rsi(ema(src, length / 2), length), length / 2)
+    """
+    if not values:
+        return {
+            "rar_value": [],
+            "rar_trigger": [],
+            "rar_spread": [],
+            "rar_trend_strong": [],
+        }
+
+    length = max(1, int(length))
+    half_length = max(1, int(length / 2))
+    power = max(0.0, float(power))
+
+    ama: list[float] = []
+    alpha_source: list[float] = []
 
     for i, value in enumerate(values):
-        prev_ama = current_ama if i > 0 else value
-        alpha_source = value - prev_ama
-        alpha = min(1.0, abs(alpha_source) / max(abs(value), 1e-9))
-        current_ama = prev_ama + (alpha**power) * (value - prev_ama)
+        value = float(value)
+        if i == 0:
+            current_ama = value
+            alpha_source.append(0.0)
+        else:
+            prev_ama = ama[-1]
+            alpha_source.append(value - prev_ama)
+            alpha_rsi = rsi_series(alpha_source, length)[-1]
+            alpha = abs(alpha_rsi / 100.0 - 0.5)
+            current_ama = prev_ama + (alpha**power) * (value - prev_ama)
         ama.append(current_ama)
 
     rar_value = rsi_series(ama, length)
-    ema_src_half = ema(values, max(1, length // 2))
-    rar_trigger = rsi_series(ema(ema_src_half, length), max(1, length // 2))
+    ema_src_half = ema(values, half_length)
+    trigger_rsi = rsi_series(ema_src_half, length)
+    rar_trigger = ema(trigger_rsi, half_length)
     rar_spread = [abs(a - b) for a, b in zip(rar_value, rar_trigger)]
     rar_spread_ma = sma(rar_spread, length)
-    rar_trend_strong = [rar_spread[i] <= rar_spread_ma[i] for i in range(len(rar_spread))]
+    rar_trend_strong = [rar_spread[i] >= rar_spread_ma[i] for i in range(len(rar_spread))]
 
     return {
         "rar_value": rar_value,
