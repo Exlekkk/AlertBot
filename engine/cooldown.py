@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from config import SMCT_SIGNAL_STATE_FILE
+
+
+logger = logging.getLogger("scanner")
 
 
 class SignalStateStore:
@@ -23,15 +27,18 @@ class SignalStateStore:
         try:
             if self.state_file.exists():
                 self.last_sent = json.loads(self.state_file.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("signal_state_load_failed file=%s error=%s", self.state_file, exc)
             self.last_sent = {}
 
     def _save(self) -> None:
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps(self.last_sent, ensure_ascii=False, indent=2))
-        except Exception:
-            pass
+            tmp_file = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+            tmp_file.write_text(json.dumps(self.last_sent, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_file.replace(self.state_file)
+        except Exception as exc:
+            logger.warning("signal_state_save_failed file=%s error=%s", self.state_file, exc)
 
     def _price_change_ratio(self, previous_price: float, current_price: float) -> float:
         base = max(abs(previous_price), 1e-9)
