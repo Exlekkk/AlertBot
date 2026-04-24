@@ -1,5 +1,10 @@
 import os
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
 ENV_FILE = os.getenv("SMCT_ENV_FILE", "/opt/smct-alert/config/.env")
 load_dotenv(ENV_FILE)
