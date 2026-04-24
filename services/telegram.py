@@ -1,6 +1,10 @@
 import requests
 
 
+class TelegramSendError(RuntimeError):
+    """Raised when Telegram does not confirm message delivery."""
+
+
 TYPE_LABELS = {
     1: "A类",
     2: "B类",
@@ -267,11 +271,34 @@ def format_webhook_message(signal: str, symbol: str, timeframe: str, direction: 
     )
 
 
-def send_telegram_message(token: str, chat_id: str, text: str):
+def send_telegram_message(token: str, chat_id: str, text: str) -> dict:
+    """Send a Telegram message and require Telegram's ok=true confirmation.
+
+    The scanner should only enter cooldown after this function returns
+    successfully. HTTP errors, non-JSON responses, and Telegram {"ok": false}
+    responses raise TelegramSendError.
+    """
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
     }
-    response = requests.post(url, json=payload, timeout=20)
-    return response.text
+
+    try:
+        response = requests.post(url, json=payload, timeout=20)
+    except requests.RequestException as exc:
+        raise TelegramSendError(f"telegram_request_failed: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise TelegramSendError(f"telegram_http_error status={response.status_code} body={response.text[:500]}")
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise TelegramSendError(f"telegram_invalid_json body={response.text[:500]}") from exc
+
+    if not data.get("ok"):
+        description = data.get("description") or data
+        raise TelegramSendError(f"telegram_api_error: {description}")
+
+    return data
