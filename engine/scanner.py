@@ -19,7 +19,7 @@ from engine.market_data import BinanceMarketDataClient
 from engine.runtime_state import RuntimeStateStore
 from engine.signals import detect_signals
 from services.logger import get_logger
-from services.telegram import format_engine_message, send_telegram_message
+from services.telegram import TelegramSendError, format_engine_message, send_telegram_message
 
 
 class SMCTScanner:
@@ -169,6 +169,7 @@ class SMCTScanner:
             "signals_detected": [s.get("signal") for s in signal_result.get("signals", [])],
             "x_signals_detected": [s.get("signal") for s in x_signals],
             "signals_sent": [s.get("signal") for s in sent_signals],
+            "near_miss_signals": signal_result.get("near_miss_signals", []),
         }
 
     def _select_candidates(
@@ -223,19 +224,32 @@ class SMCTScanner:
                     continue
 
                 message = format_engine_message(signal)
-                result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
+                try:
+                    result = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
+                except TelegramSendError as exc:
+                    self.logger.error(
+                        "telegram_send_failed symbol=%s signal=%s state=%s trigger=%s budget=%s error=%s",
+                        self.symbol,
+                        signal.get("signal"),
+                        signal.get("state_1h"),
+                        signal.get("trigger_15m_state"),
+                        signal.get("tai_budget_mode"),
+                        exc,
+                    )
+                    continue
+
                 self.state_store.mark_sent(signal)
                 self.runtime_state.mark_sent_signal(signal)
                 sent_signals.append(signal)
 
                 self.logger.info(
-                    "signal_sent symbol=%s signal=%s state=%s trigger=%s budget=%s result=%s",
+                    "signal_sent symbol=%s signal=%s state=%s trigger=%s budget=%s telegram_ok=%s",
                     self.symbol,
                     signal.get("signal"),
                     signal.get("state_1h"),
                     signal.get("trigger_15m_state"),
                     signal.get("tai_budget_mode"),
-                    result,
+                    result.get("ok"),
                 )
 
             if SEND_NEAR_MISS_SUMMARY and signal_result.get("near_miss_signals"):
