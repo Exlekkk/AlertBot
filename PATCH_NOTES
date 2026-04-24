@@ -1,0 +1,31 @@
+# AlertBot patch 2026-04-24
+
+## Changed files
+
+- `engine/x_signals.py`
+  - Fixed X signal `tai_heat_4h` to use the real 4h kline.
+  - Kept X/abnormal volume thresholds in one source of truth.
+  - Updated stale hard-gate comment so it no longer disagrees with code.
+
+- `engine/abnormal.py`
+  - Converted into a backward-compatible wrapper.
+  - Old imports of `detect_abnormal_signals(...)` now forward to `engine.x_signals.detect_x_signals(...)`.
+  - XSignals remains independent from ABC.
+
+- `tests/test_state_and_message.py`
+  - Replaced old `_abc_confidence` tests with current `_signal_confidence` tests.
+  - Added regression test for X `tai_heat_4h`.
+  - Added import compatibility test for `engine.abnormal`.
+
+- `README.md`
+  - Marked X news-feed extension as paused.
+  - Documented `engine/x_signals.py` as the real X module and `engine/abnormal.py` as compatibility wrapper.
+
+## Verification run locally
+
+```bash
+python -m unittest discover -s tests
+python -m compileall -q engine services tests
+```
+
+Both commands completed successfully in the patch workspace.
