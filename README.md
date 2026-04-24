@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/27037833/README.md)
 [README_alertbot_full_en.md](https://github.com/user-attachments/files/26455856/README_alertbot_full_en.md)
 # AlertBot
 
@@ -181,13 +182,19 @@ Responsibilities:
 - publishing conflict control
 - state persistence
 
-### `engine/abnormal.py`
+### `engine/x_signals.py`
 Generates X abnormal-event signals.
 
 Responsibilities:
 - abnormal movement detection
-- price / volume / structure / news-assisted event scoring
+- price / volume / structure event scoring
 - event-type classification
+
+### `engine/abnormal.py`
+Backward-compatible wrapper for older imports.
+
+Responsibilities:
+- forward old `detect_abnormal_signals(...)` calls to `engine.x_signals.detect_x_signals(...)`
 
 ### `engine/scanner.py`
 Main scanning orchestration.
@@ -232,7 +239,13 @@ This keeps signal generation separate from publication control.
 
 ## X News Feed Support
 
-X can optionally use a local news feed file to improve anomaly detection.
+Status: paused.
+
+X currently runs as a price / volume / structure abnormal-event detector.
+The optional news feed idea is kept as future documentation only, because no stable free API is currently selected.
+Current code does not read the news-feed variables below.
+
+Future design kept from the earlier plan:
 
 Default path:
 
