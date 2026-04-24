@@ -1,4 +1,8 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 def _heat_profile(budget: str = "normal") -> dict:
@@ -175,6 +179,126 @@ class XSignalCompatibilityTests(unittest.TestCase):
         from engine.abnormal import detect_abnormal_signals
 
         self.assertTrue(callable(detect_abnormal_signals))
+
+
+
+class RARIndicatorTests(unittest.TestCase):
+    def test_rar_trigger_matches_pine_order(self):
+        from engine.indicators import ema, rar_components, rsi_series
+
+        values = [100 + i * 0.7 + (i % 5) * 0.3 for i in range(60)]
+        length = 15
+        half = int(length / 2)
+
+        result = rar_components(values, length=length, power=1.0)
+        expected_trigger = ema(rsi_series(ema(values, half), length), half)
+
+        self.assertEqual(len(result["rar_value"]), len(values))
+        self.assertEqual(len(result["rar_trigger"]), len(values))
+        self.assertAlmostEqual(result["rar_trigger"][-1], expected_trigger[-1], places=9)
+        self.assertGreaterEqual(result["rar_value"][-1], 0.0)
+        self.assertLessEqual(result["rar_value"][-1], 100.0)
+
+
+class TelegramSendTests(unittest.TestCase):
+    @patch("services.telegram.requests.post")
+    def test_send_telegram_message_requires_ok_true(self, mock_post):
+        from services.telegram import TelegramSendError, send_telegram_message
+
+        response = Mock(status_code=200, text='{"ok": false, "description": "bad chat"}')
+        response.json.return_value = {"ok": False, "description": "bad chat"}
+        mock_post.return_value = response
+
+        with self.assertRaises(TelegramSendError):
+            send_telegram_message("token", "chat", "hello")
+
+    @patch("services.telegram.requests.post")
+    def test_send_telegram_message_returns_json_when_ok(self, mock_post):
+        from services.telegram import send_telegram_message
+
+        response = Mock(status_code=200, text='{"ok": true}')
+        response.json.return_value = {"ok": True, "result": {"message_id": 123}}
+        mock_post.return_value = response
+
+        result = send_telegram_message("token", "chat", "hello")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["message_id"], 123)
+
+    def test_scanner_does_not_mark_sent_when_telegram_fails(self):
+        from engine.scanner import SMCTScanner
+        from services.telegram import TelegramSendError
+
+        signal = {
+            "signal": "A_LONG",
+            "symbol": "BTCUSDT",
+            "direction": "long",
+            "priority": 1,
+            "price": 100.0,
+            "zone_low": 99.0,
+            "zone_high": 101.0,
+            "state_1h": "trend_drive_long",
+            "trigger_15m_state": "confirm_long",
+            "tai_budget_mode": "normal",
+            "background_4h_direction": "bull",
+            "tai_heat_1h": "warm",
+        }
+        signal_result = {
+            "signals": [signal],
+            "near_miss_signals": [],
+            "background_4h_direction": "bull",
+            "state_1h": "trend_drive_long",
+            "trigger_15m_state": "confirm_long",
+            "tai_budget_mode": "normal",
+            "tai_heat_1h": "warm",
+            "tai_heat_4h": "warm",
+            "blocked_reasons": [],
+        }
+
+        with patch.object(SMCTScanner, "_fetch_enriched", return_value=[{}]), \
+             patch("engine.scanner.get_logger", return_value=Mock()), \
+             patch("engine.scanner.detect_signals", return_value=signal_result), \
+             patch("engine.scanner.detect_x_signals", return_value=[]), \
+             patch("engine.scanner.send_telegram_message", side_effect=TelegramSendError("fail")):
+            scanner = SMCTScanner("BTCUSDT")
+            scanner.state_store = Mock()
+            scanner.state_store.should_send.return_value = True
+            scanner.runtime_state = Mock()
+
+            result = scanner.run_once()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["sent"], 0)
+        scanner.state_store.mark_sent.assert_not_called()
+        scanner.runtime_state.mark_sent_signal.assert_not_called()
+
+
+class StatePersistenceTests(unittest.TestCase):
+    def test_signal_state_store_writes_json_atomically(self):
+        from engine.cooldown import SignalStateStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "signal_state.json"
+            store = SignalStateStore(state_file=str(state_file))
+            store.mark_sent({"signal": "A_LONG", "symbol": "BTCUSDT", "direction": "long", "price": 100.0})
+
+            self.assertTrue(state_file.exists())
+            self.assertFalse(state_file.with_suffix(".json.tmp").exists())
+            data = json.loads(state_file.read_text())
+            self.assertTrue(any(key.startswith("FAMILY|ABC|") for key in data))
+
+    def test_runtime_state_store_writes_json_atomically(self):
+        from engine.runtime_state import RuntimeStateStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "runtime_state.json"
+            store = RuntimeStateStore(state_file=str(state_file))
+            store.mark_scan(ok=True, symbol="BTCUSDT", summary={"state_1h": "trend_drive_long"})
+
+            self.assertTrue(state_file.exists())
+            self.assertFalse(state_file.with_suffix(".json.tmp").exists())
+            data = json.loads(state_file.read_text())
+            self.assertTrue(data["last_scan_ok"])
+            self.assertEqual(data["last_symbol"], "BTCUSDT")
 
 
 if __name__ == "__main__":
