@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from config import HEARTBEAT_STALE_AFTER_SECONDS, SMCT_RUNTIME_STATE_FILE
+
+
+logger = logging.getLogger("scanner")
 
 
 class RuntimeStateStore:
@@ -26,15 +30,17 @@ class RuntimeStateStore:
         try:
             if self.state_file.exists():
                 self.state.update(json.loads(self.state_file.read_text()))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("runtime_state_load_failed file=%s error=%s", self.state_file, exc)
 
     def _save(self) -> None:
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps(self.state, ensure_ascii=False, indent=2))
-        except Exception:
-            pass
+            tmp_file = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+            tmp_file.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_file.replace(self.state_file)
+        except Exception as exc:
+            logger.warning("runtime_state_save_failed file=%s error=%s", self.state_file, exc)
 
     def mark_scan(self, ok: bool, symbol: str, summary: dict[str, Any] | None = None, error: str = "") -> None:
         self.state["last_scan_at"] = time.time()
