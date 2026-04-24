@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 
-MIN_15M_ABNORMAL_VOLUME = 8000.0
-MIN_1H_ABNORMAL_VOLUME = 14000.0
+MIN_15M_ABNORMAL_VOLUME = 6000.0
+MIN_1H_ABNORMAL_VOLUME = 12000.0
 
 
 def _float(v: Any, default: float = 0.0) -> float:
@@ -155,53 +155,6 @@ def _wick_sweep_down(k: dict, prev: dict) -> bool:
     )
 
 
-def _upper_wick_size(k: dict) -> float:
-    return max(_float(k.get("high")) - max(_float(k.get("open")), _float(k.get("close"))), 0.0)
-
-
-def _lower_wick_size(k: dict) -> float:
-    return max(min(_float(k.get("open")), _float(k.get("close"))) - _float(k.get("low")), 0.0)
-
-
-def _wick_shock_up(k: dict, prev: dict, klines_15m: list[dict]) -> bool:
-    atr = _atr(k)
-    bar_range = _range_size(k)
-    recent_range = _avg_recent_range(klines_15m, 4)
-    close = _float(k.get("close"))
-    return (
-        _float(k.get("high")) > _float(prev.get("high")) + atr * 0.10
-        and close <= _float(prev.get("high")) + atr * 0.05
-        and _upper_wick_size(k) >= max(atr * 0.22, bar_range * 0.42)
-        and bar_range >= max(recent_range * 1.60, atr * 0.95)
-        and _float(k.get("volume")) >= MIN_15M_ABNORMAL_VOLUME
-        and _volume_ratio(k) >= 1.35
-    )
-
-
-def _wick_shock_down(k: dict, prev: dict, klines_15m: list[dict]) -> bool:
-    atr = _atr(k)
-    bar_range = _range_size(k)
-    recent_range = _avg_recent_range(klines_15m, 4)
-    close = _float(k.get("close"))
-    return (
-        _float(k.get("low")) < _float(prev.get("low")) - atr * 0.10
-        and close >= _float(prev.get("low")) - atr * 0.05
-        and _lower_wick_size(k) >= max(atr * 0.22, bar_range * 0.42)
-        and bar_range >= max(recent_range * 1.60, atr * 0.95)
-        and _float(k.get("volume")) >= MIN_15M_ABNORMAL_VOLUME
-        and _volume_ratio(k) >= 1.35
-    )
-
-
-def _passes_wick_shock_gate(k_15m: dict, k_1h: dict) -> bool:
-    vol_15m = _float(k_15m.get("volume"), 0.0)
-    vol_1h = _float(k_1h.get("volume"), 0.0)
-    return (
-        vol_15m >= MIN_15M_ABNORMAL_VOLUME
-        and (vol_1h >= MIN_1H_ABNORMAL_VOLUME or _volume_ratio(k_1h) >= 1.05 or _volume_ratio(k_15m) >= 1.65)
-    )
-
-
 def _h1_force_up(k_1h: dict, prev_1h: dict) -> bool:
     return (
         _float(k_1h.get("close")) > _float(prev_1h.get("high"))
@@ -250,11 +203,9 @@ def _passes_first_burst_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], di
 
 
 def _passes_x_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], direction: str) -> bool:
-    return (
-        _passes_hard_volume_gate(k_15m, k_1h)
-        or _passes_relative_force_gate(k_15m, k_1h)
-        or _passes_first_burst_gate(k_15m, k_1h, klines_15m, direction)
-    )
+    # X 的硬门槛必须绝对前置：
+    # 15m > 8000 且 1h > 14000，不满足时任何首发/插针/收盘确认都不允许报 X。
+    return _passes_hard_volume_gate(k_15m, k_1h)
 
 
 def _base_signal(
@@ -278,8 +229,6 @@ def _base_signal(
         confidence += 3
     if "wick_sweep_resolve_up" in basis or "wick_sweep_resolve_down" in basis:
         confidence += 2
-    if "wick_shock_reject_up" in basis or "wick_shock_reject_down" in basis:
-        confidence += 4
     if "relative_force_gate" in basis:
         confidence += 2
     if "first_burst_gate" in basis:
@@ -367,8 +316,6 @@ def detect_x_signals(
     impulse_down = _impulse_down(k_15m, prev_15m)
     sweep_up = _wick_sweep_up(k_15m, prev_15m)
     sweep_down = _wick_sweep_down(k_15m, prev_15m)
-    wick_shock_up = _wick_shock_up(k_15m, prev_15m, klines_15m)
-    wick_shock_down = _wick_shock_down(k_15m, prev_15m, klines_15m)
     h1_force_up = _h1_force_up(k_1h, prev_1h)
     h1_force_down = _h1_force_down(k_1h, prev_1h)
     relative_force = _passes_relative_force_gate(k_15m, k_1h)
@@ -376,47 +323,6 @@ def detect_x_signals(
     first_burst_down = _passes_first_burst_gate(k_15m, k_1h, klines_15m, "short")
     x_gate_up = _passes_x_gate(k_15m, k_1h, klines_15m, "long")
     x_gate_down = _passes_x_gate(k_15m, k_1h, klines_15m, "short")
-    wick_shock_gate = _passes_wick_shock_gate(k_15m, k_1h)
-
-    if wick_shock_gate and wick_shock_up:
-        zone_low = min(_float(prev_15m.get("close")), price - atr15 * 0.10)
-        zone_high = _float(k_15m.get("high"))
-        trigger_level = _float(prev_15m.get("high"))
-        basis = ["wick_shock_reject_down", "wick_sweep_resolve_down"]
-        if _volume_ratio(k_1h) >= 1.05:
-            basis.insert(0, "h1_volume_force_x")
-        signals.append(_base_signal(
-            signal="X_BREAKOUT_SHORT",
-            symbol=symbol,
-            price=price,
-            abnormal_type="长上影扫流动性后急收回",
-            basis=basis,
-            k_15m=k_15m,
-            k_1h=k_1h,
-            zone_low=zone_low,
-            zone_high=zone_high,
-            trigger_level=trigger_level,
-        ))
-
-    if wick_shock_gate and wick_shock_down:
-        zone_low = _float(k_15m.get("low"))
-        zone_high = max(_float(prev_15m.get("close")), price + atr15 * 0.10)
-        trigger_level = _float(prev_15m.get("low"))
-        basis = ["wick_shock_reject_up", "wick_sweep_resolve_up"]
-        if _volume_ratio(k_1h) >= 1.05:
-            basis.insert(0, "h1_volume_force_x")
-        signals.append(_base_signal(
-            signal="X_BREAKOUT_LONG",
-            symbol=symbol,
-            price=price,
-            abnormal_type="长下影扫流动性后急收回",
-            basis=basis,
-            k_15m=k_15m,
-            k_1h=k_1h,
-            zone_low=zone_low,
-            zone_high=zone_high,
-            trigger_level=trigger_level,
-        ))
 
     if x_gate_up and (impulse_up or first_burst_up) and (h1_force_up or _volume_ratio(k_15m) >= 1.35 or relative_force):
         basis = ["impulse_breakout_up"] if impulse_up else ["early_breakout_up"]
