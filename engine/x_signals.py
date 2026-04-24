@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 
+# X / abnormal 的硬成交量门槛只在这里维护。
+# abnormal.py 只是兼容入口，避免两份逻辑阈值不一致。
 MIN_15M_ABNORMAL_VOLUME = 6000.0
 MIN_1H_ABNORMAL_VOLUME = 12000.0
 
@@ -204,7 +206,8 @@ def _passes_first_burst_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], di
 
 def _passes_x_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], direction: str) -> bool:
     # X 的硬门槛必须绝对前置：
-    # 15m > 8000 且 1h > 14000，不满足时任何首发/插针/收盘确认都不允许报 X。
+    # 不满足 MIN_15M_ABNORMAL_VOLUME / MIN_1H_ABNORMAL_VOLUME 时，
+    # 任何首发、插针、收盘确认都不允许报 X。
     return _passes_hard_volume_gate(k_15m, k_1h)
 
 
@@ -216,6 +219,7 @@ def _base_signal(
     basis: list[str],
     k_15m: dict,
     k_1h: dict,
+    k_4h: dict,
     zone_low: float,
     zone_high: float,
     trigger_level: float,
@@ -260,7 +264,7 @@ def _base_signal(
         "tai_budget_mode": budget,
         "tai_heat_15m": _tai_heat(k_15m),
         "tai_heat_1h": _tai_heat(k_1h),
-        "tai_heat_4h": _tai_heat(k_1h),
+        "tai_heat_4h": _tai_heat(k_4h),
         "freeze_mode": False,
         "heat_restricted": budget == "restricted",
         "structure_basis": basis,
@@ -303,6 +307,7 @@ def detect_x_signals(
 
     k_1h = klines_1h[-1]
     prev_1h = klines_1h[-2]
+    k_4h = klines_4h[-1] if klines_4h else k_1h
 
     k_15m = klines_15m[-1]
     prev_15m = klines_15m[-2]
@@ -343,6 +348,7 @@ def detect_x_signals(
             basis=basis,
             k_15m=k_15m,
             k_1h=k_1h,
+            k_4h=k_4h,
             zone_low=zone_low,
             zone_high=zone_high,
             trigger_level=trigger_level,
@@ -367,6 +373,7 @@ def detect_x_signals(
             basis=basis,
             k_15m=k_15m,
             k_1h=k_1h,
+            k_4h=k_4h,
             zone_low=zone_low,
             zone_high=zone_high,
             trigger_level=trigger_level,
@@ -387,6 +394,7 @@ def detect_x_signals(
             basis=basis,
             k_15m=k_15m,
             k_1h=k_1h,
+            k_4h=k_4h,
             zone_low=zone_low,
             zone_high=zone_high,
             trigger_level=trigger_level,
@@ -407,6 +415,7 @@ def detect_x_signals(
             basis=basis,
             k_15m=k_15m,
             k_1h=k_1h,
+            k_4h=k_4h,
             zone_low=zone_low,
             zone_high=zone_high,
             trigger_level=trigger_level,
