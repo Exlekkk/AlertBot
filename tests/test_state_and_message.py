@@ -182,6 +182,20 @@ class XSignalCompatibilityTests(unittest.TestCase):
 
 
 
+    def test_x_hard_volume_gate_uses_or_between_15m_and_1h(self):
+        from engine.x_signals import _passes_hard_volume_gate
+
+        low_15m = {"volume": 5000.0}
+        high_15m = {"volume": 7000.0}
+        low_1h = {"volume": 11000.0}
+        high_1h = {"volume": 13000.0}
+
+        self.assertTrue(_passes_hard_volume_gate(high_15m, low_1h))
+        self.assertTrue(_passes_hard_volume_gate(low_15m, high_1h))
+        self.assertTrue(_passes_hard_volume_gate(high_15m, high_1h))
+        self.assertFalse(_passes_hard_volume_gate(low_15m, low_1h))
+
+
 class RARIndicatorTests(unittest.TestCase):
     def test_rar_trigger_matches_pine_order(self):
         from engine.indicators import ema, rar_components, rsi_series
