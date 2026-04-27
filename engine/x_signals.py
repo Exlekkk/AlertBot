@@ -176,7 +176,7 @@ def _h1_force_down(k_1h: dict, prev_1h: dict) -> bool:
 def _passes_hard_volume_gate(k_15m: dict, k_1h: dict) -> bool:
     vol_15m = _float(k_15m.get("volume"), 0.0)
     vol_1h = _float(k_1h.get("volume"), 0.0)
-    return vol_15m > MIN_15M_ABNORMAL_VOLUME and vol_1h > MIN_1H_ABNORMAL_VOLUME
+    return vol_15m > MIN_15M_ABNORMAL_VOLUME or vol_1h > MIN_1H_ABNORMAL_VOLUME
 
 
 def _passes_relative_force_gate(k_15m: dict, k_1h: dict) -> bool:
@@ -205,9 +205,9 @@ def _passes_first_burst_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], di
 
 
 def _passes_x_gate(k_15m: dict, k_1h: dict, klines_15m: list[dict], direction: str) -> bool:
-    # X 的硬门槛必须绝对前置：
-    # 不满足 MIN_15M_ABNORMAL_VOLUME / MIN_1H_ABNORMAL_VOLUME 时，
-    # 任何首发、插针、收盘确认都不允许报 X。
+    # X 的硬门槛必须绝对前置，但 15m 与 1h 是 OR 关系：
+    # 15m VOL > MIN_15M_ABNORMAL_VOLUME 或 1h VOL > MIN_1H_ABNORMAL_VOLUME，
+    # 任一时间框架出现硬放量，才允许继续检查首发、插针、收盘确认。
     return _passes_hard_volume_gate(k_15m, k_1h)
 
 
