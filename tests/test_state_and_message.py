@@ -180,8 +180,6 @@ class XSignalCompatibilityTests(unittest.TestCase):
 
         self.assertTrue(callable(detect_abnormal_signals))
 
-
-
     def test_x_hard_volume_gate_uses_or_between_15m_and_1h(self):
         from engine.x_signals import _passes_hard_volume_gate
 
@@ -242,36 +240,39 @@ class TelegramSendTests(unittest.TestCase):
         from engine.scanner import SMCTScanner
         from services.telegram import TelegramSendError
 
-        signal = {
-            "signal": "A_LONG",
-            "symbol": "BTCUSDT",
-            "direction": "long",
-            "priority": 1,
-            "price": 100.0,
-            "zone_low": 99.0,
-            "zone_high": 101.0,
-            "state_1h": "trend_drive_long",
-            "trigger_15m_state": "confirm_long",
-            "tai_budget_mode": "normal",
-            "background_4h_direction": "bull",
-            "tai_heat_1h": "warm",
+        fetch_calls: list[str] = []
+
+        def fake_fetch(self, interval: str):
+            fetch_calls.append(interval)
+            return [{"close": 100.0, "ema10": 2.0, "ema20": 1.0, "macd": 90.0}] * 30
+
+        liq = {
+            "sweep_type": "sellside",
+            "reclaim_or_reject": "reclaim",
+            "sweep_level": 99.0,
+            "recent_sweep_valid": True,
+            "bars_since_sweep": 1,
+            "prev_low": 99.0,
+            "prev_high": 110.0,
         }
-        signal_result = {
-            "signals": [signal],
-            "near_miss_signals": [],
-            "background_4h_direction": "bull",
-            "state_1h": "trend_drive_long",
-            "trigger_15m_state": "confirm_long",
-            "tai_budget_mode": "normal",
-            "tai_heat_1h": "warm",
-            "tai_heat_4h": "warm",
-            "blocked_reasons": [],
+        msb = {
+            "direction": "bull",
+            "leg_type": "MID",
+            "quality": 80,
+            "structure_zone": (108.0, 112.0),
+            "order_block_zone": (107.0, 113.0),
+            "mid_observe_zone": (109.0, 111.0),
+            "metrics": {"atr_move": 1.0, "range_ratio": 0.5, "body_quality": 0.7},
         }
 
-        with patch.object(SMCTScanner, "_fetch_enriched", return_value=[{}]), \
+        with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
-             patch("engine.scanner.detect_signals", return_value=signal_result), \
-             patch("engine.scanner.detect_x_signals", return_value=[]), \
+             patch("engine.scanner.build_liquidity_context", return_value=liq), \
+             patch("engine.scanner.build_msb_ob_context", return_value=msb), \
+             patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "bull"}), \
+             patch("engine.scanner.build_aux_filters_proxy", return_value={"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 111.0}), \
+             patch("engine.scanner.load_trend_state", return_value={"direction": "neutral", "has_snapshot": False}), \
+             patch("engine.scanner.save_trend_state"), \
              patch("engine.scanner.send_telegram_message", side_effect=TelegramSendError("fail")):
             scanner = SMCTScanner("BTCUSDT")
             scanner.state_store = Mock()
@@ -282,8 +283,244 @@ class TelegramSendTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["sent"], 0)
+        self.assertEqual(sorted(fetch_calls), ["1h", "4h"])
         scanner.state_store.mark_sent.assert_not_called()
         scanner.runtime_state.mark_sent_signal.assert_not_called()
+
+
+class TrendSegmentTests(unittest.TestCase):
+    def _base(self, leg: str, sweep_level: float = 100.0, sweep: bool = True, trend_state: dict | None = None) -> dict:
+        liq = {
+            "sweep_type": "sellside" if sweep else "none",
+            "reclaim_or_reject": "reclaim" if sweep else "none",
+            "sweep_level": sweep_level if sweep else None,
+            "recent_sweep_valid": sweep,
+            "bars_since_sweep": 1 if sweep else None,
+            "prev_low": 95.0,
+            "prev_high": 120.0,
+        }
+        msb = {
+            "direction": "bull",
+            "leg_type": leg,
+            "quality": 80,
+            "structure_zone": (108.0, 112.0),
+            "order_block_zone": (107.0, 113.0),
+            "mid_observe_zone": (109.0, 111.0),
+            "metrics": {
+                "atr_move": 1.0,
+                "range_ratio": 0.5,
+                "body_quality": 0.6,
+            },
+        }
+
+        from engine.trend_segments import decide_trend_segment
+
+        return decide_trend_segment(
+            "BTCUSDT",
+            "1h",
+            {"relation": "aligned", "text": "4H 偏多"},
+            liq,
+            msb,
+            {"matrix_direction": "bull"},
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 111.0},
+            trend_state=trend_state,
+        )
+
+    def test_sweep_short_suppressed(self):
+        decision = self._base("SHORT")
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "short_structure_leg")
+
+    def test_sweep_mid_allows_shift(self):
+        decision = self._base("MID")
+        self.assertEqual(decision["alert_type"], "BULLISH_STRUCTURE_SHIFT")
+        self.assertTrue(decision["should_alert"])
+
+    def test_high_quality_without_sweep_does_not_shift(self):
+        decision = self._base("LONG", sweep=False)
+        self.assertEqual(decision["alert_type"], "NO_TRADE_RANGE")
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "no_sweep_no_trend_state")
+
+    def test_continuation_requires_existing_trend_state(self):
+        decision = self._base("MID", sweep=False, trend_state={"direction": "long", "has_snapshot": True})
+        self.assertEqual(decision["alert_type"], "BULLISH_CONTINUATION")
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["zone_source"], "mid_continuation_zone")
+
+    def test_recent_sweep_uses_sweep_level_as_invalid(self):
+        decision = self._base("MID", sweep_level=101.5)
+        self.assertEqual(decision["invalid_level"], 101.5)
+
+    def test_strong_counter_does_not_suppress_high_quality_1h(self):
+        decision = self._base("LONG")
+        from engine.trend_segments import decide_trend_segment
+
+        decision = decide_trend_segment(
+            "BTCUSDT",
+            "1h",
+            {"relation": "strong_counter", "text": "4H 偏空"},
+            {
+                "sweep_type": "sellside",
+                "reclaim_or_reject": "reclaim",
+                "sweep_level": 100.0,
+                "recent_sweep_valid": True,
+                "bars_since_sweep": 1,
+                "prev_low": 95.0,
+                "prev_high": 120.0,
+            },
+            {
+                "direction": "bull",
+                "leg_type": "LONG",
+                "quality": 98,
+                "structure_zone": (108.0, 112.0),
+                "order_block_zone": (107.0, 113.0),
+                "mid_observe_zone": (109.0, 111.0),
+                "metrics": {"atr_move": 1.3, "range_ratio": 0.6, "body_quality": 0.8},
+            },
+            {"matrix_direction": "bull"},
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 111.0},
+        )
+        self.assertTrue(decision["should_alert"])
+
+    def test_strong_counter_suppresses_medium_quality_1h(self):
+        from engine.trend_segments import decide_trend_segment
+
+        decision = decide_trend_segment(
+            "BTCUSDT",
+            "1h",
+            {"relation": "strong_counter", "text": "4H 偏空"},
+            {
+                "sweep_type": "sellside",
+                "reclaim_or_reject": "reclaim",
+                "sweep_level": 100.0,
+                "recent_sweep_valid": True,
+                "bars_since_sweep": 1,
+                "prev_low": 95.0,
+                "prev_high": 120.0,
+            },
+            {
+                "direction": "bull",
+                "leg_type": "MID",
+                "quality": 55,
+                "structure_zone": (108.0, 112.0),
+                "order_block_zone": (107.0, 113.0),
+                "mid_observe_zone": (109.0, 111.0),
+                "metrics": {"atr_move": 0.8, "range_ratio": 0.35, "body_quality": 0.55},
+            },
+            {"matrix_direction": "bull"},
+            {"momentum_desc": "动能 一般", "temperature_desc": "热度 中性", "price": 111.0},
+        )
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "medium_quality_1h_against_strong_4h")
+
+
+class LiquidityTests(unittest.TestCase):
+    def _bar(self, o=105.0, h=110.0, l=100.0, c=105.0, atr=2.0):
+        return {"open": o, "high": h, "low": l, "close": c, "atr": atr}
+
+    def test_recent_sweep_uses_historical_bar_own_previous_range(self):
+        from engine.liquidity import build_liquidity_context
+
+        bars = [self._bar() for _ in range(26)]
+        bars.append(self._bar(o=101.0, h=106.0, l=99.0, c=101.0))  # sellside sweep of 100 and reclaim
+        bars.append(self._bar(o=106.0, h=109.0, l=104.0, c=108.0))
+        bars.append(self._bar(o=108.0, h=112.0, l=107.0, c=111.0))
+
+        ctx = build_liquidity_context(bars, lookback=24)
+
+        self.assertEqual(ctx["sweep_type"], "sellside")
+        self.assertEqual(ctx["reclaim_or_reject"], "reclaim")
+        self.assertEqual(ctx["bars_since_sweep"], 2)
+        self.assertEqual(ctx["sweep_level"], 100.0)
+
+    def test_close_buffer_rejects_borderline_fake_sweep(self):
+        from engine.liquidity import build_liquidity_context
+
+        bars = [self._bar() for _ in range(26)]
+        bars.append(self._bar(o=100.1, h=105.0, l=99.99, c=100.01))
+        bars.append(self._bar(o=105.0, h=109.0, l=102.0, c=106.0))
+
+        ctx = build_liquidity_context(bars, lookback=24)
+
+        self.assertEqual(ctx["sweep_type"], "none")
+        self.assertFalse(ctx["recent_sweep_valid"])
+
+
+class MessageTests(unittest.TestCase):
+    def _decision(self, direction="long", alert_type="BULLISH_STRUCTURE_SHIFT") -> dict:
+        return {
+            "direction": direction,
+            "alert_type": alert_type,
+            "zone": (100.0, 110.0),
+            "htf_context": "4H 偏多" if direction == "long" else "4H 偏空",
+            "momentum_desc": "动能 偏强" if direction == "long" else "动能 偏弱",
+            "temperature_desc": "热度 中性",
+            "invalid_level": 99.0 if direction == "long" else 111.0,
+        }
+
+    def test_bull_message_emoji(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(self._decision("long", "BULLISH_STRUCTURE_SHIFT"))
+        self.assertTrue(msg.startswith("📈"))
+        self.assertIn("结构转多", msg)
+
+    def test_bear_message_emoji(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(self._decision("short", "BEARISH_STRUCTURE_SHIFT"))
+        self.assertTrue(msg.startswith("📉"))
+        self.assertIn("结构转空", msg)
+
+    def test_continuation_message_uses_external_safe_wording(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(self._decision("long", "BULLISH_CONTINUATION"))
+        self.assertTrue(msg.startswith("📈"))
+        self.assertIn("多头延续观察", msg)
+        self.assertIn("趋势中段关键区", msg)
+
+    def test_banned_terms_no_leak(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(self._decision("long", "BULLISH_STRUCTURE_SHIFT"))
+        for term in ["liquidity", "MSB", "OB", "SMC", "ICT", "RAR", "TAI", "流动性", "订单块"]:
+            self.assertNotIn(term.lower(), msg.lower())
+
+
+class ScannerPipelineTests(unittest.TestCase):
+    def test_htf_context_keeps_neutral_relation(self):
+        from engine.scanner import SMCTScanner
+
+        with patch("engine.scanner.get_logger", return_value=Mock()):
+            scanner = SMCTScanner("BTCUSDT")
+        ctx = scanner._htf_context([{"ema10": 2.0, "ema20": 1.0, "macd": 100.0}], "neutral")
+        self.assertEqual(ctx["relation"], "neutral")
+
+    def test_scanner_only_fetches_4h_and_1h(self):
+        from engine.scanner import SMCTScanner
+
+        calls: list[str] = []
+
+        def fake_fetch(self, interval: str):
+            calls.append(interval)
+            return [{"close": 100.0, "ema10": 1.0, "ema20": 1.0, "macd": 0.0}] * 30
+
+        with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
+             patch("engine.scanner.get_logger", return_value=Mock()), \
+             patch("engine.scanner.build_liquidity_context", return_value={"sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False, "prev_low": 90.0, "prev_high": 110.0}), \
+             patch("engine.scanner.build_msb_ob_context", return_value={"direction": "neutral", "leg_type": "SHORT", "quality": 0, "structure_zone": (99.0, 101.0), "order_block_zone": (98.0, 102.0), "mid_observe_zone": (99.5, 100.5), "metrics": {"atr_move": 0, "range_ratio": 0, "body_quality": 0}}), \
+             patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "neutral"}), \
+             patch("engine.scanner.build_aux_filters_proxy", return_value={"momentum_desc": "动能 一般", "temperature_desc": "热度 中性", "price": 100.0}), \
+             patch("engine.scanner.load_trend_state", return_value={"direction": "neutral", "has_snapshot": False}):
+            scanner = SMCTScanner("BTCUSDT")
+            scanner.state_store = Mock()
+            scanner.runtime_state = Mock()
+            result = scanner.run_once()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(sorted(calls), ["1h", "4h"])
 
 
 class StatePersistenceTests(unittest.TestCase):
@@ -300,6 +537,28 @@ class StatePersistenceTests(unittest.TestCase):
             data = json.loads(state_file.read_text())
             self.assertTrue(any(key.startswith("FAMILY|ABC|") for key in data))
 
+    def test_trend_state_store_does_not_write_abc_slot(self):
+        from engine.cooldown import SignalStateStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "signal_state.json"
+            store = SignalStateStore(state_file=str(state_file))
+            store.mark_sent(
+                {
+                    "alert_type": "BULLISH_STRUCTURE_SHIFT",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1h",
+                    "direction": "long",
+                    "price": 100.0,
+                    "signature": "BTCUSDT|1h|BULLISH_STRUCTURE_SHIFT|long|abcdef1234|MID",
+                    "state_version": "MID",
+                }
+            )
+
+            data = json.loads(state_file.read_text())
+            self.assertTrue(any(key.startswith("TREND|") for key in data))
+            self.assertFalse(any(key.startswith("SLOT|ABC|") for key in data))
+
     def test_runtime_state_store_writes_json_atomically(self):
         from engine.runtime_state import RuntimeStateStore
 
@@ -313,6 +572,22 @@ class StatePersistenceTests(unittest.TestCase):
             data = json.loads(state_file.read_text())
             self.assertTrue(data["last_scan_ok"])
             self.assertEqual(data["last_symbol"], "BTCUSDT")
+
+    def test_trend_snapshot_state_roundtrip(self):
+        from engine import trend_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original = trend_snapshot.STATE_FILE
+            trend_snapshot.STATE_FILE = Path(tmp) / "trend_snapshot.json"
+            try:
+                self.assertFalse(trend_snapshot.load_trend_state("BTCUSDT", "1h")["has_snapshot"])
+                trend_snapshot.save_trend_state("BTCUSDT", "1h", "long", "sig")
+                loaded = trend_snapshot.load_trend_state("BTCUSDT", "1h")
+                self.assertEqual(loaded["direction"], "long")
+                self.assertTrue(loaded["has_snapshot"])
+                self.assertFalse(trend_snapshot.STATE_FILE.with_suffix(".json.tmp").exists())
+            finally:
+                trend_snapshot.STATE_FILE = original
 
 
 if __name__ == "__main__":

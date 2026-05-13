@@ -51,14 +51,18 @@ class RuntimeStateStore:
         self._save()
 
     def mark_sent_signal(self, signal: dict[str, Any]) -> None:
+        name = signal.get("signal") or signal.get("alert_type")
         self.state["last_sent_signal"] = {
-            "signal": signal.get("signal"),
+            "signal": name,
+            "alert_type": signal.get("alert_type"),
             "symbol": signal.get("symbol"),
+            "timeframe": signal.get("timeframe"),
             "direction": signal.get("direction"),
             "price": signal.get("price"),
             "state_1h": signal.get("state_1h"),
-            "trigger_15m_state": signal.get("trigger_15m_state"),
-            "tai_budget_mode": signal.get("tai_budget_mode"),
+            "trend_state": signal.get("state_version"),
+            "zone": signal.get("zone"),
+            "invalid_level": signal.get("invalid_level"),
             "sent_at": time.time(),
         }
         self._save()
