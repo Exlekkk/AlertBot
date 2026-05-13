@@ -592,3 +592,143 @@ class StatePersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class KeyZoneObservationTests(unittest.TestCase):
+    @staticmethod
+    def _bar(open_: float, high: float, low: float, close: float, atr: float = 100.0) -> dict:
+        return {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "atr": atr,
+            "ema10": close,
+            "ema20": close,
+            "macd": 0.0,
+        }
+
+    def _pullback_inputs(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(10000, 10100, 9950, 10000),
+            self._bar(10000, 10020, 9900, 9950),
+            self._bar(9950, 9960, 9700, 9750),
+        ]
+        liq = {
+            "prev_low": 9700,
+            "prev_high": 10300,
+            "sweep_type": "none",
+            "reclaim_or_reject": "none",
+            "sweep_level": None,
+            "recent_sweep_valid": False,
+        }
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "structure_zone": (9800, 9900),
+            "order_block_zone": (9700, 9900),
+            "mid_observe_zone": (9850, 9950),
+            "metrics": {},
+        }
+        htf = {"text": "4H 偏震荡", "relation": "neutral"}
+        aux = {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 偏冷", "price": 9750}
+        return decide_key_zone_observation, klines, htf, liq, msb, {}, aux
+
+    def test_fast_pullback_to_lower_key_zone_alerts(self):
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        decision = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={"inside_zone": False},
+        )
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "FAST_PULLBACK_OBSERVE")
+        self.assertEqual(decision["direction"], "long")
+        self.assertEqual(decision["zone_source"], "range_lower_zone")
+
+    def test_key_zone_cooldown_suppresses_only_unchanged_inside_zone(self):
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        first = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={"inside_zone": False},
+        )
+        unchanged = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state=first["observation_update"],
+        )
+
+        self.assertFalse(unchanged["should_alert"])
+        self.assertEqual(unchanged["suppress_reason"], "inside_zone_unchanged")
+
+        left_then_reentered_state = dict(first["observation_update"])
+        left_then_reentered_state["inside_zone"] = False
+        reentered = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state=left_then_reentered_state,
+        )
+
+        self.assertTrue(reentered["should_alert"])
+        self.assertIn("_R2", reentered["state_version"])
+
+    def test_key_zone_message_does_not_leak_internal_terms(self):
+        from engine.trend_messages import BANNED, format_trend_message
+
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        decision = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={"inside_zone": False},
+        )
+        msg = format_trend_message(decision)
+
+        self.assertTrue(msg.startswith("📍"))
+        self.assertIn("快速回踩观察", msg)
+        for term in BANNED:
+            self.assertNotIn(term, msg)
+
+    def test_scanner_health_compatibility_methods_exist(self):
+        from engine.scanner import SMCTScanner
+
+        with patch("engine.scanner.get_logger", return_value=Mock()):
+            scanner = SMCTScanner("BTCUSDT")
+
+        self.assertTrue(scanner.health_check()["ok"])
+        self.assertTrue(scanner.healthcheck()["ok"])
+

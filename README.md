@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/27696748/README.md)
 # AlertBot
 
 AlertBot is a Telegram-based BTCUSDT market monitoring and alert delivery system.
@@ -19,14 +18,17 @@ The 4H context is used as background only. It can raise or lower confidence, but
 
 ## Alert philosophy
 
-The bot is intended to send fewer, higher-quality alerts around important structural moments, including:
+The bot is intended to send fewer, higher-quality alerts around important structural and observation moments, including:
 
 - bullish structure shift
 - bearish structure shift
 - bullish trend continuation
 - bearish trend continuation
-- range compression
-- structure failure
+- lower key-zone test
+- upper key-zone test
+- fast pullback observation
+- fast rebound observation
+- range lower/upper probe
 - no-trade range
 
 Telegram messages are intentionally written in simple external-facing language. Internal strategy terminology is not exposed in alert messages.
@@ -42,7 +44,8 @@ Pipeline overview:
 3. Build 1H key-area and structure context.
 4. Build auxiliary momentum and market-temperature filters.
 5. Produce a `TrendDecision`.
-6. Format an external-safe Telegram message.
+6. If there is no structure alert, evaluate the key-zone observation layer for pullbacks, rebounds, support/resistance tests, and range-edge probes.
+7. Format an external-safe Telegram message.
 7. Apply cooldown and deduplication.
 8. Store trend state for future continuation alerts.
 
@@ -142,3 +145,24 @@ Some auxiliary filters are proxy implementations and should be tuned with live r
 Closed-source TradingView indicators are not fully replicated. The bot uses transparent Python approximations where exact indicator logic is unavailable.
 
 AlertBot is a market monitoring and decision-support tool. It does not provide financial advice and should not be treated as an automated trading system.
+
+
+## Key-zone observation layer
+
+Version 1.1 adds a dedicated observation layer for cases that are useful to monitor but should not be mislabeled as structure shifts.
+
+This layer can alert when BTC quickly tests a lower or upper key area, including:
+
+- fast pullbacks into a lower key area
+- fast rebounds into an upper key area
+- lower/upper range-edge probes
+- tests of intermediate trend areas
+
+The observation layer uses re-entry based cooldown:
+
+- first touch of a key area can alert
+- repeated candles inside the same area are suppressed
+- once price leaves the area and later re-enters, the alert can re-arm
+- if the situation upgrades into a structure shift or continuation alert, the main trend engine takes priority
+
+Public Telegram text still avoids internal strategy terms.

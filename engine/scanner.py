@@ -7,13 +7,14 @@ from engine.aux_filters import build_aux_filters_proxy
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.liquidity import build_liquidity_context
+from engine.key_zones import decide_key_zone_observation
 from engine.market_data import BinanceMarketDataClient
 from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.trend_messages import format_trend_message
 from engine.trend_segments import decide_trend_segment
-from engine.trend_snapshot import load_trend_state, make_snapshot_key, save_trend_state
+from engine.trend_snapshot import load_observation_state, load_trend_state, make_snapshot_key, save_observation_state, save_trend_state
 from services.logger import get_logger
 from services.telegram import TelegramSendError, send_telegram_message
 
@@ -42,6 +43,18 @@ class SMCTScanner:
         text = "4H 偏多" if h4 == "bull" else "4H 偏空"
         return {"h4_direction": h4, "relation": relation, "text": text}
 
+    def health_check(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "status": "ok",
+            "symbol": self.symbol,
+            "scanner": "SMCTScanner",
+            "engine": "trend_segment_v1",
+        }
+
+    def healthcheck(self) -> dict[str, Any]:
+        return self.health_check()
+
     def run_once(self) -> dict[str, Any]:
         try:
             klines_4h = self._fetch_enriched("4h")
@@ -53,6 +66,28 @@ class SMCTScanner:
             htf = self._htf_context(klines_4h, "long" if msb["direction"] == "bull" else "short" if msb["direction"] == "bear" else "neutral")
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state)
+
+            if not decision.get("should_alert"):
+                try:
+                    observation_state = load_observation_state(self.symbol, "1h")
+                    observation = decide_key_zone_observation(
+                        self.symbol,
+                        "1h",
+                        klines_1h,
+                        htf,
+                        liq,
+                        msb,
+                        matrix,
+                        aux,
+                        observation_state=observation_state,
+                    )
+                    if observation.get("observation_update") is not None:
+                        save_observation_state(self.symbol, "1h", observation["observation_update"])
+                    if observation.get("should_alert"):
+                        decision = observation
+                except Exception as obs_exc:
+                    self.logger.warning("key_zone_observation_failed symbol=%s error=%s", self.symbol, obs_exc)
+
             decision["signature"] = make_snapshot_key(decision)
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 

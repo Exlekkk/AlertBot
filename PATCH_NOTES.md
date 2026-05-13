@@ -1,4 +1,3 @@
-[Uploading PATCH_NOTES.md…]()
 # Patch Notes — Trend Segment Engine v1
 
 ## Summary
@@ -226,3 +225,49 @@ Recommended rollout:
 ## Rollback note
 
 If the trend engine behaves unexpectedly, roll back to the previous stable commit and preserve the latest snapshot/debug files for review.
+
+
+## v1.1 — Key-Zone Observation Layer
+
+### Summary
+
+This update adds a second alert layer for key-zone observation. It is designed for monitoring opportunities that may matter for short swings but do not yet qualify as full structure shifts.
+
+### New behavior
+
+Added:
+
+- lower key-zone test alerts
+- upper key-zone test alerts
+- fast pullback observation alerts
+- fast rebound observation alerts
+- range lower/upper probe alerts
+- re-entry based observation cooldown
+- scanner health-check compatibility methods
+
+The trend engine still has priority. If a full structure shift or continuation alert is available, the bot uses that alert first. If no structure alert is available, the observation layer can send a lower-priority monitoring alert.
+
+### Cooldown behavior
+
+The observation cooldown is not a hard lock.
+
+It suppresses repeated messages while price remains inside the same key zone. It re-arms when price leaves the zone and later re-enters, or when the observation phase changes.
+
+### Public messages
+
+New observation messages use external-facing wording such as:
+
+- lower key-zone test
+- upper key-zone test
+- fast pullback observation
+- fast rebound observation
+- range-edge test
+
+Internal strategy terms remain blocked from Telegram messages.
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 35 tests.

@@ -33,4 +33,12 @@ TREND_ENGINE_CONFIG = {
         "merge_width_atr_mult": 0.25,
         "continuation_mid_ratio": 0.5,
     },
+    "key_zone": {
+        "touch_atr_mult": 0.18,
+        "touch_pct": 0.0012,
+        "range_edge_atr_mult": 0.35,
+        "fast_move_atr": 0.85,
+        "two_bar_min_atr": 0.55,
+        "min_observation_score": 38,
+    },
 }
