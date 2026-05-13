@@ -20,12 +20,14 @@ BANNED = [
 
 LOWER_OBSERVATION_ALERTS = {
     "LOWER_KEY_ZONE_TEST",
+    "LOWER_KEY_ZONE_RECLAIM",
     "FAST_PULLBACK_OBSERVE",
     "RANGE_LOWER_PROBE",
 }
 
 UPPER_OBSERVATION_ALERTS = {
     "UPPER_KEY_ZONE_TEST",
+    "UPPER_KEY_ZONE_REJECTION",
     "FAST_REBOUND_OBSERVE",
     "RANGE_UPPER_PROBE",
 }
@@ -44,74 +46,110 @@ def _zone_text(d: dict) -> str:
     return f"{float(zl):.2f} - {float(zh):.2f}"
 
 
+def _clean_momentum(desc: str) -> str:
+    desc = str(desc).strip()
+    if not desc:
+        return "短线动能一般。"
+    desc = desc.replace("动能 ", "").replace("动能", "").strip()
+    mapping = {
+        "偏强": "短线动能偏强。",
+        "偏弱": "短线动能偏弱。",
+        "一般": "短线动能一般。",
+    }
+    return mapping.get(desc, desc if desc.endswith("。") else f"{desc}。")
+
+
+def _clean_temperature(desc: str) -> str:
+    desc = str(desc).strip()
+    if not desc:
+        return "市场热度中性。"
+    desc = desc.replace("热度 ", "").replace("热度", "").strip()
+    mapping = {
+        "过热": "市场热度偏热。",
+        "偏热": "市场热度偏热。",
+        "中性": "市场热度中性。",
+        "偏冷": "市场热度偏冷。",
+        "过冷": "市场热度偏冷。",
+    }
+    return mapping.get(desc, desc if desc.endswith("。") else f"{desc}。")
+
+
 def _common_sections(d: dict, risk_line: str, conclusion: str) -> str:
     return (
-        "关注区间：\n"
+        "🎯 关注区间：\n"
         f"{_zone_text(d)}\n\n"
-        "大周期：\n"
+        "🧭 大周期：\n"
         f"{d['htf_context']}\n"
         "但本次提醒以 1H 结构变化为主。\n\n"
-        "动能与热度：\n"
-        f"{d['momentum_desc']}\n"
-        f"{d['temperature_desc']}\n\n"
-        "风险位：\n"
+        "⚡ 动能与热度：\n"
+        f"{_clean_momentum(d.get('momentum_desc', ''))}\n"
+        f"{_clean_temperature(d.get('temperature_desc', ''))}\n\n"
+        "⚠️ 风险位：\n"
         f"{risk_line}\n\n"
-        "结论：\n"
+        "✅ 结论：\n"
         f"{conclusion}"
     )
 
 
 def _format_lower_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
-    if alert_type == "FAST_PULLBACK_OBSERVE":
+    if alert_type == "LOWER_KEY_ZONE_RECLAIM":
+        title = "📈 BTC 1H 下方关键区收回"
+        detail = "价格测试下方关键区后快速收回。\n当前不是追多信号，而是下方承接观察。"
+        conclusion = "不追多。\n观察关注区间是否继续承接。"
+        risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，下方结构可能再次转弱。"
+    elif alert_type == "FAST_PULLBACK_OBSERVE":
         title = "📍 BTC 1H 快速回踩观察"
         detail = "价格快速回踩下方关键区。\n当前还不是结构转空，而是关键区测试。"
         conclusion = "不追空。\n观察关注区间是否出现承接。"
+        risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
     elif alert_type == "RANGE_LOWER_PROBE":
         title = "📍 BTC 1H 区间下沿测试"
         detail = "价格正在测试区间下沿。\n当前以关键区反应为主。"
         conclusion = "不追空。\n观察下沿是否守住或快速收回。"
+        risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
     else:
         title = "📍 BTC 1H 下方关键区测试"
         detail = "价格触及下方关键区。\n当前还不是结构转空，而是关键区测试。"
         conclusion = "不追空。\n观察关键区是否出现承接。"
+        risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
 
     return (
         f"{title}\n\n"
-        "状态：\n"
+        "📌 状态：\n"
         f"{detail}\n\n"
-        + _common_sections(
-            d,
-            f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。",
-            conclusion,
-        )
+        + _common_sections(d, risk_line, conclusion)
     )
 
 
 def _format_upper_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
-    if alert_type == "FAST_REBOUND_OBSERVE":
+    if alert_type == "UPPER_KEY_ZONE_REJECTION":
+        title = "📉 BTC 1H 上方关键区承压"
+        detail = "价格触及上方关键区后快速回落。\n当前不是追空信号，而是卖压释放观察。"
+        conclusion = "不追空。\n观察关注区间下方是否继续承压。"
+        risk_line = f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能重新修复。"
+    elif alert_type == "FAST_REBOUND_OBSERVE":
         title = "📍 BTC 1H 快速反抽观察"
         detail = "价格快速反抽上方关键区。\n当前还不是结构转多，而是关键区测试。"
         conclusion = "不追多。\n观察关注区间是否出现承压。"
+        risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
     elif alert_type == "RANGE_UPPER_PROBE":
         title = "📍 BTC 1H 区间上沿测试"
         detail = "价格正在测试区间上沿。\n当前以关键区反应为主。"
         conclusion = "不追多。\n观察上沿是否承压或快速回落。"
+        risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
     else:
         title = "📍 BTC 1H 上方关键区测试"
         detail = "价格触及上方关键区。\n当前还不是结构转多，而是关键区测试。"
         conclusion = "不追多。\n观察关键区是否出现承压。"
+        risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
 
     return (
         f"{title}\n\n"
-        "状态：\n"
+        "📌 状态：\n"
         f"{detail}\n\n"
-        + _common_sections(
-            d,
-            f"若重新站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。",
-            conclusion,
-        )
+        + _common_sections(d, risk_line, conclusion)
     )
 
 
@@ -126,7 +164,7 @@ def format_trend_message(d: dict) -> str:
     elif direction == "long" and alert_type == "BULLISH_CONTINUATION":
         text = (
             "📈 BTC 1H 多头延续观察\n\n"
-            "状态：\n"
+            "📌 状态：\n"
             "1H 多头结构仍在延续。\n"
             "价格正在测试趋势中段关键区。\n\n"
             + _common_sections(
@@ -138,7 +176,7 @@ def format_trend_message(d: dict) -> str:
     elif direction == "short" and alert_type == "BEARISH_CONTINUATION":
         text = (
             "📉 BTC 1H 空头延续观察\n\n"
-            "状态：\n"
+            "📌 状态：\n"
             "1H 空头结构仍在延续。\n"
             "价格正在测试趋势中段关键区。\n\n"
             + _common_sections(
@@ -150,7 +188,7 @@ def format_trend_message(d: dict) -> str:
     elif direction == "long":
         text = (
             "📈 BTC 1H 结构转多提醒\n\n"
-            "状态：\n"
+            "📌 状态：\n"
             "下方关键区触发后，价格重新收回。\n"
             "1H 结构正在转多。\n\n"
             + _common_sections(
@@ -162,7 +200,7 @@ def format_trend_message(d: dict) -> str:
     elif direction == "short":
         text = (
             "📉 BTC 1H 结构转空提醒\n\n"
-            "状态：\n"
+            "📌 状态：\n"
             "上方关键区触发后，价格开始回落。\n"
             "1H 结构正在转空。\n\n"
             + _common_sections(
@@ -173,13 +211,13 @@ def format_trend_message(d: dict) -> str:
         )
     else:
         text = (
-            "🧊 BTC 1H 结构观察\n\n"
-            "状态：\n"
-            "当前 1H 结构方向不清晰。\n\n"
+            "🔎 BTC 1H 结构观察\n\n"
+            "📌 状态：\n"
+            "当前未形成高质量方向提醒。\n\n"
             + _common_sections(
                 d,
-                f"等待价格脱离 {float(d['invalid_level']):.2f} 附近的无效震荡。",
-                "暂不追单。\n等待新的关键区反应。",
+                f"若突破 {float(d['invalid_level']):.2f}，需要重新评估结构。",
+                "继续观察，等待关键区反应。",
             )
         )
 

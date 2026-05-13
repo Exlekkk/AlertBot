@@ -6,8 +6,18 @@ from typing import Any
 from engine.trend_config import TREND_ENGINE_CONFIG
 
 
-LOWER_ALERT_TYPES = {"LOWER_KEY_ZONE_TEST", "FAST_PULLBACK_OBSERVE", "RANGE_LOWER_PROBE"}
-UPPER_ALERT_TYPES = {"UPPER_KEY_ZONE_TEST", "FAST_REBOUND_OBSERVE", "RANGE_UPPER_PROBE"}
+LOWER_ALERT_TYPES = {
+    "LOWER_KEY_ZONE_TEST",
+    "LOWER_KEY_ZONE_RECLAIM",
+    "FAST_PULLBACK_OBSERVE",
+    "RANGE_LOWER_PROBE",
+}
+UPPER_ALERT_TYPES = {
+    "UPPER_KEY_ZONE_TEST",
+    "UPPER_KEY_ZONE_REJECTION",
+    "FAST_REBOUND_OBSERVE",
+    "RANGE_UPPER_PROBE",
+}
 
 
 def _zone_hash(zone: tuple[float, float]) -> str:
@@ -25,7 +35,7 @@ def _touches_lower_zone(k: dict[str, Any], prev_close: float, zone: tuple[float,
     low = float(k["low"])
     close = float(k["close"])
     # A lower test means price was above or near the zone and traded into it.
-    return prev_close >= zl and low <= zh + pad and close >= zl - pad
+    return prev_close >= zl - pad and low <= zh + pad and close >= zl - pad
 
 
 def _touches_upper_zone(k: dict[str, Any], prev_close: float, zone: tuple[float, float], pad: float) -> bool:
@@ -33,7 +43,30 @@ def _touches_upper_zone(k: dict[str, Any], prev_close: float, zone: tuple[float,
     high = float(k["high"])
     close = float(k["close"])
     # An upper test means price was below or near the zone and traded into it.
-    return prev_close <= zh and high >= zl - pad and close <= zh + pad
+    return prev_close <= zh + pad and high >= zl - pad and close <= zh + pad
+
+
+def _zone_relation(k: dict[str, Any], zone: tuple[float, float], pad: float) -> str:
+    """Describe how the latest candle interacted with a zone.
+
+    This prevents a bearish waterfall candle that briefly touched an upper
+    area from being described as a plain "upper key-zone test".  In that case
+    we classify it as upper-zone rejection / sell-pressure release instead.
+    """
+
+    zl, zh = zone
+    high = float(k["high"])
+    low = float(k["low"])
+    close = float(k["close"])
+
+    touched = high >= zl - pad and low <= zh + pad
+    if not touched:
+        return "none"
+    if close < zl - pad:
+        return "rejected_below"
+    if close > zh + pad:
+        return "reclaimed_above"
+    return "inside"
 
 
 def _select_zone(
@@ -45,6 +78,7 @@ def _select_zone(
     latest = klines_1h[-1]
     prev_close = float(klines_1h[-2]["close"])
     close = float(latest["close"])
+    open_ = float(latest["open"])
     atr = float(latest.get("atr", max(close * 0.004, 1.0)))
     pad = max(atr * cfg["touch_atr_mult"], close * cfg["touch_pct"])
 
@@ -63,17 +97,54 @@ def _select_zone(
         if not raw:
             continue
         zone = _ordered_zone(tuple(raw))
-        if zone[1] < close:
-            zones.append({"side": "lower", "source": source, "zone": zone})
+        relation = _zone_relation(latest, zone, pad)
+        if relation == "rejected_below":
+            zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
+        elif relation == "reclaimed_above":
+            zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
+        elif zone[1] < close:
+            zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
         elif zone[0] > close:
-            zones.append({"side": "upper", "source": source, "zone": zone})
+            zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
         else:
             # If price is inside the zone, infer side from the latest movement.
             side = "lower" if close >= prev_close else "upper"
-            zones.append({"side": side, "source": source, "zone": zone})
+            zones.append({"side": side, "source": source, "zone": zone, "interaction": relation})
 
-    lower_hits = [z for z in zones if z["side"] == "lower" and _touches_lower_zone(latest, prev_close, z["zone"], pad)]
-    upper_hits = [z for z in zones if z["side"] == "upper" and _touches_upper_zone(latest, prev_close, z["zone"], pad)]
+    lower_hits = [
+        dict(z, interaction=z.get("interaction") or _zone_relation(latest, z["zone"], pad))
+        for z in zones
+        if z["side"] == "lower" and _touches_lower_zone(latest, prev_close, z["zone"], pad)
+    ]
+    upper_hits = [
+        dict(z, interaction=z.get("interaction") or _zone_relation(latest, z["zone"], pad))
+        for z in zones
+        if z["side"] == "upper" and _touches_upper_zone(latest, prev_close, z["zone"], pad)
+    ]
+
+    # Directional override:
+    # - strong red candle that touched an upper area should be treated as
+    #   upper-zone rejection, not a neutral "upper test".
+    # - strong green candle that touched a lower area should be treated as
+    #   lower-zone reclaim, not a neutral "lower test".
+    is_red = close < open_
+    is_green = close > open_
+
+    # If a bearish candle actually reaches a lower area, prefer the pullback /
+    # support-test description over "upper-zone rejection".  This matches the
+    # user's intraday use case: a waterfall into a useful area should wake them
+    # up for the possible reaction, not describe only where the drop started.
+    if is_red and lower_hits:
+        return min(lower_hits, key=lambda z: abs(close - z["zone"][1]))
+    if is_green and upper_hits:
+        return min(upper_hits, key=lambda z: abs(close - z["zone"][0]))
+
+    rejected_upper = [z for z in upper_hits if z.get("interaction") == "rejected_below"]
+    reclaimed_lower = [z for z in lower_hits if z.get("interaction") == "reclaimed_above"]
+    if is_red and rejected_upper:
+        return min(rejected_upper, key=lambda z: abs(float(latest["close"]) - z["zone"][0]))
+    if is_green and reclaimed_lower:
+        return min(reclaimed_lower, key=lambda z: abs(float(latest["close"]) - z["zone"][1]))
 
     if lower_hits:
         # Prefer the closest lower zone.
@@ -158,6 +229,7 @@ def decide_key_zone_observation(
     zone_hash = _zone_hash(zone)
     side = selected["side"]
     zone_source = selected["source"]
+    interaction = str(selected.get("interaction", "inside"))
 
     two_bar_move = (close - prev2_close) / atr
     one_bar_move = (close - prev_close) / atr
@@ -171,7 +243,10 @@ def decide_key_zone_observation(
 
     if side == "lower":
         direction = "long"
-        if fast_down:
+        if interaction == "reclaimed_above" or (fast_up and close > zone[1]):
+            alert_type = "LOWER_KEY_ZONE_RECLAIM"
+            phase = "lower_reclaim"
+        elif fast_down:
             alert_type = "FAST_PULLBACK_OBSERVE"
             phase = "fast_pullback"
         elif zone_source == "range_lower_zone":
@@ -183,7 +258,10 @@ def decide_key_zone_observation(
         invalid_level = min(float(latest["low"]), zone[0])
     else:
         direction = "short"
-        if fast_up:
+        if interaction == "rejected_below" or (fast_down and close < zone[0]):
+            alert_type = "UPPER_KEY_ZONE_REJECTION"
+            phase = "upper_rejection"
+        elif fast_up:
             alert_type = "FAST_REBOUND_OBSERVE"
             phase = "fast_rebound"
         elif zone_source == "range_upper_zone":

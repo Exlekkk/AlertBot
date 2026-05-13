@@ -723,6 +723,107 @@ class KeyZoneObservationTests(unittest.TestCase):
         for term in BANNED:
             self.assertNotIn(term, msg)
 
+
+    def test_upper_zone_rejection_message_is_not_plain_upper_test(self):
+        from engine.key_zones import decide_key_zone_observation
+        from engine.trend_messages import format_trend_message
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(10100, 10200, 10080, 10150, atr=100.0),
+            self._bar(10150, 10180, 10050, 10120, atr=100.0),
+            # Touches the upper zone but closes below it with a fast selloff.
+            self._bar(10120, 10140, 9750, 9800, atr=100.0),
+        ]
+        liq = {
+            "prev_low": 9600,
+            "prev_high": 10300,
+            "sweep_type": "none",
+            "reclaim_or_reject": "none",
+            "sweep_level": None,
+            "recent_sweep_valid": False,
+        }
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "structure_zone": (10000, 10120),
+            "order_block_zone": (10000, 10120),
+            "mid_observe_zone": (10000, 10120),
+            "metrics": {},
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 偏震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 过冷", "price": 9800},
+            observation_state={"inside_zone": False},
+        )
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "UPPER_KEY_ZONE_REJECTION")
+        self.assertEqual(decision["direction"], "short")
+
+        msg = format_trend_message(decision)
+        self.assertTrue(msg.startswith("📉"))
+        self.assertIn("上方关键区承压", msg)
+        self.assertIn("卖压释放观察", msg)
+        self.assertIn("⚡ 动能与热度", msg)
+        self.assertIn("✅ 结论", msg)
+
+    def test_lower_zone_reclaim_message(self):
+        from engine.key_zones import decide_key_zone_observation
+        from engine.trend_messages import format_trend_message
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(9900, 9950, 9800, 9850, atr=100.0),
+            self._bar(9850, 9900, 9750, 9820, atr=100.0),
+            # Sweeps/touches the lower zone and closes back above it.
+            self._bar(9820, 10180, 9750, 10140, atr=100.0),
+        ]
+        liq = {
+            "prev_low": 9700,
+            "prev_high": 10300,
+            "sweep_type": "none",
+            "reclaim_or_reject": "none",
+            "sweep_level": None,
+            "recent_sweep_valid": False,
+        }
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "structure_zone": (9850, 10050),
+            "order_block_zone": (9850, 10050),
+            "mid_observe_zone": (9850, 10050),
+            "metrics": {},
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 偏震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
+            observation_state={"inside_zone": False},
+        )
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "LOWER_KEY_ZONE_RECLAIM")
+        self.assertEqual(decision["direction"], "long")
+
+        msg = format_trend_message(decision)
+        self.assertTrue(msg.startswith("📈"))
+        self.assertIn("下方关键区收回", msg)
+        self.assertIn("⚡ 动能与热度", msg)
+
     def test_scanner_health_compatibility_methods_exist(self):
         from engine.scanner import SMCTScanner
 
