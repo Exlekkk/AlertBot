@@ -1,33 +1,75 @@
-[PATCH_NOTES.md](https://github.com/user-attachments/files/27696715/PATCH_NOTES.md)
+[Uploading PATCH_NOTES.md…]()
 # Patch Notes — Trend Segment Engine v1
 
 ## Summary
 
-This release replaces the old public alert flow with a BTC 1H trend segment decision engine.
+This release replaces the old ABCX-style alert path with a BTC 1H trend segment decision engine.
 
-The new main path focuses on:
+The new main path is designed to detect structure shifts, trend continuation areas, and invalidation levels using a 4H/1H framework:
 
-- 4H background context
-- 1H structure change detection
+- 4H provides background context only.
+- 1H is the primary structure decision timeframe.
+- 15m is no longer used by the scanner.
+- Public Telegram messages use neutral wording and do not expose internal strategy terms.
+- Trend alerts use signature-based cooldown and deduplication.
+
+## Core behavior
+
+### Timeframe model
+
+The scanner now uses:
+
+- `4h` for higher-timeframe context
+- `1h` for primary structure decisions
+
+The 4H context can increase or decrease the decision score, but it does not hard-block high-quality 1H structure changes.
+
+A 1H setup can be suppressed only when:
+
+- the 1H structure quality is weak or medium, and
+- the 4H background is strongly opposite.
+
+### Trend decision model
+
+The new trend decision engine evaluates:
+
+- recent key-area trigger behavior
+- structure shift quality
 - key price zones
-- trend continuation state
-- external-safe Telegram wording
-- cooldown / deduplication based on trend alert signatures
+- continuation state
+- higher-timeframe context
+- auxiliary market filters
+- cooldown and alert state
+
+The engine distinguishes between:
+
+- `BULLISH_STRUCTURE_SHIFT`
+- `BEARISH_STRUCTURE_SHIFT`
+- `BULLISH_CONTINUATION`
+- `BEARISH_CONTINUATION`
+- `RANGE_COMPRESSION`
+- `STRUCTURE_FAILURE`
+- `NO_TRADE_RANGE`
 
 ## Key changes
 
 ### Scanner
 
-`engine/scanner.py` now uses only:
+Updated:
 
-- `4h`
-- `1h`
+- `engine/scanner.py`
 
-The main scanner path no longer requests or depends on `15m`.
+Main changes:
 
-### Trend engine
+- Removed 15m from the main scanner path.
+- Scanner now requests only 4H and 1H klines.
+- Scanner builds higher-timeframe context before the 1H decision.
+- Scanner passes trend state into the decision engine so continuation alerts can work in live runs.
+- Scanner uses the new trend message formatter for public Telegram output.
 
-Added / updated:
+### Trend engine modules
+
+Added or updated:
 
 - `engine/liquidity.py`
 - `engine/msb_ob.py`
@@ -38,9 +80,64 @@ Added / updated:
 - `engine/trend_config.py`
 - `engine/trend_messages.py`
 
+### Config
+
+Added:
+
+- `engine/trend_config.py`
+
+This centralizes trend-engine thresholds and avoids scattering magic numbers across the scanner and decision modules.
+
+Configurable areas include:
+
+- key-area lookback
+- recent trigger window
+- reclaim / reject buffer
+- structure leg quality thresholds
+- zone width
+- continuation zone behavior
+- higher-timeframe scoring
+- suppression thresholds
+
+### Trend state and snapshots
+
+Added:
+
+- `engine/trend_snapshot.py`
+
+Trend snapshots are used to:
+
+- keep track of the current trend state
+- allow valid continuation alerts only after an existing trend state
+- avoid repeated alerts from the same structure
+- preserve debug information for replay and review
+
+### Cooldown
+
+Updated:
+
+- `engine/cooldown.py`
+
+Trend alerts now use signature-based cooldown keys instead of the old slot/family model.
+
+Trend alert keys are based on:
+
+- symbol
+- timeframe
+- alert type
+- direction
+- zone hash
+- state version
+
+The old slot/family model is not used for the new trend alert path.
+
 ### Telegram messages
 
-Public messages now use neutral wording:
+Updated:
+
+- `engine/trend_messages.py`
+
+Public Telegram messages now use external-safe wording:
 
 - 结构转多
 - 结构转空
@@ -52,26 +149,32 @@ Public messages now use neutral wording:
 - 风险位
 - 结论
 
-Telegram messages are checked to avoid leaking internal terminology.
+Message titles now include direction emojis:
 
-### Cooldown
+- `📈 BTC 1H 结构转多提醒`
+- `📉 BTC 1H 结构转空提醒`
 
-Trend alerts use signature-based cooldown keys instead of the old slot/family keys.
-
-### Tests
-
-The test suite covers:
-
-- 4H context does not hard-block high-quality 1H structure changes.
-- 1H weak structure against strong 4H context can be suppressed.
-- 15m is not requested by the scanner.
-- Short/noisy moves do not trigger structure alerts.
-- Mid-quality moves with recent key-area trigger can create structure alerts.
-- Continuation requires existing trend state.
-- Telegram messages include emoji titles and do not leak internal terminology.
-- Trend cooldown avoids old slot/family writes.
+The formatter checks outgoing messages to avoid leaking internal terminology.
 
 ## Validation
+
+The test suite was expanded to cover the new trend engine path.
+
+Covered cases include:
+
+- scanner requests only 4H and 1H data
+- 15m is not used in the new scanner path
+- 4H context does not hard-block high-quality 1H structure changes
+- weak 1H structure can be suppressed against strong opposite 4H context
+- short/noisy structure legs do not trigger structure-shift alerts
+- mid-quality structure legs with a recent valid key-area trigger can create structure-shift alerts
+- continuation requires existing trend state
+- invalidation level prefers the actual recent trigger level for structure-shift alerts
+- Telegram messages start with the expected emoji
+- Telegram messages do not expose banned internal terminology
+- cooldown does not write old slot/family keys for trend alerts
+
+Run:
 
 ```bash
 python -m unittest discover -s tests
@@ -87,4 +190,39 @@ compileall OK
 
 ## Known limitations
 
-Auxiliary market filters remain proxy implementations and should be tuned through live replay / dry-run observation.
+Some TradingView-related components are still proxy implementations.
+
+Proxy areas include:
+
+- auxiliary market filters
+- trend matrix context
+- some closed-source indicator behavior
+
+These should be tuned through:
+
+- dry-run observation
+- replay logs
+- real alert snapshots
+- manual comparison with TradingView charts
+
+## Deployment notes
+
+After replacing files on the remote server:
+
+```bash
+git pull
+python -m unittest discover -s tests
+python -m compileall -q engine services tests
+```
+
+Recommended rollout:
+
+1. Run in observation mode first.
+2. Confirm Telegram messages are not too frequent.
+3. Compare triggered zones with the chart.
+4. Tune thresholds in `engine/trend_config.py`.
+5. Only then treat alerts as production-grade monitoring output.
+
+## Rollback note
+
+If the trend engine behaves unexpectedly, roll back to the previous stable commit and preserve the latest snapshot/debug files for review.
