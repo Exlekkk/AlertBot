@@ -26,6 +26,7 @@ def build_aux_filters_proxy(
         "macd": macd,
         "inertia": inertia,
         "ema_bias": ema_bias,
+        "price": float(k1.get("close", 0.0) or 0.0),
         "h4_bias": "bull" if float(k4.get("ema10", 0)) > float(k4.get("ema20", 0)) else "bear",
         "momentum_desc": f"动能 {momentum}",
         "temperature_desc": f"热度 {heat}",
