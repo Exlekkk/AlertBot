@@ -82,15 +82,19 @@ class SignalStateStore:
         return str(signal.get("signal", "")).startswith("X_") or bool(signal.get("x_lane"))
 
     def _family_key(self, signal: dict[str, Any]) -> str:
-        signal_name = str(signal.get("signal", ""))
+        signal_name = str(signal.get("signal", signal.get("alert_type", "")))
         symbol = str(signal.get("symbol", "unknown"))
-        timeframe = str(signal.get("timeframe", "15m"))
+        timeframe = str(signal.get("timeframe", "1h"))
         direction = str(signal.get("direction", "na"))
 
+        if signal.get("alert_type"):
+            state_version = str(signal.get("state_version", "v1"))
+            signature = str(signal.get("signature", ""))
+            zone_hash = signature.split("|")[4] if "|" in signature and len(signature.split("|")) >= 5 else signature
+            return f"TREND|{symbol}|{timeframe}|{signal_name}|{direction}|{zone_hash}|{state_version}"
         if self._is_x_signal(signal):
             abnormal_type = str(signal.get("abnormal_type", "")) or signal_name
             return f"FAMILY|X|{symbol}|{timeframe}|{direction}|{abnormal_type}"
-
         phase_anchor = str(signal.get("phase_anchor", ""))
         return f"FAMILY|ABC|{symbol}|{timeframe}|{direction}|{signal_name}|{phase_anchor}"
 
@@ -123,7 +127,7 @@ class SignalStateStore:
 
         now = time.time()
         cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
-        signal_name = str(signal.get("signal", ""))
+        signal_name = str(signal.get("signal", signal.get("alert_type", "")))
         signal_price = float(signal.get("price", 0.0) or 0.0)
         signal_signature = str(signal.get("signature", ""))
         curr_threshold = self._threshold_for(signal)
@@ -163,7 +167,7 @@ class SignalStateStore:
 
         now = time.time()
         cooldown_seconds = int(signal.get("cooldown_seconds", 1800) or 1800)
-        signal_name = str(signal.get("signal", ""))
+        signal_name = str(signal.get("signal", signal.get("alert_type", "")))
         signal_price = float(signal.get("price", 0.0) or 0.0)
         signal_signature = str(signal.get("signature", ""))
         curr_phase = str(signal.get("phase_name", ""))
@@ -217,6 +221,14 @@ class SignalStateStore:
 
     def should_send(self, signal: dict[str, Any]) -> bool:
         self._load()
+        if signal.get("alert_type"):
+            family_key = self._family_key(signal)
+            prev = self.last_sent.get(family_key)
+            if not prev:
+                return True
+            prev_sig = str(prev.get("signature", ""))
+            curr_sig = str(signal.get("signature", ""))
+            return prev_sig != curr_sig
         if self._is_x_signal(signal):
             return self._should_send_x(signal)
         return self._should_send_abc(signal)
@@ -224,7 +236,7 @@ class SignalStateStore:
     def mark_sent(self, signal: dict[str, Any]):
         family_key = self._family_key(signal)
         slot_key = self._directional_slot_key(signal)
-        signal_name = str(signal.get("signal", ""))
+        signal_name = str(signal.get("signal", signal.get("alert_type", "")))
 
         payload = {
             "signal": signal_name,
@@ -244,5 +256,6 @@ class SignalStateStore:
         }
 
         self.last_sent[family_key] = payload
-        self.last_sent[slot_key] = payload
+        if not signal.get("alert_type"):
+            self.last_sent[slot_key] = payload
         self._save()
