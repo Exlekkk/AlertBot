@@ -1,104 +1,90 @@
-[PATCH_NOTES.md](https://github.com/user-attachments/files/27114652/PATCH_NOTES.md)
-# AlertBot Patch Notes — X hard volume OR gate
+[PATCH_NOTES.md](https://github.com/user-attachments/files/27696715/PATCH_NOTES.md)
+# Patch Notes — Trend Segment Engine v1
 
-## Patch name
+## Summary
 
-`x-volume-hard-gate-or-fix`
+This release replaces the old public alert flow with a BTC 1H trend segment decision engine.
 
-## Reason
+The new main path focuses on:
 
-The user's hard requirement for X / abnormal volume gating is:
+- 4H background context
+- 1H structure change detection
+- key price zones
+- trend continuation state
+- external-safe Telegram wording
+- cooldown / deduplication based on trend alert signatures
 
-```text
-15m VOL > 6000 OR 1h VOL > 12000
-```
+## Key changes
 
-The previous implementation incorrectly used:
+### Scanner
 
-```text
-15m VOL > 6000 AND 1h VOL > 12000
-```
+`engine/scanner.py` now uses only:
 
-This made X too strict. A 1h abnormal move could be blocked when the latest closed 15m candle did not also exceed the 15m absolute volume threshold.
+- `4h`
+- `1h`
 
-## Changed files
+The main scanner path no longer requests or depends on `15m`.
 
-### `engine/x_signals.py`
+### Trend engine
 
-- Fixed `_passes_hard_volume_gate(...)`.
-- Previous behavior:
+Added / updated:
 
-```python
-return vol_15m > MIN_15M_ABNORMAL_VOLUME and vol_1h > MIN_1H_ABNORMAL_VOLUME
-```
+- `engine/liquidity.py`
+- `engine/msb_ob.py`
+- `engine/trend_matrix.py`
+- `engine/aux_filters.py`
+- `engine/trend_segments.py`
+- `engine/trend_snapshot.py`
+- `engine/trend_config.py`
+- `engine/trend_messages.py`
 
-- New behavior:
+### Telegram messages
 
-```python
-return vol_15m > MIN_15M_ABNORMAL_VOLUME or vol_1h > MIN_1H_ABNORMAL_VOLUME
-```
+Public messages now use neutral wording:
 
-- Updated the nearby comment to explicitly state the OR relationship:
-  - `15m VOL > 6000`
-  - or `1h VOL > 12000`
+- 结构转多
+- 结构转空
+- 多头延续观察
+- 空头延续观察
+- 关注区间
+- 大周期
+- 动能与热度
+- 风险位
+- 结论
 
-### `tests/test_state_and_message.py`
+Telegram messages are checked to avoid leaking internal terminology.
 
-- Added regression test:
+### Cooldown
 
-```text
-test_x_hard_volume_gate_uses_or_between_15m_and_1h
-```
+Trend alerts use signature-based cooldown keys instead of the old slot/family keys.
 
-The test verifies:
+### Tests
 
-- 15m high / 1h low => pass
-- 15m low / 1h high => pass
-- both high => pass
-- both low => fail
+The test suite covers:
 
-## Deliberately not changed
+- 4H context does not hard-block high-quality 1H structure changes.
+- 1H weak structure against strong 4H context can be suppressed.
+- 15m is not requested by the scanner.
+- Short/noisy moves do not trigger structure alerts.
+- Mid-quality moves with recent key-area trigger can create structure alerts.
+- Continuation requires existing trend state.
+- Telegram messages include emoji titles and do not leak internal terminology.
+- Trend cooldown avoids old slot/family writes.
 
-This patch does **not** change:
-
-- ABC logic.
-- X signal categories.
-- X impulse / sweep / first-burst shape checks.
-- cooldown / suppress behavior.
-- Telegram message formatting.
-- phase anchor.
-- ABCX bucket independence.
-
-## Important note
-
-This patch fixes the hard volume gate only.
-
-It does **not** mean that `1h VOL > 12000` alone automatically sends an X alert. After the hard volume gate passes, X still checks the existing X behavior layer, such as:
-
-- impulse breakout
-- first burst
-- wick sweep resolve
-- relative force / h1 force confirmation
-
-If the desired rule is:
-
-```text
-1h VOL > 12000 alone should produce a dedicated X_H1_FORCE alert
-```
-
-that should be added as a separate X sub-type in `engine/x_signals.py`, not by borrowing from A/B/C.
-
-## Verification run locally
+## Validation
 
 ```bash
 python -m unittest discover -s tests
 python -m compileall -q engine services tests
 ```
 
-Result:
+Current result:
 
 ```text
-Ran 14 tests
-OK
+Ran 31 tests OK
 compileall OK
 ```
+
+## Known limitations
+
+Auxiliary market filters remain proxy implementations and should be tuned through live replay / dry-run observation.
