@@ -33,6 +33,21 @@ The bot is intended to send fewer, higher-quality alerts around important struct
 
 Telegram messages are intentionally written in simple external-facing language. Internal strategy terminology is not exposed in alert messages.
 
+
+## Indicator stack
+
+The active trend engine does not use MACD_SSS_EQ as a decision input.
+
+The current auxiliary layer uses:
+
+- RAR direction and slope
+- Inertial Stochastic direction and slope
+- Trading Activity Index heat based on the Zeiierman dollar-volume formula
+- recent 1H price displacement
+- volume expansion
+
+TAI heat is classified by its P20/P40/P60/P80 bands, not by fixed 0-100 thresholds.
+
 ## Main pipeline
 
 The main scanner path is implemented in `engine/scanner.py`.

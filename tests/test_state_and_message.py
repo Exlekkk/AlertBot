@@ -244,7 +244,7 @@ class TelegramSendTests(unittest.TestCase):
 
         def fake_fetch(self, interval: str):
             fetch_calls.append(interval)
-            return [{"close": 100.0, "ema10": 2.0, "ema20": 1.0, "macd": 90.0}] * 30
+            return [{"close": 100.0, "ema10": 2.0, "ema20": 1.0, "volume": 100.0, "atr": 1.0}] * 30
 
         liq = {
             "sweep_type": "sellside",
@@ -495,7 +495,7 @@ class ScannerPipelineTests(unittest.TestCase):
 
         with patch("engine.scanner.get_logger", return_value=Mock()):
             scanner = SMCTScanner("BTCUSDT")
-        ctx = scanner._htf_context([{"ema10": 2.0, "ema20": 1.0, "macd": 100.0}], "neutral")
+        ctx = scanner._htf_context([{"ema10": 2.0, "ema20": 1.0, "close": 100.0, "atr": 1.0}], "neutral")
         self.assertEqual(ctx["relation"], "neutral")
 
     def test_scanner_only_fetches_4h_and_1h(self):
@@ -505,7 +505,7 @@ class ScannerPipelineTests(unittest.TestCase):
 
         def fake_fetch(self, interval: str):
             calls.append(interval)
-            return [{"close": 100.0, "ema10": 1.0, "ema20": 1.0, "macd": 0.0}] * 30
+            return [{"close": 100.0, "ema10": 1.0, "ema20": 1.0, "volume": 100.0, "atr": 1.0}] * 30
 
         with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
@@ -604,8 +604,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             "atr": atr,
             "ema10": close,
             "ema20": close,
-            "macd": 0.0,
-        }
+                    }
 
     def _pullback_inputs(self):
         from engine.key_zones import decide_key_zone_observation
@@ -628,9 +627,13 @@ class KeyZoneObservationTests(unittest.TestCase):
             "direction": "neutral",
             "leg_type": "SHORT",
             "quality": 10,
+            "has_order_block_context": False,
             "structure_zone": (9800, 9900),
             "order_block_zone": (9700, 9900),
             "mid_observe_zone": (9850, 9950),
+            "active_fvg_zone": (9700, 9900),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
             "metrics": {},
         }
         htf = {"text": "4H 偏震荡", "relation": "neutral"}
@@ -654,7 +657,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(decision["should_alert"])
         self.assertEqual(decision["alert_type"], "FAST_PULLBACK_OBSERVE")
         self.assertEqual(decision["direction"], "long")
-        self.assertEqual(decision["zone_source"], "range_lower_zone")
+        self.assertEqual(decision["zone_source"], "fvg_zone")
 
     def test_key_zone_cooldown_suppresses_only_unchanged_inside_zone(self):
         decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
@@ -701,6 +704,46 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(reentered["should_alert"])
         self.assertIn("_R2", reentered["state_version"])
 
+
+    def test_post_waterfall_same_cluster_waits_for_real_reaction(self):
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        first = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={"inside_zone": False},
+        )
+
+        # Simulate the next hour still grinding around the same practical area.
+        # The exact zone may drift, but the cluster is unchanged and there is no
+        # reclaim/rejection upgrade, so this should not produce another passive
+        # alert.
+        next_state = dict(first["observation_update"])
+        next_state["inside_zone"] = True
+        next_state["last_phase"] = "lower_test"
+        suppressed = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state=next_state,
+        )
+
+        self.assertFalse(suppressed["should_alert"])
+        self.assertIn(
+            suppressed["suppress_reason"],
+            {"post_impulse_waiting_for_reaction", "same_zone_no_new_reaction", "inside_zone_unchanged"},
+        )
+
     def test_key_zone_message_does_not_leak_internal_terms(self):
         from engine.trend_messages import BANNED, format_trend_message
 
@@ -722,6 +765,51 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertIn("快速回踩观察", msg)
         for term in BANNED:
             self.assertNotIn(term, msg)
+
+
+
+    def test_no_context_no_key_zone_alert(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(10000, 10020, 9900, 9950),
+            self._bar(9950, 9960, 9700, 9750),
+        ]
+        liq = {
+            "prev_low": 9700,
+            "prev_high": 10300,
+            "sweep_type": "none",
+            "reclaim_or_reject": "none",
+            "sweep_level": None,
+            "recent_sweep_valid": False,
+        }
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "has_order_block_context": False,
+            "structure_zone": (9800, 9900),
+            "order_block_zone": (9700, 9900),
+            "mid_observe_zone": (9850, 9950),
+            "active_fvg_zone": None,
+            "active_fvg_direction": "none",
+            "metrics": {},
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 偏震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 中性", "price": 9750},
+            observation_state={"inside_zone": False},
+        )
+
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "no_key_zone_touch")
 
 
     def test_upper_zone_rejection_message_is_not_plain_upper_test(self):
@@ -747,9 +835,13 @@ class KeyZoneObservationTests(unittest.TestCase):
             "direction": "neutral",
             "leg_type": "SHORT",
             "quality": 10,
+            "has_order_block_context": False,
             "structure_zone": (10000, 10120),
             "order_block_zone": (10000, 10120),
             "mid_observe_zone": (10000, 10120),
+            "active_fvg_zone": (10000, 10120),
+            "active_fvg_direction": "bear",
+            "active_fvg_age": 1,
             "metrics": {},
         }
         decision = decide_key_zone_observation(
@@ -798,9 +890,13 @@ class KeyZoneObservationTests(unittest.TestCase):
             "direction": "neutral",
             "leg_type": "SHORT",
             "quality": 10,
+            "has_order_block_context": False,
             "structure_zone": (9850, 10050),
             "order_block_zone": (9850, 10050),
             "mid_observe_zone": (9850, 10050),
+            "active_fvg_zone": (9850, 10050),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
             "metrics": {},
         }
         decision = decide_key_zone_observation(
@@ -833,3 +929,140 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(scanner.health_check()["ok"])
         self.assertTrue(scanner.healthcheck()["ok"])
 
+
+
+class AuxFilterCalibrationTests(unittest.TestCase):
+    @staticmethod
+    def _bar(close: float, rar: float, tai: float, atr: float = 100.0, volume: float = 10000.0) -> dict:
+        return {
+            "open": close,
+            "high": close + 50,
+            "low": close - 50,
+            "close": close,
+            "volume": volume,
+            "ema10": close + 1,
+            "ema20": close,
+            "rar_value": rar,
+            "tai_value": tai,
+            "tai_p20": 19.5,
+            "tai_p40": 19.7,
+            "tai_p60": 19.9,
+            "tai_p80": 20.1,
+            "inertia": 50.0,
+            "atr": atr,
+        }
+
+    def test_tai_uses_visible_p20_p40_p60_p80_bands(self):
+        from engine.aux_filters import build_aux_filters_proxy
+
+        klines = [self._bar(10000 + i, rar=45 + (i % 5), tai=19.8) for i in range(71)]
+
+        # 19.86 is between P40=19.7 and P60=19.9, so it is neutral,
+        # not cold/over-cold.  Below P20 is the only over-cold region.
+        klines.append(self._bar(10080, rar=48, tai=19.86))
+        aux = build_aux_filters_proxy(klines, klines[-4:])
+
+        self.assertEqual(aux["temperature_desc"], "热度 中性")
+        self.assertEqual(aux["tai_percentile"], 0.50)
+
+        klines[-1] = self._bar(10080, rar=48, tai=19.49)
+        aux_cold = build_aux_filters_proxy(klines, klines[-4:])
+        self.assertEqual(aux_cold["temperature_desc"], "热度 过冷")
+
+    def test_momentum_detects_sell_pressure_release_from_price_and_rar_slope(self):
+        from engine.aux_filters import build_aux_filters_proxy
+
+        klines = [
+            self._bar(10300, rar=50, tai=19.8),
+            self._bar(10250, rar=49, tai=19.8),
+            self._bar(10100, rar=47, tai=19.8),
+            self._bar(9900, rar=44, tai=19.8, volume=15000.0),
+        ]
+        # Add enough TAI history for the percentile path.
+        klines = [self._bar(10000 + i, rar=50, tai=19.5 + (i % 6) * 0.05) for i in range(68)] + klines
+
+        aux = build_aux_filters_proxy(klines, klines[-4:])
+        self.assertEqual(aux["momentum_desc"], "短线卖压释放")
+        self.assertLess(aux["rar_slope"], 0)
+        self.assertLess(aux["price_impulse"], 0)
+
+
+class NoMacdAndTrueTaiTests(unittest.TestCase):
+    @staticmethod
+    def _tai_bar(close: float, volume: float, rar: float = 50.0, inertia: float = 50.0) -> dict:
+        return {
+            "open": close,
+            "high": close + 10,
+            "low": close - 10,
+            "close": close,
+            "volume": volume,
+            "ema10": close + 1,
+            "ema20": close,
+            "rar_value": rar,
+            "inertia": inertia,
+            "atr": 100.0,
+        }
+
+    def test_aux_filter_outputs_no_macd_field(self):
+        from engine.aux_filters import build_aux_filters_proxy
+
+        klines = [self._tai_bar(10000.0, 1000.0 + i * 10.0) for i in range(300)]
+        aux = build_aux_filters_proxy(klines, klines[-4:])
+
+        self.assertNotIn("macd", aux)
+        self.assertIn("tai_value", aux)
+        self.assertIn("tai_p20", aux)
+        self.assertEqual(aux["temperature_desc"], "热度 过热")
+
+    def test_tai_uses_dollar_volume_percentile_bands_when_tv_fields_absent(self):
+        from engine.aux_filters import build_aux_filters_proxy
+
+        klines = [self._tai_bar(10000.0, 1000.0 + i * 10.0) for i in range(300)]
+        aux = build_aux_filters_proxy(klines, klines[-4:])
+
+        self.assertGreater(aux["tai_value"], aux["tai_p80"])
+        self.assertEqual(aux["temperature_desc"], "热度 过热")
+
+    def test_sweep_alone_without_fvg_or_structure_context_does_not_observe_range_edge(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        klines = [
+            {"open": 10000.0, "high": 10050.0, "low": 9950.0, "close": 10000.0, "volume": 1000.0, "atr": 100.0}
+            for _ in range(30)
+        ]
+        klines[-1] = {"open": 10000.0, "high": 10020.0, "low": 9700.0, "close": 9750.0, "volume": 2000.0, "atr": 100.0}
+        liq = {
+            "prev_low": 9700.0,
+            "prev_high": 10300.0,
+            "sweep_type": "sellside",
+            "reclaim_or_reject": "reclaim",
+            "sweep_level": 9700.0,
+            "recent_sweep_valid": True,
+        }
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "has_order_block_context": False,
+            "structure_zone": (9800.0, 9900.0),
+            "order_block_zone": (9700.0, 9900.0),
+            "mid_observe_zone": (9850.0, 9950.0),
+            "active_fvg_zone": None,
+            "active_fvg_direction": "none",
+            "metrics": {},
+        }
+
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 偏震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "短线卖压释放", "temperature_desc": "热度 中性", "price": 9750.0},
+            observation_state={"inside_zone": False},
+        )
+
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "no_key_zone_touch")

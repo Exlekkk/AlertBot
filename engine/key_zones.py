@@ -25,10 +25,79 @@ def _zone_hash(zone: tuple[float, float]) -> str:
     return hashlib.md5(f"{zl:.2f}-{zh:.2f}".encode()).hexdigest()[:10]
 
 
+
+def _zone_cluster_hash(zone: tuple[float, float], side: str, source: str, atr: float, close: float) -> str:
+    """Stable cluster key for moving zones.
+
+    Exact zone bounds can drift every candle as the proxy zone updates.  Using a
+    cluster prevents "same practical area, new hash" from producing an hourly
+    alert stream after a waterfall.
+    """
+
+    zl, zh = zone
+    center = (float(zl) + float(zh)) / 2.0
+    bucket = max(float(atr) * 2.0, abs(float(close)) * 0.004, 1.0)
+    bucket_id = round(center / bucket)
+    family = "range" if "range" in source else "structural"
+    return f"{side}|{family}|{bucket_id}"
+
+
+def _bar_open_time(k: dict[str, Any], fallback: int) -> int:
+    for key in ("open_time", "close_time", "timestamp", "time"):
+        if key in k and k.get(key) is not None:
+            try:
+                return int(k.get(key))
+            except (TypeError, ValueError):
+                pass
+    return int(fallback)
+
+
+def _bars_between(current_open_time: int, previous_open_time: Any) -> int | None:
+    if previous_open_time in (None, ""):
+        return None
+    try:
+        previous = int(previous_open_time)
+    except (TypeError, ValueError):
+        return None
+    if previous <= 0:
+        return None
+    delta = current_open_time - previous
+    if delta < 0:
+        return None
+    # Binance timestamps are ms.  Unit-test fallback counters are small ints.
+    if current_open_time > 10_000_000_000:
+        return int(delta // 3_600_000)
+    return int(delta)
+
+
 def _ordered_zone(zone: tuple[float, float]) -> tuple[float, float]:
     low, high = float(zone[0]), float(zone[1])
     return (round(min(low, high), 2), round(max(low, high), 2))
 
+
+
+
+def _source_priority(source: str) -> int:
+    if source == "fvg_zone":
+        return 0
+    if source in {"order_block_zone", "structure_zone", "mid_observe_zone"}:
+        return 1
+    return 2
+
+
+def _zone_distance(close: float, z: dict[str, Any]) -> float:
+    zl, zh = z["zone"]
+    return min(abs(close - zl), abs(close - zh))
+
+
+def _best_zone(candidates: list[dict[str, Any]], close: float, boundary: str) -> dict[str, Any]:
+    if boundary == "upper":
+        dist = lambda z: abs(close - z["zone"][0])
+    elif boundary == "lower":
+        dist = lambda z: abs(close - z["zone"][1])
+    else:
+        dist = lambda z: _zone_distance(close, z)
+    return min(candidates, key=lambda z: (_source_priority(str(z.get("source", ""))), dist(z)))
 
 def _touches_lower_zone(k: dict[str, Any], prev_close: float, zone: tuple[float, float], pad: float) -> bool:
     zl, zh = zone
@@ -84,32 +153,58 @@ def _select_zone(
 
     zones: list[dict[str, Any]] = []
 
-    # Range edges from recent high/low context.
-    prev_low = float(liq.get("prev_low", close))
-    prev_high = float(liq.get("prev_high", close))
-    range_pad = max(atr * cfg["range_edge_atr_mult"], close * cfg["touch_pct"])
-    zones.append({"side": "lower", "source": "range_lower_zone", "zone": _ordered_zone((prev_low - range_pad, prev_low + range_pad))})
-    zones.append({"side": "upper", "source": "range_upper_zone", "zone": _ordered_zone((prev_high - range_pad, prev_high + range_pad))})
+    has_ob_context = bool(msb.get("has_order_block_context"))
+    has_fvg_context = bool(msb.get("active_fvg_zone"))
+    has_recent_sweep = bool(liq.get("recent_sweep_valid"))
+    # Sweep alone is not enough for observation alerts.  It is useful for the
+    # structure-shift engine, but key-zone observation must be anchored to an
+    # actual FVG/structure/POI context to avoid hourly noise after a waterfall.
+    has_structural_context = has_ob_context or has_fvg_context
 
-    # Structural zones from the trend engine.  These are not exposed in messages.
-    for source in ("structure_zone", "order_block_zone", "mid_observe_zone"):
-        raw = msb.get(source)
-        if not raw:
-            continue
-        zone = _ordered_zone(tuple(raw))
+    # FVG-style zones are valid observation targets even before a full
+    # structure-shift alert.  They are internal-only and never exposed by name.
+    fvg_zone = msb.get("active_fvg_zone")
+    if fvg_zone:
+        zone = _ordered_zone(tuple(fvg_zone))
+        direction = str(msb.get("active_fvg_direction", "none"))
         relation = _zone_relation(latest, zone, pad)
-        if relation == "rejected_below":
-            zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
-        elif relation == "reclaimed_above":
-            zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
-        elif zone[1] < close:
-            zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
-        elif zone[0] > close:
-            zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
-        else:
-            # If price is inside the zone, infer side from the latest movement.
-            side = "lower" if close >= prev_close else "upper"
-            zones.append({"side": side, "source": source, "zone": zone, "interaction": relation})
+        if direction == "bull":
+            zones.append({"side": "lower", "source": "fvg_zone", "zone": zone, "interaction": relation})
+        elif direction == "bear":
+            zones.append({"side": "upper", "source": "fvg_zone", "zone": zone, "interaction": relation})
+
+    # Structural zones from the trend engine.  Do not use synthetic zones when
+    # no real structure context exists; otherwise the bot becomes noisy and
+    # reports every moving range edge as a key area.
+    if has_ob_context or not cfg.get("structural_zone_requires_context", True):
+        for source in ("structure_zone", "order_block_zone", "mid_observe_zone"):
+            raw = msb.get(source)
+            if not raw:
+                continue
+            zone = _ordered_zone(tuple(raw))
+            relation = _zone_relation(latest, zone, pad)
+            if relation == "rejected_below":
+                zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
+            elif relation == "reclaimed_above":
+                zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
+            elif zone[1] < close:
+                zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
+            elif zone[0] > close:
+                zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
+            else:
+                # If price is inside the zone, infer side from the latest movement.
+                side = "lower" if close >= prev_close else "upper"
+                zones.append({"side": side, "source": source, "zone": zone, "interaction": relation})
+
+    # Range edges are allowed only when there is a valid context behind them
+    # (recent sweep / FVG / structure).  This preserves useful range-boundary
+    # alerts without turning every high/low into a Telegram message.
+    if has_structural_context or not cfg.get("range_edge_requires_context", True):
+        prev_low = float(liq.get("prev_low", close))
+        prev_high = float(liq.get("prev_high", close))
+        range_pad = max(atr * cfg["range_edge_atr_mult"], close * cfg["touch_pct"])
+        zones.append({"side": "lower", "source": "range_lower_zone", "zone": _ordered_zone((prev_low - range_pad, prev_low + range_pad))})
+        zones.append({"side": "upper", "source": "range_upper_zone", "zone": _ordered_zone((prev_high - range_pad, prev_high + range_pad))})
 
     lower_hits = [
         dict(z, interaction=z.get("interaction") or _zone_relation(latest, z["zone"], pad))
@@ -135,22 +230,22 @@ def _select_zone(
     # user's intraday use case: a waterfall into a useful area should wake them
     # up for the possible reaction, not describe only where the drop started.
     if is_red and lower_hits:
-        return min(lower_hits, key=lambda z: abs(close - z["zone"][1]))
+        return _best_zone(lower_hits, close, "lower")
     if is_green and upper_hits:
-        return min(upper_hits, key=lambda z: abs(close - z["zone"][0]))
+        return _best_zone(upper_hits, close, "upper")
 
     rejected_upper = [z for z in upper_hits if z.get("interaction") == "rejected_below"]
     reclaimed_lower = [z for z in lower_hits if z.get("interaction") == "reclaimed_above"]
     if is_red and rejected_upper:
-        return min(rejected_upper, key=lambda z: abs(float(latest["close"]) - z["zone"][0]))
+        return _best_zone(rejected_upper, close, "upper")
     if is_green and reclaimed_lower:
-        return min(reclaimed_lower, key=lambda z: abs(float(latest["close"]) - z["zone"][1]))
+        return _best_zone(reclaimed_lower, close, "lower")
 
     if lower_hits:
         # Prefer the closest lower zone.
-        return min(lower_hits, key=lambda z: abs(close - z["zone"][1]))
+        return _best_zone(lower_hits, close, "lower")
     if upper_hits:
-        return min(upper_hits, key=lambda z: abs(close - z["zone"][0]))
+        return _best_zone(upper_hits, close, "upper")
     return {}
 
 
@@ -230,6 +325,8 @@ def decide_key_zone_observation(
     side = selected["side"]
     zone_source = selected["source"]
     interaction = str(selected.get("interaction", "inside"))
+    zone_cluster = _zone_cluster_hash(zone, side, zone_source, atr, close)
+    current_bar = _bar_open_time(latest, len(klines_1h))
 
     two_bar_move = (close - prev2_close) / atr
     one_bar_move = (close - prev_close) / atr
@@ -278,20 +375,42 @@ def decide_key_zone_observation(
     score = key_zone_score + move_quality + aux_score
 
     prev_zone_hash = str(observation_state.get("active_zone_hash", ""))
+    prev_zone_cluster = str(observation_state.get("active_zone_cluster", ""))
     was_inside = bool(observation_state.get("inside_zone", False))
     prev_phase = str(observation_state.get("last_phase", ""))
+    prev_side = str(observation_state.get("last_side", ""))
     reentry_count = int(observation_state.get("reentry_count", 0) or 0)
+    bars_since_alert = _bars_between(current_bar, observation_state.get("last_alert_open_time"))
 
-    reentered = zone_hash != prev_zone_hash or not was_inside
-    phase_changed = phase != prev_phase and was_inside and zone_hash == prev_zone_hash
+    same_exact_zone = zone_hash == prev_zone_hash
+    same_cluster = zone_cluster == prev_zone_cluster and side == prev_side
+    actionable_upgrade = phase in {"lower_reclaim", "upper_rejection"}
+    passive_observation = phase in {
+        "fast_pullback",
+        "fast_rebound",
+        "lower_test",
+        "upper_test",
+        "range_lower_probe",
+        "range_upper_probe",
+    }
+
+    reentered = not was_inside or not same_cluster
     if reentered:
         reentry_count += 1
 
     suppress_reason = ""
     if score < cfg["min_observation_score"]:
         suppress_reason = "below_observation_score"
-    elif was_inside and zone_hash == prev_zone_hash and not phase_changed:
+    elif was_inside and same_cluster and phase == prev_phase:
         suppress_reason = "inside_zone_unchanged"
+    elif was_inside and same_exact_zone and phase == prev_phase:
+        suppress_reason = "inside_zone_unchanged"
+    elif was_inside and passive_observation and bars_since_alert is not None and bars_since_alert < cfg.get("min_realert_bars", 4):
+        # After an impulse / waterfall, repeated passive tests are not useful.
+        # Wait for reclaim/rejection/real boundary break before speaking again.
+        suppress_reason = "post_impulse_waiting_for_reaction"
+    elif was_inside and same_cluster and passive_observation and not actionable_upgrade:
+        suppress_reason = "same_zone_no_new_reaction"
 
     should_alert = suppress_reason == ""
     state_version = f"{phase.upper()}_R{reentry_count}"
@@ -299,9 +418,12 @@ def decide_key_zone_observation(
     update = {
         "inside_zone": True,
         "active_zone_hash": zone_hash,
+        "active_zone_cluster": zone_cluster,
         "reentry_count": reentry_count,
         "last_phase": phase,
-        "last_alert_type": alert_type,
+        "last_side": side,
+        "last_alert_type": alert_type if should_alert else observation_state.get("last_alert_type", alert_type),
+        "last_alert_open_time": current_bar if should_alert else observation_state.get("last_alert_open_time"),
         "last_price": close,
         "zone_low": zone[0],
         "zone_high": zone[1],

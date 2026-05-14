@@ -1,5 +1,43 @@
 # Patch Notes — Trend Segment Engine v1
 
+## v1.1.5 - No MACD / True TAI Calibration / Structure-First Observation
+
+### Summary
+
+This release removes MACD_SSS_EQ from the active trend engine and recalibrates market heat using the Trading Activity Index formula.
+
+### Key changes
+
+- Removed MACD from the active scanner, auxiliary filters, scoring, and tests.
+- Rebuilt TAI heat classification from the Zeiierman formula:
+  - dollar volume = close * volume
+  - average dollar volume = SMA(dollar volume, 20)
+  - trading activity = log(average dollar volume)
+  - P20/P40/P60/P80 are rolling percentile bands over the history window.
+- Heat labels now follow the visible bands:
+  - below P20 = over-cold
+  - P20-P40 = slightly cold
+  - P40-P60 = neutral
+  - P60-P80 = slightly hot
+  - above P80 = over-hot
+- Momentum now uses:
+  - RAR slope
+  - Inertial slope
+  - recent 1H price impulse
+  - volume expansion
+- Key-zone observation is stricter:
+  - range edges no longer trigger by themselves after a sweep
+  - observation alerts require FVG / structure / valid POI context
+  - passive post-impulse noise is suppressed until a real new reaction appears
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 41 tests.
+
+
 ## Summary
 
 This release replaces the old ABCX-style alert path with a BTC 1H trend segment decision engine.

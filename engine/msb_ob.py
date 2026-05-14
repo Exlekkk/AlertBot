@@ -29,6 +29,43 @@ def classify_msb_leg(atr_move: float, range_ratio: float, body_quality: float, p
     return "MID"
 
 
+
+def _latest_active_fvg(klines_1h: list[dict[str, Any]], lookback: int = 12) -> dict[str, Any]:
+    """Return the most recent simple 3-candle FVG proxy.
+
+    This is intentionally conservative and only used as an internal key-zone
+    source.  It does not try to expose or fully replicate a TradingView script.
+    """
+
+    if len(klines_1h) < 3:
+        return {"zone": None, "direction": "none"}
+
+    start = max(2, len(klines_1h) - lookback)
+    latest_close = float(klines_1h[-1]["close"])
+    latest: dict[str, Any] = {"zone": None, "direction": "none", "age": None}
+
+    for i in range(start, len(klines_1h)):
+        left = klines_1h[i - 2]
+        right = klines_1h[i]
+        left_high = float(left["high"])
+        left_low = float(left["low"])
+        right_high = float(right["high"])
+        right_low = float(right["low"])
+
+        if right_low > left_high:
+            zone = (round(left_high, 2), round(right_low, 2))
+            # Keep if price has not closed far below the zone.
+            if latest_close >= zone[0]:
+                latest = {"zone": zone, "direction": "bull", "age": len(klines_1h) - 1 - i}
+        elif right_high < left_low:
+            zone = (round(right_high, 2), round(left_low, 2))
+            # Keep if price has not closed far above the zone.
+            if latest_close <= zone[1]:
+                latest = {"zone": zone, "direction": "bear", "age": len(klines_1h) - 1 - i}
+
+    return latest
+
+
 def build_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[str, Any]) -> dict[str, Any]:
     zcfg = TREND_ENGINE_CONFIG["zone"]
     latest, prev = klines_1h[-1], klines_1h[-2]
@@ -63,9 +100,12 @@ def build_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[st
     mid = zone_low + (zone_high - zone_low) * zcfg["continuation_mid_ratio"]
     pad = atr * zcfg["merge_width_atr_mult"]
 
+    fvg = _latest_active_fvg(klines_1h)
+
     return {
         "direction": direction,
         "leg_type": leg_type,
+        "has_order_block_context": direction != "neutral" and leg_type != "SHORT",
         "quality": min(
             100,
             int((atr_move * 0.35 + range_ratio * 0.30 + body_quality * 0.2 + min(position_score, 1.0) * 0.15) * 100),
@@ -76,6 +116,9 @@ def build_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[st
             round(max(float(prev["high"]), zone_high), 2),
         ),
         "mid_observe_zone": (round(mid - pad, 2), round(mid + pad, 2)),
+        "active_fvg_zone": fvg["zone"],
+        "active_fvg_direction": fvg["direction"],
+        "active_fvg_age": fvg["age"],
         "metrics": {
             "atr_move": atr_move,
             "range_ratio": range_ratio,

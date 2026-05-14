@@ -32,16 +32,24 @@ class SMCTScanner:
         return enrich_klines(klines[:-1])
 
     def _htf_context(self, klines_4h: list[dict], direction_1h: str) -> dict[str, Any]:
-        h4 = "bull" if float(klines_4h[-1].get("ema10", 0)) > float(klines_4h[-1].get("ema20", 0)) else "bear"
+        latest = klines_4h[-1]
+        ema10 = float(latest.get("ema10", 0.0) or 0.0)
+        ema20 = float(latest.get("ema20", 0.0) or 0.0)
+        close = float(latest.get("close", 0.0) or 0.0)
+        atr = float(latest.get("atr", max(abs(close) * 0.004, 1.0)) or max(abs(close) * 0.004, 1.0))
+
+        h4 = "bull" if ema10 > ema20 else "bear"
+        trend_strength = abs(ema10 - ema20) / max(atr, abs(close) * 0.002, 1.0)
+
         if direction_1h == "neutral":
             relation = "neutral"
         else:
             relation = "aligned" if (h4 == "bull" and direction_1h == "long") or (h4 == "bear" and direction_1h == "short") else "counter"
-            macd = float(klines_4h[-1].get("macd", 0))
-            if relation == "counter" and ((h4 == "bull" and macd > 80) or (h4 == "bear" and macd < -80)):
+            if relation == "counter" and trend_strength >= 0.90:
                 relation = "strong_counter"
+
         text = "4H 偏多" if h4 == "bull" else "4H 偏空"
-        return {"h4_direction": h4, "relation": relation, "text": text}
+        return {"h4_direction": h4, "relation": relation, "text": text, "h4_strength": trend_strength}
 
     def health_check(self) -> dict[str, Any]:
         return {

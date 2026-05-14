@@ -39,6 +39,9 @@ TREND_ENGINE_CONFIG = {
         "range_edge_atr_mult": 0.35,
         "fast_move_atr": 0.85,
         "two_bar_min_atr": 0.55,
-        "min_observation_score": 38,
+        "min_observation_score": 46,
+        "min_realert_bars": 4,
+        "range_edge_requires_context": True,
+        "structural_zone_requires_context": True,
     },
 }
