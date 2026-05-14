@@ -34,6 +34,8 @@ The bot is intended to send fewer, higher-quality alerts around important struct
 
 Telegram messages are intentionally written in simple external-facing language. Internal strategy terminology is not exposed in alert messages.
 
+Focus ranges include a compact one-line note below the price range so the user can quickly tell whether the range is for support reaction, rejection, fast pullback, fast rebound, continuation, confirmation, or invalidation.
+
 
 ## Indicator stack
 

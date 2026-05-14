@@ -488,6 +488,20 @@ class MessageTests(unittest.TestCase):
         for term in ["liquidity", "MSB", "OB", "SMC", "ICT", "RAR", "TAI", "流动性", "订单块"]:
             self.assertNotIn(term.lower(), msg.lower())
 
+    def test_zone_note_is_short_and_without_usage_label(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(self._decision("long", "LOWER_KEY_ZONE_RECLAIM"))
+        self.assertIn("100.00 - 110.00\n下方承接观察区，回踩不破才有确认价值。", msg)
+        self.assertNotIn("用途：", msg)
+
+    def test_upper_rejection_zone_note(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(self._decision("short", "UPPER_KEY_ZONE_REJECTION"))
+        self.assertIn("100.00 - 110.00\n上方承压观察区，反抽不破才有确认价值。", msg)
+        self.assertNotIn("用途：", msg)
+
 
 class ScannerPipelineTests(unittest.TestCase):
     def test_htf_context_keeps_neutral_relation(self):

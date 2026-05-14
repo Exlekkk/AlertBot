@@ -53,6 +53,41 @@ def _zone_text(d: dict) -> str:
     return f"{float(zl):.2f} - {float(zh):.2f}"
 
 
+
+
+def _zone_note(d: dict) -> str:
+    alert_type = str(d.get("alert_type", ""))
+    direction = str(d.get("direction", "neutral"))
+
+    notes = {
+        "LOWER_KEY_ZONE_RECLAIM": "下方承接观察区，回踩不破才有确认价值。",
+        "UPPER_KEY_ZONE_REJECTION": "上方承压观察区，反抽不破才有确认价值。",
+        "FAST_PULLBACK_OBSERVE": "急跌后的下方反应区，先看是否收回区间上沿。",
+        "FAST_REBOUND_OBSERVE": "急拉后的上方反应区，先看是否跌回区间下沿。",
+        "LOWER_KEY_ZONE_TEST": "下方反应观察区，先看是否出现收回。",
+        "UPPER_KEY_ZONE_TEST": "上方反应观察区，先看是否出现回落。",
+        "RANGE_LOWER_PROBE": "区间下沿观察区，守住或收回才有价值。",
+        "RANGE_UPPER_PROBE": "区间上沿观察区，承压或回落才有价值。",
+        "SECONDARY_CONFIRM_LOWER": "二次确认参考区，继续守住则承接有效。",
+        "SECONDARY_CONFIRM_UPPER": "二次确认参考区，继续压制则承压有效。",
+        "LOWER_CONFIRM_INVALIDATED": "原承接观察区已失效，等待新的关键区形成。",
+        "UPPER_CONFIRM_INVALIDATED": "原承压观察区已失效，等待新的关键区形成。",
+        "BULLISH_CONTINUATION": "多头中段观察区，守住则延续更稳。",
+        "BEARISH_CONTINUATION": "空头中段观察区，承压则延续更稳。",
+        "BULLISH_STRUCTURE_SHIFT": "结构转多后的回踩观察区，守住则更有延续价值。",
+        "BEARISH_STRUCTURE_SHIFT": "结构转空后的反抽观察区，承压则更有延续价值。",
+    }
+
+    if alert_type in notes:
+        return notes[alert_type]
+
+    if direction == "long":
+        return "下方承接观察区，等待价格给出延续反应。"
+    if direction == "short":
+        return "上方承压观察区，等待价格给出延续反应。"
+    return "当前结构参考区，等待明确反应。"
+
+
 def _clean_momentum(desc: str) -> str:
     desc = str(desc).strip()
     if not desc:
@@ -84,7 +119,8 @@ def _clean_temperature(desc: str) -> str:
 def _common_sections(d: dict, risk_line: str, conclusion: str) -> str:
     return (
         "🎯 关注区间：\n"
-        f"{_zone_text(d)}\n\n"
+        f"{_zone_text(d)}\n"
+        f"{_zone_note(d)}\n\n"
         "🧭 大周期：\n"
         f"{d['htf_context']}\n"
         "但本次提醒以 1H 结构变化为主。\n\n"

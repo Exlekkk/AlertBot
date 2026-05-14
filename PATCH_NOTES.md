@@ -1,5 +1,31 @@
 # Patch Notes — Trend Segment Engine v1
 
+## v1.1.7 - Zone Note Wording
+
+### Summary
+
+This release adds a short semantic note directly under the focus price range so the alert explains what the range is meant to represent.
+
+### Key changes
+
+- Focus ranges now include a one-line note below the price range.
+- The note avoids the label `用途：` and stays compact.
+- Examples:
+  - lower reaction area: `下方承接观察区，回踩不破才有确认价值。`
+  - upper rejection area: `上方承压观察区，反抽不破才有确认价值。`
+  - fast pullback: `急跌后的下方反应区，先看是否收回区间上沿。`
+  - fast rebound: `急拉后的上方反应区，先看是否跌回区间下沿。`
+- No trigger logic changes in this release.
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 49 tests.
+
+
+
 ## v1.1.6 - Pending Confirmation Switch / Dynamic Conclusions
 
 ### Summary
