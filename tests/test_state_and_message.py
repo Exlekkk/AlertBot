@@ -685,7 +685,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         )
 
         self.assertFalse(unchanged["should_alert"])
-        self.assertEqual(unchanged["suppress_reason"], "inside_zone_unchanged")
+        self.assertEqual(unchanged["suppress_reason"], "pending_confirmation_wait")
 
         left_then_reentered_state = dict(first["observation_update"])
         left_then_reentered_state["inside_zone"] = False
@@ -701,8 +701,8 @@ class KeyZoneObservationTests(unittest.TestCase):
             observation_state=left_then_reentered_state,
         )
 
-        self.assertTrue(reentered["should_alert"])
-        self.assertIn("_R2", reentered["state_version"])
+        self.assertFalse(reentered["should_alert"])
+        self.assertEqual(reentered["suppress_reason"], "pending_confirmation_wait")
 
 
     def test_post_waterfall_same_cluster_waits_for_real_reaction(self):
@@ -741,7 +741,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertFalse(suppressed["should_alert"])
         self.assertIn(
             suppressed["suppress_reason"],
-            {"post_impulse_waiting_for_reaction", "same_zone_no_new_reaction", "inside_zone_unchanged"},
+            {"post_impulse_waiting_for_reaction", "same_zone_no_new_reaction", "inside_zone_unchanged", "pending_confirmation_wait"},
         )
 
     def test_key_zone_message_does_not_leak_internal_terms(self):
@@ -919,6 +919,114 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(msg.startswith("📈"))
         self.assertIn("下方关键区收回", msg)
         self.assertIn("⚡ 动能与热度", msg)
+
+    def test_lower_zone_reclaim_uses_double_emoji_title(self):
+        from engine.key_zones import decide_key_zone_observation
+        from engine.trend_messages import format_trend_message
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(9900, 9950, 9800, 9850, atr=100.0),
+            self._bar(9850, 9900, 9750, 9820, atr=100.0),
+            self._bar(9820, 10180, 9750, 10140, atr=100.0),
+        ]
+        liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "has_order_block_context": False,
+            "structure_zone": (9850, 10050),
+            "order_block_zone": (9850, 10050),
+            "mid_observe_zone": (9850, 10050),
+            "active_fvg_zone": (9850, 10050),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
+            "metrics": {},
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 偏震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
+            observation_state={"inside_zone": False},
+        )
+        msg = format_trend_message(decision)
+        first_line = msg.splitlines()[0]
+        self.assertEqual(first_line, "📈 BTC 1H 下方关键区收回 📈")
+
+    def test_pending_confirmation_silences_middle_and_alerts_confirmation(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        first = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={"inside_zone": False},
+        )
+        self.assertTrue(first["should_alert"])
+        self.assertTrue(first["observation_update"].get("pending_confirm"))
+
+        # Same closed candle: no "pending" Telegram message, just silent tracking.
+        middle = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state=first["observation_update"],
+        )
+        self.assertFalse(middle["should_alert"])
+        self.assertEqual(middle["suppress_reason"], "pending_confirmation_wait")
+
+        # Next bar: retests the first zone and closes back above its midpoint.
+        confirm_klines = list(klines)
+        confirm_klines.append(self._bar(9760, 9920, 9760, 9895, atr=100.0))
+        confirmed = decide(
+            "BTCUSDT",
+            "1h",
+            confirm_klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            {"momentum_desc": "短线动能修复", "temperature_desc": "热度 中性", "price": 9895},
+            observation_state=first["observation_update"],
+        )
+
+        self.assertTrue(confirmed["should_alert"])
+        self.assertEqual(confirmed["alert_type"], "SECONDARY_CONFIRM_LOWER")
+
+    def test_secondary_confirmation_message(self):
+        from engine.trend_messages import format_trend_message
+
+        msg = format_trend_message(
+            {
+                "direction": "long",
+                "alert_type": "SECONDARY_CONFIRM_LOWER",
+                "zone": (9700.0, 9900.0),
+                "htf_context": "4H 偏震荡",
+                "momentum_desc": "短线动能修复",
+                "temperature_desc": "热度 中性",
+                "invalid_level": 9690.0,
+            }
+        )
+        self.assertTrue(msg.startswith("✅ BTC 1H 二次确认：下方承接成立"))
+        self.assertIn("具备小仓试探条件", msg)
+
 
     def test_scanner_health_compatibility_methods_exist(self):
         from engine.scanner import SMCTScanner

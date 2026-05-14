@@ -70,6 +70,282 @@ def _bars_between(current_open_time: int, previous_open_time: Any) -> int | None
     return int(delta)
 
 
+def _pending_zone(state: dict[str, Any]) -> dict[str, Any] | None:
+    if not state.get("pending_confirm"):
+        return None
+    try:
+        side = str(state.get("pending_side", ""))
+        if side not in {"lower", "upper"}:
+            return None
+        zone = _ordered_zone((float(state["pending_zone_low"]), float(state["pending_zone_high"])))
+        invalid = float(state["pending_invalid_level"])
+        return {
+            "side": side,
+            "zone": zone,
+            "invalid_level": invalid,
+            "created_open_time": state.get("pending_created_open_time"),
+            "source_alert_type": state.get("pending_source_alert_type", ""),
+            "source_phase": state.get("pending_phase", ""),
+            "zone_cluster": state.get("pending_zone_cluster", ""),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _clear_pending(state: dict[str, Any]) -> dict[str, Any]:
+    update = dict(state)
+    for key in (
+        "pending_confirm",
+        "pending_side",
+        "pending_zone_low",
+        "pending_zone_high",
+        "pending_invalid_level",
+        "pending_created_open_time",
+        "pending_source_alert_type",
+        "pending_phase",
+    ):
+        update.pop(key, None)
+    update["pending_confirm"] = False
+    return update
+
+
+def _make_pending_wait_decision(
+    symbol: str,
+    timeframe: str,
+    latest: dict[str, Any],
+    htf_ctx: dict[str, Any],
+    aux: dict[str, Any],
+    state: dict[str, Any],
+    pending: dict[str, Any],
+    current_bar: int,
+    suppress_reason: str = "pending_confirmation_wait",
+) -> dict[str, Any]:
+    zone = pending["zone"]
+    update = dict(state)
+    update["inside_zone"] = True
+    update["last_price"] = float(latest["close"])
+    update["last_seen_open_time"] = current_bar
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "alert_type": "NO_TRADE_RANGE",
+        "direction": "neutral",
+        "price": float(latest["close"]),
+        "score": 0,
+        "score_breakdown": {
+            "key_zone": 0,
+            "move_quality": 0,
+            "htf_context": 0,
+            "aux_filters": 0,
+            "penalty_reason": suppress_reason,
+        },
+        "htf_context": htf_ctx.get("text", "4H 背景中性"),
+        "htf_relation": htf_ctx.get("relation", "neutral"),
+        "zone": zone,
+        "zone_low": zone[0],
+        "zone_high": zone[1],
+        "zone_source": "pending_confirmation",
+        "invalid_level": float(pending["invalid_level"]),
+        "should_alert": False,
+        "suppress_reason": suppress_reason,
+        "state_version": "PENDING_CONFIRM",
+        "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
+        "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
+        "observation_update": update,
+    }
+
+
+def _make_pending_alert_decision(
+    symbol: str,
+    timeframe: str,
+    latest: dict[str, Any],
+    htf_ctx: dict[str, Any],
+    aux: dict[str, Any],
+    state: dict[str, Any],
+    pending: dict[str, Any],
+    current_bar: int,
+    alert_type: str,
+    direction: str,
+    phase: str,
+) -> dict[str, Any]:
+    zone = pending["zone"]
+    update = _clear_pending(state)
+    update.update(
+        {
+            "inside_zone": True,
+            "active_zone_hash": _zone_hash(zone),
+            "active_zone_cluster": str(pending.get("zone_cluster") or state.get("active_zone_cluster", "")),
+            "last_phase": phase,
+            "last_side": pending["side"],
+            "last_alert_type": alert_type,
+            "last_alert_open_time": current_bar,
+            "last_price": float(latest["close"]),
+            "zone_low": zone[0],
+            "zone_high": zone[1],
+        }
+    )
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "alert_type": alert_type,
+        "direction": direction,
+        "price": float(latest["close"]),
+        "score": 58 if "CONFIRM" in alert_type else 42,
+        "score_breakdown": {
+            "key_zone": 34,
+            "move_quality": 12,
+            "htf_context": 0,
+            "aux_filters": 4,
+            "penalty_reason": "",
+        },
+        "htf_context": htf_ctx.get("text", "4H 背景中性"),
+        "htf_relation": htf_ctx.get("relation", "neutral"),
+        "zone": zone,
+        "zone_low": zone[0],
+        "zone_high": zone[1],
+        "zone_source": "pending_confirmation",
+        "invalid_level": round(float(pending["invalid_level"]), 2),
+        "should_alert": True,
+        "suppress_reason": "",
+        "state_version": phase.upper(),
+        "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
+        "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
+        "observation_update": update,
+    }
+
+
+def _evaluate_pending_confirmation(
+    symbol: str,
+    timeframe: str,
+    latest: dict[str, Any],
+    htf_ctx: dict[str, Any],
+    aux: dict[str, Any],
+    observation_state: dict[str, Any],
+    current_bar: int,
+    atr: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Track the 1 -> 3 confirmation switch.
+
+    Initial observation opens a pending switch.  Middle candles stay silent.
+    Only actual confirmation / invalidation emits a follow-up alert.
+    """
+
+    pending = _pending_zone(observation_state)
+    if not pending:
+        return None, observation_state
+
+    cfg = TREND_ENGINE_CONFIG["key_zone"]
+    expire_bars = int(cfg.get("pending_confirm_expire_bars", 8))
+    bars_since = _bars_between(current_bar, pending.get("created_open_time"))
+    if bars_since is not None and bars_since > expire_bars:
+        return None, _clear_pending(observation_state)
+
+    close = float(latest["close"])
+    open_ = float(latest["open"])
+    high = float(latest["high"])
+    low = float(latest["low"])
+    zone_low, zone_high = pending["zone"]
+    zone_mid = (zone_low + zone_high) / 2.0
+    invalid = float(pending["invalid_level"])
+    pad = max(atr * cfg["touch_atr_mult"], abs(close) * cfg["touch_pct"])
+    after_first_bar = bars_since is None or bars_since >= 1
+
+    if pending["side"] == "lower":
+        invalidated = close < invalid - pad or low < invalid - pad * 1.5
+        confirmed = after_first_bar and not invalidated and (
+            close >= zone_high + pad * 0.2
+            or (low <= zone_high + pad and low >= zone_low - pad and close >= zone_mid and close >= open_)
+        )
+        if confirmed:
+            return (
+                _make_pending_alert_decision(
+                    symbol,
+                    timeframe,
+                    latest,
+                    htf_ctx,
+                    aux,
+                    observation_state,
+                    pending,
+                    current_bar,
+                    "SECONDARY_CONFIRM_LOWER",
+                    "long",
+                    "lower_confirmed",
+                ),
+                observation_state,
+            )
+        if invalidated:
+            return (
+                _make_pending_alert_decision(
+                    symbol,
+                    timeframe,
+                    latest,
+                    htf_ctx,
+                    aux,
+                    observation_state,
+                    pending,
+                    current_bar,
+                    "LOWER_CONFIRM_INVALIDATED",
+                    "short",
+                    "lower_invalidated",
+                ),
+                observation_state,
+            )
+    else:
+        invalidated = close > invalid + pad or high > invalid + pad * 1.5
+        confirmed = after_first_bar and not invalidated and (
+            close <= zone_low - pad * 0.2
+            or (high >= zone_low - pad and high <= zone_high + pad and close <= zone_mid and close <= open_)
+        )
+        if confirmed:
+            return (
+                _make_pending_alert_decision(
+                    symbol,
+                    timeframe,
+                    latest,
+                    htf_ctx,
+                    aux,
+                    observation_state,
+                    pending,
+                    current_bar,
+                    "SECONDARY_CONFIRM_UPPER",
+                    "short",
+                    "upper_confirmed",
+                ),
+                observation_state,
+            )
+        if invalidated:
+            return (
+                _make_pending_alert_decision(
+                    symbol,
+                    timeframe,
+                    latest,
+                    htf_ctx,
+                    aux,
+                    observation_state,
+                    pending,
+                    current_bar,
+                    "UPPER_CONFIRM_INVALIDATED",
+                    "long",
+                    "upper_invalidated",
+                ),
+                observation_state,
+            )
+
+    return (
+        _make_pending_wait_decision(
+            symbol,
+            timeframe,
+            latest,
+            htf_ctx,
+            aux,
+            observation_state,
+            pending,
+            current_bar,
+        ),
+        observation_state,
+    )
+
+
 def _ordered_zone(zone: tuple[float, float]) -> tuple[float, float]:
     low, high = float(zone[0]), float(zone[1])
     return (round(min(low, high), 2), round(max(low, high), 2))
@@ -281,6 +557,20 @@ def decide_key_zone_observation(
     prev2_close = float(prev2["close"])
     atr = float(latest.get("atr", max(close * 0.004, 1.0)))
     atr = max(atr, 1e-9)
+    current_bar = _bar_open_time(latest, len(klines_1h))
+
+    pending_decision, observation_state = _evaluate_pending_confirmation(
+        symbol,
+        timeframe,
+        latest,
+        htf_ctx,
+        aux,
+        observation_state,
+        current_bar,
+        atr,
+    )
+    if pending_decision is not None:
+        return pending_decision
 
     selected = _select_zone(klines_1h, liq, msb)
     if not selected:
@@ -326,7 +616,6 @@ def decide_key_zone_observation(
     zone_source = selected["source"]
     interaction = str(selected.get("interaction", "inside"))
     zone_cluster = _zone_cluster_hash(zone, side, zone_source, atr, close)
-    current_bar = _bar_open_time(latest, len(klines_1h))
 
     two_bar_move = (close - prev2_close) / atr
     one_bar_move = (close - prev_close) / atr
@@ -405,6 +694,8 @@ def decide_key_zone_observation(
         suppress_reason = "inside_zone_unchanged"
     elif was_inside and same_exact_zone and phase == prev_phase:
         suppress_reason = "inside_zone_unchanged"
+    elif was_inside and same_cluster and prev_phase in {"lower_confirmed", "upper_confirmed", "lower_invalidated", "upper_invalidated"}:
+        suppress_reason = "confirmation_already_sent"
     elif was_inside and passive_observation and bars_since_alert is not None and bars_since_alert < cfg.get("min_realert_bars", 4):
         # After an impulse / waterfall, repeated passive tests are not useful.
         # Wait for reclaim/rejection/real boundary break before speaking again.
@@ -428,6 +719,21 @@ def decide_key_zone_observation(
         "zone_low": zone[0],
         "zone_high": zone[1],
     }
+
+    if should_alert:
+        update.update(
+            {
+                "pending_confirm": True,
+                "pending_side": side,
+                "pending_zone_low": zone[0],
+                "pending_zone_high": zone[1],
+                "pending_invalid_level": round(invalid_level, 2),
+                "pending_created_open_time": current_bar,
+                "pending_source_alert_type": alert_type,
+                "pending_phase": phase,
+                "pending_zone_cluster": zone_cluster,
+            }
+        )
 
     return {
         "symbol": symbol,

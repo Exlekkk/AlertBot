@@ -32,6 +32,13 @@ UPPER_OBSERVATION_ALERTS = {
     "RANGE_UPPER_PROBE",
 }
 
+CONFIRMATION_ALERTS = {
+    "SECONDARY_CONFIRM_LOWER",
+    "SECONDARY_CONFIRM_UPPER",
+    "LOWER_CONFIRM_INVALIDATED",
+    "UPPER_CONFIRM_INVALIDATED",
+}
+
 
 def _sanitize(text: str) -> str:
     lowered = text.lower()
@@ -94,9 +101,9 @@ def _common_sections(d: dict, risk_line: str, conclusion: str) -> str:
 def _format_lower_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type == "LOWER_KEY_ZONE_RECLAIM":
-        title = "📈 BTC 1H 下方关键区收回"
+        title = "📈 BTC 1H 下方关键区收回 📈"
         detail = "价格测试下方关键区后快速收回。\n当前不是追多信号，而是下方承接观察。"
-        conclusion = "不追多。\n观察关注区间是否继续承接。"
+        conclusion = "已有初步承接。\n若后续回踩不破，将进入试仓观察。"
         risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，下方结构可能再次转弱。"
     elif alert_type == "FAST_PULLBACK_OBSERVE":
         title = "📍 BTC 1H 快速回踩观察"
@@ -125,9 +132,9 @@ def _format_lower_observation(d: dict) -> str:
 def _format_upper_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type == "UPPER_KEY_ZONE_REJECTION":
-        title = "📉 BTC 1H 上方关键区承压"
+        title = "📉 BTC 1H 上方关键区承压 📉"
         detail = "价格触及上方关键区后快速回落。\n当前不是追空信号，而是卖压释放观察。"
-        conclusion = "不追空。\n观察关注区间下方是否继续承压。"
+        conclusion = "已有初步承压。\n若后续反抽不破，将进入试空观察。"
         risk_line = f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能重新修复。"
     elif alert_type == "FAST_REBOUND_OBSERVE":
         title = "📍 BTC 1H 快速反抽观察"
@@ -153,11 +160,44 @@ def _format_upper_observation(d: dict) -> str:
     )
 
 
+def _format_confirmation(d: dict) -> str:
+    alert_type = str(d.get("alert_type", ""))
+    if alert_type == "SECONDARY_CONFIRM_LOWER":
+        title = "✅ BTC 1H 二次确认：下方承接成立"
+        detail = "价格回踩关注区间不破，短线承接延续。"
+        conclusion = "具备小仓试探条件。\n重点观察关注区间是否继续承接。"
+        risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，本轮承接失效。"
+    elif alert_type == "SECONDARY_CONFIRM_UPPER":
+        title = "✅ BTC 1H 二次确认：上方承压成立"
+        detail = "价格反抽关注区间不破，短线承压延续。"
+        conclusion = "具备小仓试空条件。\n重点观察关注区间是否继续承压。"
+        risk_line = f"若重新站上 {float(d['invalid_level']):.2f}，本轮承压失效。"
+    elif alert_type == "LOWER_CONFIRM_INVALIDATED":
+        title = "⚠️ BTC 1H 下方承接失效"
+        detail = "价格跌破前一关注区间的风险位。"
+        conclusion = "本轮观察失效。\n等待新的关键区重新形成。"
+        risk_line = f"已跌破 {float(d['invalid_level']):.2f}，下方结构需要重新评估。"
+    else:
+        title = "⚠️ BTC 1H 上方承压失效"
+        detail = "价格站上前一关注区间的风险位。"
+        conclusion = "本轮观察失效。\n等待新的关键区重新形成。"
+        risk_line = f"已站上 {float(d['invalid_level']):.2f}，上方结构需要重新评估。"
+
+    return (
+        f"{title}\n\n"
+        "📌 状态：\n"
+        f"{detail}\n\n"
+        + _common_sections(d, risk_line, conclusion)
+    )
+
+
 def format_trend_message(d: dict) -> str:
     direction = d.get("direction", "neutral")
     alert_type = str(d.get("alert_type", ""))
 
-    if alert_type in LOWER_OBSERVATION_ALERTS:
+    if alert_type in CONFIRMATION_ALERTS:
+        text = _format_confirmation(d)
+    elif alert_type in LOWER_OBSERVATION_ALERTS:
         text = _format_lower_observation(d)
     elif alert_type in UPPER_OBSERVATION_ALERTS:
         text = _format_upper_observation(d)

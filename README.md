@@ -29,6 +29,7 @@ The bot is intended to send fewer, higher-quality alerts around important struct
 - fast pullback observation
 - fast rebound observation
 - range lower/upper probe
+- secondary confirmation after an initial key-zone reaction
 - no-trade range
 
 Telegram messages are intentionally written in simple external-facing language. Internal strategy terminology is not exposed in alert messages.
@@ -59,10 +60,10 @@ Pipeline overview:
 3. Build 1H key-area and structure context.
 4. Build auxiliary momentum and market-temperature filters.
 5. Produce a `TrendDecision`.
-6. If there is no structure alert, evaluate the key-zone observation layer for pullbacks, rebounds, support/resistance tests, and range-edge probes.
+6. If there is no structure alert, evaluate the key-zone observation layer for pullbacks, rebounds, support/resistance tests, range-edge probes, and pending secondary confirmations.
 7. Format an external-safe Telegram message.
-7. Apply cooldown and deduplication.
-8. Store trend state for future continuation alerts.
+8. Apply cooldown and deduplication.
+9. Store trend and observation state for future continuation or confirmation alerts.
 
 ## Key modules
 
@@ -106,6 +107,7 @@ Important rules:
 - Trend continuation requires existing saved trend state.
 - Higher-timeframe conflict lowers confidence, but it does not automatically reject strong 1H structure.
 - Medium-quality 1H setups can be suppressed when they are directly against a strong 4H background.
+- Initial key-zone observations can open an internal pending-confirmation switch; middle candles stay silent until confirmation, invalidation, or a meaningful reaction.
 - Final Telegram messages are checked against a banned-terms list before sending.
 
 ## Telegram message structure

@@ -1,5 +1,35 @@
 # Patch Notes — Trend Segment Engine v1
 
+## v1.1.6 - Pending Confirmation Switch / Dynamic Conclusions
+
+### Summary
+
+This release adds a follow-up confirmation switch for key-zone observations.
+
+### Key changes
+
+- Initial key-zone observation opens an internal pending-confirmation state.
+- Middle candles stay silent while the pending state is active.
+- A second Telegram alert is sent only when the setup confirms, invalidates, or forms a meaningful reaction.
+- Added secondary confirmation alerts:
+  - lower support/acceptance confirmation
+  - upper resistance/rejection confirmation
+- Observation conclusions are less rigid:
+  - confirmed lower reactions can show small-position trial conditions
+  - confirmed upper reactions can show small-position short-trial conditions
+- Title emoji changes are limited to:
+  - `📈 BTC 1H 下方关键区收回 📈`
+  - `📉 BTC 1H 上方关键区承压 📉`
+- Other titles keep a single leading emoji.
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 47 tests.
+
+
 ## v1.1.5 - No MACD / True TAI Calibration / Structure-First Observation
 
 ### Summary
