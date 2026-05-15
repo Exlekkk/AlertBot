@@ -1,5 +1,38 @@
 # Patch Notes — Trend Segment Engine v1
 
+## v1.1.8 - Signal Title Pool / 4H Range Regime
+
+### Summary
+
+This release changes Telegram titles from descriptive labels into compact signal labels, while keeping detailed position context in the message body.
+
+### Key changes
+
+- Replaced long descriptive titles with signal-style titles:
+  - `📈 BTC 1H 试多观察 📈`
+  - `📉 BTC 1H 试空观察 📉`
+  - `✅ BTC 1H 多头确认 ✅`
+  - `✅ BTC 1H 空头确认 ✅`
+  - `⚠️ BTC 1H 多头失效 ⚠️`
+  - `⚠️ BTC 1H 空头失效 ⚠️`
+- Neutral / test-only titles keep a single leading emoji:
+  - `📍 BTC 1H 关键区观察`
+  - `📍 BTC 1H 插针观察`
+  - `📍 BTC 1H 震荡观察`
+- Position meaning remains in the status and focus-range note, not in the title.
+- Added a 4H range regime label (`4H 震荡`) when the EMA spread is small relative to volatility.
+- 4H range context does not hard-block 1H alerts.
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 49 tests.
+
+
+
+
 ## v1.1.7 - Zone Note Wording
 
 ### Summary

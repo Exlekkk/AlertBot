@@ -10,7 +10,7 @@ AlertBot no longer uses the old ABCX signal framework as its primary alert path.
 
 The current engine follows this timeframe model:
 
-- 4H: higher-timeframe background context
+- 4H: higher-timeframe background context, including range / bullish / bearish regime
 - 1H: primary structure and alert-decision timeframe
 - 15m: not used by the main trend engine
 
@@ -20,21 +20,18 @@ The 4H context is used as background only. It can raise or lower confidence, but
 
 The bot is intended to send fewer, higher-quality alerts around important structural and observation moments, including:
 
-- bullish structure shift
-- bearish structure shift
-- bullish trend continuation
-- bearish trend continuation
-- lower key-zone test
-- upper key-zone test
-- fast pullback observation
-- fast rebound observation
-- range lower/upper probe
-- secondary confirmation after an initial key-zone reaction
-- no-trade range
+- signal-style long/short trial observations
+- long/short confirmations after an initial reaction
+- long/short invalidation alerts
+- neutral key-area observations
+- wick/probe observations
+- range-boundary observations
+- no-trade range debug decisions
 
 Telegram messages are intentionally written in simple external-facing language. Internal strategy terminology is not exposed in alert messages.
 
-Focus ranges include a compact one-line note below the price range so the user can quickly tell whether the range is for support reaction, rejection, fast pullback, fast rebound, continuation, confirmation, or invalidation.
+The alert title is now a compact signal label. Position and context details are kept in the body:
+the status section explains what happened, and the focus range includes a one-line note below the price range.
 
 
 ## Indicator stack

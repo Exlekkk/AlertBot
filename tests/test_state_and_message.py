@@ -463,22 +463,22 @@ class MessageTests(unittest.TestCase):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("long", "BULLISH_STRUCTURE_SHIFT"))
-        self.assertTrue(msg.startswith("📈"))
-        self.assertIn("结构转多", msg)
+        self.assertTrue(msg.startswith("✅ BTC 1H 多头确认 ✅"))
+        self.assertIn("结构正在转多", msg)
 
     def test_bear_message_emoji(self):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("short", "BEARISH_STRUCTURE_SHIFT"))
-        self.assertTrue(msg.startswith("📉"))
-        self.assertIn("结构转空", msg)
+        self.assertTrue(msg.startswith("✅ BTC 1H 空头确认 ✅"))
+        self.assertIn("结构正在转空", msg)
 
     def test_continuation_message_uses_external_safe_wording(self):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("long", "BULLISH_CONTINUATION"))
-        self.assertTrue(msg.startswith("📈"))
-        self.assertIn("多头延续观察", msg)
+        self.assertTrue(msg.startswith("📈 BTC 1H 试多观察 📈"))
+        self.assertIn("多头结构仍在延续", msg)
         self.assertIn("趋势中段关键区", msg)
 
     def test_banned_terms_no_leak(self):
@@ -776,7 +776,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         msg = format_trend_message(decision)
 
         self.assertTrue(msg.startswith("📍"))
-        self.assertIn("快速回踩观察", msg)
+        self.assertIn("BTC 1H 关键区观察", msg)
         for term in BANNED:
             self.assertNotIn(term, msg)
 
@@ -876,8 +876,8 @@ class KeyZoneObservationTests(unittest.TestCase):
 
         msg = format_trend_message(decision)
         self.assertTrue(msg.startswith("📉"))
-        self.assertIn("上方关键区承压", msg)
-        self.assertIn("卖压释放观察", msg)
+        self.assertIn("BTC 1H 试空观察", msg)
+        self.assertIn("试空观察条件", msg)
         self.assertIn("⚡ 动能与热度", msg)
         self.assertIn("✅ 结论", msg)
 
@@ -931,10 +931,10 @@ class KeyZoneObservationTests(unittest.TestCase):
 
         msg = format_trend_message(decision)
         self.assertTrue(msg.startswith("📈"))
-        self.assertIn("下方关键区收回", msg)
+        self.assertIn("BTC 1H 试多观察", msg)
         self.assertIn("⚡ 动能与热度", msg)
 
-    def test_lower_zone_reclaim_uses_double_emoji_title(self):
+    def test_lower_zone_reclaim_uses_signal_title(self):
         from engine.key_zones import decide_key_zone_observation
         from engine.trend_messages import format_trend_message
 
@@ -971,7 +971,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         )
         msg = format_trend_message(decision)
         first_line = msg.splitlines()[0]
-        self.assertEqual(first_line, "📈 BTC 1H 下方关键区收回 📈")
+        self.assertEqual(first_line, "📈 BTC 1H 试多观察 📈")
 
     def test_pending_confirmation_silences_middle_and_alerts_confirmation(self):
         from engine.key_zones import decide_key_zone_observation
@@ -1038,7 +1038,7 @@ class KeyZoneObservationTests(unittest.TestCase):
                 "invalid_level": 9690.0,
             }
         )
-        self.assertTrue(msg.startswith("✅ BTC 1H 二次确认：下方承接成立"))
+        self.assertTrue(msg.startswith("✅ BTC 1H 多头确认 ✅"))
         self.assertIn("具备小仓试探条件", msg)
 
 

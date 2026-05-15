@@ -40,6 +40,47 @@ CONFIRMATION_ALERTS = {
 }
 
 
+def _is_pin_context(d: dict) -> bool:
+    return (
+        str(d.get("sweep_type", "none")) != "none"
+        or str(d.get("reclaim_or_reject", "none")) != "none"
+        or bool(d.get("bars_since_sweep") is not None)
+    )
+
+
+def _neutral_observation_title(d: dict, family: str = "key") -> str:
+    alert_type = str(d.get("alert_type", ""))
+    if alert_type in {"RANGE_LOWER_PROBE", "RANGE_UPPER_PROBE"}:
+        return "📍 BTC 1H 震荡观察"
+    if _is_pin_context(d):
+        return "📍 BTC 1H 插针观察"
+    return "📍 BTC 1H 关键区观察"
+
+
+def _long_probe_title() -> str:
+    return "📈 BTC 1H 试多观察 📈"
+
+
+def _short_probe_title() -> str:
+    return "📉 BTC 1H 试空观察 📉"
+
+
+def _long_confirm_title() -> str:
+    return "✅ BTC 1H 多头确认 ✅"
+
+
+def _short_confirm_title() -> str:
+    return "✅ BTC 1H 空头确认 ✅"
+
+
+def _long_invalid_title() -> str:
+    return "⚠️ BTC 1H 多头失效 ⚠️"
+
+
+def _short_invalid_title() -> str:
+    return "⚠️ BTC 1H 空头失效 ⚠️"
+
+
 def _sanitize(text: str) -> str:
     lowered = text.lower()
     for term in BANNED:
@@ -137,23 +178,23 @@ def _common_sections(d: dict, risk_line: str, conclusion: str) -> str:
 def _format_lower_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type == "LOWER_KEY_ZONE_RECLAIM":
-        title = "📈 BTC 1H 下方关键区收回 📈"
-        detail = "价格测试下方关键区后快速收回。\n当前不是追多信号，而是下方承接观察。"
+        title = _long_probe_title()
+        detail = "价格测试下方关键区后快速收回。\n当前出现试多观察条件，重点看承接是否延续。"
         conclusion = "已有初步承接。\n若后续回踩不破，将进入试仓观察。"
         risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，下方结构可能再次转弱。"
     elif alert_type == "FAST_PULLBACK_OBSERVE":
-        title = "📍 BTC 1H 快速回踩观察"
-        detail = "价格快速回踩下方关键区。\n当前还不是结构转空，而是关键区测试。"
+        title = _neutral_observation_title(d)
+        detail = "价格快速回踩下方关键区。\n当前属于关键区观察，先看是否出现承接。"
         conclusion = "不追空。\n观察关注区间是否出现承接。"
         risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
     elif alert_type == "RANGE_LOWER_PROBE":
-        title = "📍 BTC 1H 区间下沿测试"
+        title = _neutral_observation_title(d)
         detail = "价格正在测试区间下沿。\n当前以关键区反应为主。"
         conclusion = "不追空。\n观察下沿是否守住或快速收回。"
         risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
     else:
-        title = "📍 BTC 1H 下方关键区测试"
-        detail = "价格触及下方关键区。\n当前还不是结构转空，而是关键区测试。"
+        title = _neutral_observation_title(d)
+        detail = "价格触及下方关键区。\n当前属于关键区观察，先看是否出现收回。"
         conclusion = "不追空。\n观察关键区是否出现承接。"
         risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
 
@@ -168,23 +209,23 @@ def _format_lower_observation(d: dict) -> str:
 def _format_upper_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type == "UPPER_KEY_ZONE_REJECTION":
-        title = "📉 BTC 1H 上方关键区承压 📉"
-        detail = "价格触及上方关键区后快速回落。\n当前不是追空信号，而是卖压释放观察。"
+        title = _short_probe_title()
+        detail = "价格触及上方关键区后快速回落。\n当前出现试空观察条件，重点看承压是否延续。"
         conclusion = "已有初步承压。\n若后续反抽不破，将进入试空观察。"
         risk_line = f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能重新修复。"
     elif alert_type == "FAST_REBOUND_OBSERVE":
-        title = "📍 BTC 1H 快速反抽观察"
-        detail = "价格快速反抽上方关键区。\n当前还不是结构转多，而是关键区测试。"
+        title = _neutral_observation_title(d)
+        detail = "价格快速反抽上方关键区。\n当前属于关键区观察，先看是否出现承压。"
         conclusion = "不追多。\n观察关注区间是否出现承压。"
         risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
     elif alert_type == "RANGE_UPPER_PROBE":
-        title = "📍 BTC 1H 区间上沿测试"
+        title = _neutral_observation_title(d)
         detail = "价格正在测试区间上沿。\n当前以关键区反应为主。"
         conclusion = "不追多。\n观察上沿是否承压或快速回落。"
         risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
     else:
-        title = "📍 BTC 1H 上方关键区测试"
-        detail = "价格触及上方关键区。\n当前还不是结构转多，而是关键区测试。"
+        title = _neutral_observation_title(d)
+        detail = "价格触及上方关键区。\n当前属于关键区观察，先看是否出现回落。"
         conclusion = "不追多。\n观察关键区是否出现承压。"
         risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
 
@@ -199,22 +240,22 @@ def _format_upper_observation(d: dict) -> str:
 def _format_confirmation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type == "SECONDARY_CONFIRM_LOWER":
-        title = "✅ BTC 1H 二次确认：下方承接成立"
-        detail = "价格回踩关注区间不破，短线承接延续。"
+        title = _long_confirm_title()
+        detail = "价格回踩关注区间不破，短线承接延续。\n此前观察已完成二次确认。"
         conclusion = "具备小仓试探条件。\n重点观察关注区间是否继续承接。"
         risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，本轮承接失效。"
     elif alert_type == "SECONDARY_CONFIRM_UPPER":
-        title = "✅ BTC 1H 二次确认：上方承压成立"
-        detail = "价格反抽关注区间不破，短线承压延续。"
+        title = _short_confirm_title()
+        detail = "价格反抽关注区间不破，短线承压延续。\n此前观察已完成二次确认。"
         conclusion = "具备小仓试空条件。\n重点观察关注区间是否继续承压。"
         risk_line = f"若重新站上 {float(d['invalid_level']):.2f}，本轮承压失效。"
     elif alert_type == "LOWER_CONFIRM_INVALIDATED":
-        title = "⚠️ BTC 1H 下方承接失效"
+        title = _long_invalid_title()
         detail = "价格跌破前一关注区间的风险位。"
         conclusion = "本轮观察失效。\n等待新的关键区重新形成。"
         risk_line = f"已跌破 {float(d['invalid_level']):.2f}，下方结构需要重新评估。"
     else:
-        title = "⚠️ BTC 1H 上方承压失效"
+        title = _short_invalid_title()
         detail = "价格站上前一关注区间的风险位。"
         conclusion = "本轮观察失效。\n等待新的关键区重新形成。"
         risk_line = f"已站上 {float(d['invalid_level']):.2f}，上方结构需要重新评估。"
@@ -239,7 +280,7 @@ def format_trend_message(d: dict) -> str:
         text = _format_upper_observation(d)
     elif direction == "long" and alert_type == "BULLISH_CONTINUATION":
         text = (
-            "📈 BTC 1H 多头延续观察\n\n"
+            _long_probe_title() + "\n\n"
             "📌 状态：\n"
             "1H 多头结构仍在延续。\n"
             "价格正在测试趋势中段关键区。\n\n"
@@ -251,7 +292,7 @@ def format_trend_message(d: dict) -> str:
         )
     elif direction == "short" and alert_type == "BEARISH_CONTINUATION":
         text = (
-            "📉 BTC 1H 空头延续观察\n\n"
+            _short_probe_title() + "\n\n"
             "📌 状态：\n"
             "1H 空头结构仍在延续。\n"
             "价格正在测试趋势中段关键区。\n\n"
@@ -263,7 +304,7 @@ def format_trend_message(d: dict) -> str:
         )
     elif direction == "long":
         text = (
-            "📈 BTC 1H 结构转多提醒\n\n"
+            _long_confirm_title() + "\n\n"
             "📌 状态：\n"
             "下方关键区触发后，价格重新收回。\n"
             "1H 结构正在转多。\n\n"
@@ -275,7 +316,7 @@ def format_trend_message(d: dict) -> str:
         )
     elif direction == "short":
         text = (
-            "📉 BTC 1H 结构转空提醒\n\n"
+            _short_confirm_title() + "\n\n"
             "📌 状态：\n"
             "上方关键区触发后，价格开始回落。\n"
             "1H 结构正在转空。\n\n"

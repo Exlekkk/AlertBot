@@ -21,6 +21,9 @@ TREND_ENGINE_CONFIG = {
         "position_long_min": 0.75,
         "short_weak_count_min": 3,
     },
+    "htf": {
+        "range_strength_max": 0.45,
+    },
     "score": {
         "htf_aligned_bonus": 8,
         "htf_counter_penalty": -10,

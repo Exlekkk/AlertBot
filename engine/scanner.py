@@ -15,6 +15,7 @@ from engine.trend_matrix import build_trend_matrix_proxy
 from engine.trend_messages import format_trend_message
 from engine.trend_segments import decide_trend_segment
 from engine.trend_snapshot import load_observation_state, load_trend_state, make_snapshot_key, save_observation_state, save_trend_state
+from engine.trend_config import TREND_ENGINE_CONFIG
 from services.logger import get_logger
 from services.telegram import TelegramSendError, send_telegram_message
 
@@ -38,18 +39,26 @@ class SMCTScanner:
         close = float(latest.get("close", 0.0) or 0.0)
         atr = float(latest.get("atr", max(abs(close) * 0.004, 1.0)) or max(abs(close) * 0.004, 1.0))
 
-        h4 = "bull" if ema10 > ema20 else "bear"
+        raw_h4 = "bull" if ema10 > ema20 else "bear"
         trend_strength = abs(ema10 - ema20) / max(atr, abs(close) * 0.002, 1.0)
+        range_threshold = float(TREND_ENGINE_CONFIG.get("htf", {}).get("range_strength_max", 0.45))
+        h4 = "range" if trend_strength <= range_threshold else raw_h4
 
-        if direction_1h == "neutral":
+        if direction_1h == "neutral" or h4 == "range":
             relation = "neutral"
         else:
             relation = "aligned" if (h4 == "bull" and direction_1h == "long") or (h4 == "bear" and direction_1h == "short") else "counter"
             if relation == "counter" and trend_strength >= 0.90:
                 relation = "strong_counter"
 
-        text = "4H 偏多" if h4 == "bull" else "4H 偏空"
-        return {"h4_direction": h4, "relation": relation, "text": text, "h4_strength": trend_strength}
+        text = "4H 震荡" if h4 == "range" else "4H 偏多" if h4 == "bull" else "4H 偏空"
+        return {
+            "h4_direction": h4,
+            "h4_raw_direction": raw_h4,
+            "relation": relation,
+            "text": text,
+            "h4_strength": trend_strength,
+        }
 
     def health_check(self) -> dict[str, Any]:
         return {
