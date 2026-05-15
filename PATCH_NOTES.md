@@ -1,5 +1,41 @@
 # Patch Notes — Trend Segment Engine v1
 
+## v1.1.9-shadow - 15m Prealert Shadow Backtest
+
+### Summary
+
+This release adds a safe 15m prealert test layer. It does not send Telegram messages, does not place orders, and does not change the running 1H scanner behavior.
+
+### Key changes
+
+- Added `engine/prealert_15m.py`.
+- Added historical backtest script:
+  - `scripts/backtest_15m_prealert.py`
+- Added live shadow monitor script:
+  - `scripts/run_15m_shadow.py`
+- 15m prealert titles are fixed to:
+  - `📍 BTC 15m 做空预警`
+  - `📍 BTC 15m 做多预警`
+- The 15m layer only evaluates reactions near 1H context zones.
+- Repeated alerts from the same zone are cooldown-filtered.
+- Backtest output includes MFE/MAE, invalidation, rough win rate, and lead time to the next 1H close.
+
+### Safety
+
+- Telegram sending is disabled in both new scripts.
+- The shadow monitor requires `--shadow`.
+- Recommended server execution uses `nice` and `timeout`.
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 51 tests.
+
+
+# Patch Notes — Trend Segment Engine v1
+
 ## v1.1.8 - Signal Title Pool / 4H Range Regime
 
 ### Summary

@@ -1188,3 +1188,59 @@ class NoMacdAndTrueTaiTests(unittest.TestCase):
 
         self.assertFalse(decision["should_alert"])
         self.assertEqual(decision["suppress_reason"], "no_key_zone_touch")
+
+
+class FifteenMinutePrealertTests(unittest.TestCase):
+    @staticmethod
+    def _bar(close: float, open_: float | None = None, high: float | None = None, low: float | None = None, t: int = 0) -> dict:
+        open_ = close if open_ is None else open_
+        high = max(open_, close) + 20.0 if high is None else high
+        low = min(open_, close) - 20.0 if low is None else low
+        return {
+            "open_time": t,
+            "close_time": t + 899999,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1000.0,
+            "atr": 100.0,
+            "ema10": close,
+            "ema20": close,
+            "rar_value": 45.0,
+            "rar_trigger": 50.0,
+            "tai_value": 20.5,
+            "tai_p20": 19.5,
+            "tai_p40": 20.0,
+            "tai_p60": 20.3,
+            "tai_p80": 20.7,
+        }
+
+    def test_15m_short_prealert_title_and_direction(self):
+        from engine.prealert_15m import PrealertConfig, evaluate_15m_prealert
+
+        k15 = [self._bar(10000.0, t=i * 900000) for i in range(98)]
+        k15.append(self._bar(10080.0, open_=10020.0, high=10120.0, low=10010.0, t=98 * 900000))
+        k15.append(self._bar(10030.0, open_=10090.0, high=10110.0, low=10020.0, t=99 * 900000))
+        k1h = [self._bar(10000.0, t=i * 3600000) for i in range(100)]
+        k4h = [self._bar(10000.0, t=i * 14400000) for i in range(30)]
+
+        with patch("engine.prealert_15m._candidate_zones", return_value=[{"zone": (10000.0, 10100.0), "source": "test_zone", "priority": 3}]):
+            decision = evaluate_15m_prealert("BTCUSDT", k15, k1h, k4h, cfg=PrealertConfig(max_risk_pct=0.02))
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "PREALERT_SHORT")
+        self.assertEqual(decision["title"], "📍 BTC 15m 做空预警")
+
+    def test_15m_prealert_silent_without_nearby_zone_reaction(self):
+        from engine.prealert_15m import evaluate_15m_prealert
+
+        k15 = [self._bar(10000.0, t=i * 900000) for i in range(100)]
+        k1h = [self._bar(10000.0, t=i * 3600000) for i in range(100)]
+        k4h = [self._bar(10000.0, t=i * 14400000) for i in range(30)]
+
+        with patch("engine.prealert_15m._candidate_zones", return_value=[{"zone": (10500.0, 10600.0), "source": "test_zone", "priority": 3}]):
+            decision = evaluate_15m_prealert("BTCUSDT", k15, k1h, k4h)
+
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "NO_15M_PREALERT")
