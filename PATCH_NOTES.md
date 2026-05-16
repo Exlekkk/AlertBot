@@ -473,3 +473,26 @@ Internal strategy terms remain blocked from Telegram messages.
 - `python -m compileall -q engine services scripts tests`
 
 Current test suite: 35 tests.
+
+## v1.2.1 — 15m Shadow Prealert Tightening
+
+### Summary
+
+This update keeps the 15m layer in shadow/backtest mode and tightens its filters after the v1.2.0 shadow result showed too many short prealerts and no usable long prealerts.
+
+### Changes
+
+- 15m prealert cooldown increased from 8 to 12 bars.
+- 15m prealert zone hash is now clustered more coarsely so drifting 1H zones cannot bypass cooldown.
+- 15m prealerts are suppressed when the trigger candle is too close to the next 1H close.
+- Short prealerts now require cleaner rejection quality instead of merely touching a 1H area.
+- Broad structure zones require a cleaner close through the zone midpoint before triggering.
+- Long prealerts remain heavily filtered, but can reappear only under stronger reclaim/hold conditions.
+- Main 1H scanner behavior remains unchanged.
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 55 tests.

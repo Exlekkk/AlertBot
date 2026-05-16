@@ -20,9 +20,14 @@ class PrealertConfig:
     min_wick_body_ratio: float = 0.70
     min_long_wick_body_ratio: float = 1.05
     min_short_wick_body_ratio: float = 0.65
-    min_risk_reward_room: float = 0.0028
-    max_risk_pct: float = 0.0048
-    cooldown_bars: int = 8
+    min_risk_reward_room: float = 0.0032
+    max_risk_pct: float = 0.0036
+    cooldown_bars: int = 12
+    min_lead_to_1h_close_min: int = 30
+    min_short_reaction_score: int = 2
+    min_long_reaction_score: int = 3
+    allow_structure_zone_short: bool = True
+    allow_structure_zone_long: bool = True
     min_klines_15m: int = 80
     min_klines_1h: int = 80
     suppress_long_when_hot: bool = True
@@ -48,7 +53,13 @@ def _ordered_zone(zone: tuple[float, float] | list[float]) -> tuple[float, float
 
 def _zone_hash(zone: tuple[float, float], side: str) -> str:
     zl, zh = zone
-    return hashlib.md5(f"{side}|{zl:.2f}|{zh:.2f}".encode()).hexdigest()[:10]
+    # Use a deliberately coarse cluster hash for 15m shadow prealerts.  The 1H
+    # zone proxy can drift by tens of dollars while price is still reacting to
+    # the same area; clustering prevents a near-identical area from bypassing
+    # the cooldown and becoming noisy.
+    cluster_low = round(zl / 150.0) * 150
+    cluster_high = round(zh / 150.0) * 150
+    return hashlib.md5(f"{side}|{cluster_low:.0f}|{cluster_high:.0f}".encode()).hexdigest()[:10]
 
 
 def _temperature_bucket(k: dict[str, Any]) -> str:
@@ -168,6 +179,11 @@ def _zone_position(zone: tuple[float, float], close: float) -> str:
     return "inside"
 
 
+def _lead_to_1h_close_min(k: dict[str, Any]) -> int:
+    open_time = int(k.get("open_time", 0) or 0)
+    return int(60 - ((open_time // 60000) % 60))
+
+
 def _is_short_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg: PrealertConfig) -> bool:
     latest = k15[-1]
     prev = k15[-2]
@@ -177,6 +193,7 @@ def _is_short_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg
     prev_close = _f(prev.get("close"))
     zone_low, zone_high = zone
     zone_mid = (zone_low + zone_high) / 2
+    zone_width = max(zone_high - zone_low, atr, 1.0)
     body_ratio, upper_wick_ratio, _ = _reaction_quality(latest)
     pad = max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)
     touched = _touches_zone(latest, zone, pad) or _touches_zone(prev, zone, pad)
@@ -184,17 +201,17 @@ def _is_short_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg
     rar_prev = _f(prev.get("rar_value"), 50.0)
     rar_trigger = _f(latest.get("rar_trigger"), 50.0)
 
-    # A short prealert must be a rejection from a nearby pressure area, not a
-    # random candle that happens to be near a zone.  This keeps it useful as an
-    # early-entry hint instead of a noisy 15m direction guess.
-    price_reject = close <= zone_mid or close < open_ or close < prev_close
-    if cfg.require_short_reject_close:
-        price_reject = price_reject and close <= zone_high + pad * 0.20
-
+    # v1.2.1: 做空预警必须像「反抽压制失败」，不能只是 15m 靠近区间。
+    # 这会过滤掉上一轮回测中大量 no_followthrough / fail_invalid 的高位噪音。
+    close_rejected = close < prev_close and close <= zone_high + pad * 0.10
+    location_ok = close >= zone_low - pad and close <= zone_low + zone_width * 0.82 + pad
     momentum_turn = rar_now < rar_trigger or rar_now < rar_prev
     wick_reject = upper_wick_ratio >= cfg.min_short_wick_body_ratio
     strong_body = body_ratio >= cfg.min_reaction_body_ratio and close < open_
-    return touched and price_reject and (momentum_turn or wick_reject or strong_body)
+    closed_below_mid = close <= zone_mid
+
+    reaction_score = int(momentum_turn) + int(wick_reject) + int(strong_body) + int(closed_below_mid)
+    return touched and close_rejected and location_ok and reaction_score >= cfg.min_short_reaction_score
 
 
 def _is_long_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg: PrealertConfig) -> bool:
@@ -206,6 +223,7 @@ def _is_long_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg:
     prev_close = _f(prev.get("close"))
     zone_low, zone_high = zone
     zone_mid = (zone_low + zone_high) / 2
+    zone_width = max(zone_high - zone_low, atr, 1.0)
     body_ratio, _, lower_wick_ratio = _reaction_quality(latest)
     pad = max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)
     touched = _touches_zone(latest, zone, pad) or _touches_zone(prev, zone, pad)
@@ -213,17 +231,18 @@ def _is_long_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg:
     rar_prev = _f(prev.get("rar_value"), 50.0)
     rar_trigger = _f(latest.get("rar_trigger"), 50.0)
 
-    # Long prealerts were the weak side in the first shadow backtest.  Require
-    # an actual reclaim / hold pattern instead of only "price is near support".
-    price_reclaim = close >= zone_mid and close >= open_ and close >= prev_close
-    if cfg.require_long_reclaim_close:
-        price_reclaim = price_reclaim and close >= zone_low - pad * 0.20
-
+    # v1.2.1: 恢复少量做多，但只保留「低位扫回/回踩守住」。
+    # 仅靠接近下方区不触发，避免上一轮 30% 胜率的假承接。
+    tested_lower_half = _f(latest.get("low")) <= zone_mid + pad or _f(prev.get("low")) <= zone_mid + pad
+    close_reclaimed = close > prev_close and close >= zone_low - pad * 0.10
+    location_ok = close <= zone_high + pad and close >= zone_low + zone_width * 0.18 - pad
     momentum_turn = rar_now > rar_trigger or rar_now > rar_prev
     wick_reclaim = lower_wick_ratio >= cfg.min_long_wick_body_ratio
     strong_body = body_ratio >= cfg.min_reaction_body_ratio and close > open_
-    tested_lower_half = _f(latest.get("low")) <= zone_mid + pad or _f(prev.get("low")) <= zone_mid + pad
-    return touched and tested_lower_half and price_reclaim and (momentum_turn or wick_reclaim or strong_body)
+    closed_above_mid = close >= zone_mid
+
+    reaction_score = int(momentum_turn) + int(wick_reclaim) + int(strong_body) + int(closed_above_mid)
+    return touched and tested_lower_half and close_reclaimed and location_ok and reaction_score >= cfg.min_long_reaction_score
 
 
 def _risk_ok(side: str, entry: float, zone: tuple[float, float], latest: dict[str, Any], cfg: PrealertConfig) -> tuple[bool, float, float]:
@@ -269,6 +288,18 @@ def evaluate_15m_prealert(
     entry = _f(latest.get("close"))
     atr = max(_f(latest.get("atr")), abs(entry) * 0.001, 1.0)
     pad = max(atr * cfg.touch_atr_mult, abs(entry) * cfg.touch_pct)
+    lead_to_close = _lead_to_1h_close_min(latest)
+    if lead_to_close < cfg.min_lead_to_1h_close_min:
+        return {
+            "symbol": symbol,
+            "timeframe": "15m",
+            "alert_type": "NO_15M_PREALERT",
+            "direction": "neutral",
+            "price": round(entry, 2),
+            "should_alert": False,
+            "suppress_reason": "too_close_to_1h_close",
+            "lead_to_1h_close_min": lead_to_close,
+        }
 
     candidates = _candidate_zones(klines_1h)
     best: dict[str, Any] | None = None
@@ -283,6 +314,20 @@ def evaluate_15m_prealert(
 
         short_ok = _is_short_reaction(klines_15m, zone, cfg)
         long_ok = _is_long_reaction(klines_15m, zone, cfg)
+        source = str(cand.get("source", "context_zone"))
+
+        # Source-aware gates: order/FVG-like zones can trigger on normal
+        # rejection; broad structure zones need a cleaner close through the
+        # middle of the area, otherwise they created too many shadow false
+        # alarms in v1.2.0.
+        zl, zh = zone
+        zmid = (zl + zh) / 2
+        latest_close = _f(latest.get("close"))
+        if source == "structure_zone":
+            if short_ok and not (cfg.allow_structure_zone_short and latest_close <= zmid):
+                short_ok = False
+            if long_ok and not (cfg.allow_structure_zone_long and latest_close >= zmid):
+                long_ok = False
 
         temperature = _temperature_bucket(latest)
         if cfg.suppress_long_when_hot and temperature in {"偏热", "过热"}:
@@ -334,6 +379,7 @@ def evaluate_15m_prealert(
             "temperature_desc": f"热度 {_temperature_bucket(latest)}",
             "open_time": int(latest.get("open_time", 0) or 0),
             "close_time": int(latest.get("close_time", 0) or 0),
+            "lead_to_1h_close_min": lead_to_close,
         }
         if best is None or candidate["score"] > best["score"]:
             best = candidate
