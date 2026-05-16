@@ -1,5 +1,40 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.3.2-adaptive-shadow-cadence
+
+Status: shadow-only.  
+Deployment safety: does not change 1H official scanner logic.
+
+### Reason for this version
+
+The 15m layer should help find possible long/short entry locations before 1H confirmation, but it must not become a fixed daily quota system.  A normal-market reference of 1-4 signals/day is useful for review, but active days can validly produce more reminders.
+
+The correct rule is:
+- suppress duplicate same-zone reminders;
+- suppress rapid long/short flip-flops in the same 1H area;
+- allow high-quality new-information setups to pass with shorter cooldown.
+
+### Main changes
+
+1. Adaptive cadence instead of hard daily caps
+   - added `fast_cooldown_bars`
+   - added `opposite_side_cooldown_bars`
+   - added `high_quality_score`
+   - added `cadence_mode` and `recommended_cooldown_bars` diagnostics
+
+2. Better noise accounting in shadow tests
+   - backtest now tracks duplicate skips separately from contradiction skips
+   - CSV includes `zone_cluster_hash`, `cadence_mode`, and `recommended_cooldown_bars`
+
+3. 15m/1H isolation remains unchanged
+   - 15m remains shadow-only
+   - 15m does not alter 1H scoring, titles, conclusions, cooldowns, or Telegram copy
+
+### Review target
+
+Do not reject a good active day only because it has more than 4 reminders.  Check whether each reminder has new structure information and whether repeated same-zone noise is being skipped.
+
+
 ## v1.3.1-shadow-entry-tighten
 
 Status: shadow-only.  

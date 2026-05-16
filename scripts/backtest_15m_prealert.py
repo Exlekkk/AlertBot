@@ -16,7 +16,14 @@ if str(ROOT) not in sys.path:
 
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
-from engine.prealert_15m import DEFAULT_PREALERT_CONFIG, PrealertConfig, evaluate_15m_prealert
+from engine.prealert_15m import (
+    DEFAULT_PREALERT_CONFIG,
+    PrealertConfig,
+    cooldown_bars_for_decision,
+    decision_cadence_keys,
+    evaluate_15m_prealert,
+    is_high_quality_new_information,
+)
 
 
 def _dt(ms: int) -> str:
@@ -102,13 +109,14 @@ def _outcome(
     }
 
 
-def _summary(rows: list[dict[str, Any]], duplicate_skips: int, target_pct: float) -> str:
+def _summary(rows: list[dict[str, Any]], duplicate_skips: int, contradiction_skips: int, target_pct: float) -> str:
     lines = []
     lines.append("15m early-entry shadow backtest summary")
     lines.append("mode=shadow_only does_not_affect_1h=true")
     lines.append(f"target_pct={target_pct:.4%}")
     lines.append(f"signals={len(rows)}")
     lines.append(f"duplicate_skips={duplicate_skips}")
+    lines.append(f"contradiction_skips={contradiction_skips}")
 
     if not rows:
         lines.append("No signals found under current filters.")
@@ -149,8 +157,11 @@ def _summary(rows: list[dict[str, Any]], duplicate_skips: int, target_pct: float
     lines.append("")
     lines.append("Interpretation guide:")
     lines.append("- 15m should provide earlier entry-location reminders, not rewrite 1H logic.")
-    lines.append("- Healthy first pass: both long/short can appear, 1-4 signals/day, win_rate preferably >=55%.")
-    lines.append("- Reject any version that relies on single FVG / single TAI / single zone-touch triggers.")
+    lines.append("- Healthy first pass: both long/short can appear, win_rate preferably >=55%.")
+    lines.append("- 1-4 signals/day is a baseline reference, not a hard cap.")
+    lines.append("- Active/high-volatility days may produce more valid reminders if each has new structure information.")
+    lines.append("- Reject versions that rely on single FVG / single TAI / single zone-touch triggers.")
+    lines.append("- Review duplicate_skips and contradiction_skips to check noise control, not a fixed daily limit.")
     lines.append("- Compare lead_to_1h_close_min with TradingView to confirm it is early enough.")
     return "\n".join(lines) + "\n"
 
@@ -164,6 +175,8 @@ def main() -> int:
     parser.add_argument("--target-pct", type=float, default=0.003, help="Target move used for success evaluation, default 0.003 = 0.30%%")
     parser.add_argument("--max-risk-pct", type=float, default=DEFAULT_PREALERT_CONFIG.max_risk_pct)
     parser.add_argument("--cooldown-bars", type=int, default=DEFAULT_PREALERT_CONFIG.cooldown_bars)
+    parser.add_argument("--fast-cooldown-bars", type=int, default=DEFAULT_PREALERT_CONFIG.fast_cooldown_bars)
+    parser.add_argument("--opposite-side-cooldown-bars", type=int, default=DEFAULT_PREALERT_CONFIG.opposite_side_cooldown_bars)
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -185,11 +198,15 @@ def main() -> int:
     cfg = PrealertConfig(
         max_risk_pct=float(args.max_risk_pct),
         cooldown_bars=int(args.cooldown_bars),
+        fast_cooldown_bars=int(args.fast_cooldown_bars),
+        opposite_side_cooldown_bars=int(args.opposite_side_cooldown_bars),
     )
 
     rows: list[dict[str, Any]] = []
     last_sent_by_zone: dict[str, int] = {}
+    last_sent_by_cluster: dict[str, tuple[int, str]] = {}
     duplicate_skips = 0
+    contradiction_skips = 0
 
     warmup = max(cfg.min_klines_15m, 80)
     for i in range(warmup, len(klines_15m) - 8):
@@ -210,12 +227,31 @@ def main() -> int:
         if not decision.get("should_alert"):
             continue
 
-        zone_key = f"{decision['direction']}|{decision['zone_hash']}"
+        cadence_keys = decision_cadence_keys(decision)
+        zone_key = cadence_keys["same_side_zone"]
+        cluster_key = cadence_keys["zone_cluster"]
+        cooldown_bars = cooldown_bars_for_decision(decision, cfg)
+
         last_i = last_sent_by_zone.get(zone_key)
-        if last_i is not None and i - last_i < cfg.cooldown_bars:
+        if last_i is not None and i - last_i < cooldown_bars:
             duplicate_skips += 1
             continue
+
+        last_cluster = last_sent_by_cluster.get(cluster_key)
+        if last_cluster is not None:
+            last_cluster_i, last_cluster_side = last_cluster
+            is_opposite_side = last_cluster_side != str(decision["direction"])
+            strong_new_info = is_high_quality_new_information(decision, cfg)
+            if (
+                is_opposite_side
+                and i - last_cluster_i < cfg.opposite_side_cooldown_bars
+                and not strong_new_info
+            ):
+                contradiction_skips += 1
+                continue
+
         last_sent_by_zone[zone_key] = i
+        last_sent_by_cluster[cluster_key] = (i, str(decision["direction"]))
 
         outcome = _outcome(decision, klines_15m[i + 1 :], target_pct=float(args.target_pct))
         lead_to_1h_close_min = 60 - ((current_open // 60000) % 60)
@@ -228,6 +264,9 @@ def main() -> int:
             "zone_high": decision["zone_high"],
             "invalid_level": decision["invalid_level"],
             "zone_source": decision["zone_source"],
+            "zone_cluster_hash": decision.get("zone_cluster_hash", ""),
+            "cadence_mode": decision.get("cadence_mode", ""),
+            "recommended_cooldown_bars": decision.get("recommended_cooldown_bars", ""),
             "htf_context": decision["htf_context"],
             "momentum_desc": decision["momentum_desc"],
             "temperature_desc": decision["temperature_desc"],
@@ -265,6 +304,9 @@ def main() -> int:
         "zone_high",
         "invalid_level",
         "zone_source",
+        "zone_cluster_hash",
+        "cadence_mode",
+        "recommended_cooldown_bars",
         "htf_context",
         "momentum_desc",
         "temperature_desc",
@@ -302,7 +344,7 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    summary_text = _summary(rows, duplicate_skips=duplicate_skips, target_pct=float(args.target_pct))
+    summary_text = _summary(rows, duplicate_skips=duplicate_skips, contradiction_skips=contradiction_skips, target_pct=float(args.target_pct))
     Path(args.summary).write_text(summary_text, encoding="utf-8")
     print(summary_text)
     print(f"csv={args.out}")

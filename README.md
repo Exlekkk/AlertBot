@@ -12,6 +12,7 @@ The project is currently BTC-only. Stock scanning is out of scope.
 - 15m layer: **shadow backtest only**
 - Telegram 15m prealerts: **disabled**
 - MACD / ABCX legacy framework: **removed from the main decision path**
+- 15m cadence: **adaptive by duplicate/new-information quality, never hard-capped per day**
 
 The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy.
 
@@ -51,6 +52,8 @@ The official alert body and the main structure engine. This is the primary timef
 Entry-location reminder only. It answers: “Is there a possible long/short entry location worth checking now?”
 
 It does not decide market direction and does not rewrite 1H conclusions.
+
+The bot should not enforce a fixed daily maximum for 15m reminders. Quiet days may produce only a few reminders, while high-volatility days may produce more. The control point is not a daily cap; it is whether each reminder has fresh structure information and is not a duplicate or rapid long/short flip-flop in the same 1H area.
 
 ## Important files
 
@@ -112,6 +115,18 @@ The production services are expected to run under systemd:
 - `smct-webhook.service`
 
 The 15m shadow engine is not connected to Telegram unless explicitly enabled in a later version.
+
+## 15m quality rule
+
+A healthy 15m shadow result is not judged only by signal count. Review:
+
+- whether the reminder came before the 1H confirmation;
+- whether long and short both can appear when market structure supports them;
+- whether failed signals are explainable from CSV diagnostics;
+- whether `duplicate_skips` and `contradiction_skips` remove repeated noise;
+- whether high-volatility days are allowed to keep valid new-information reminders.
+
+The 1-4 signals/day range is only a baseline reference for normal markets, not a hard rule.
 
 ## Handoff rule for future AI agents
 

@@ -29,6 +29,11 @@ class PrealertConfig:
     min_risk_reward_room: float = 0.0030
     max_risk_pct: float = 0.0035
     cooldown_bars: int = 16
+    # Fast cooldown is only for high-quality new-information setups.
+    # It is not a daily cap; it lets active days keep multiple valid reminders.
+    fast_cooldown_bars: int = 8
+    opposite_side_cooldown_bars: int = 12
+    high_quality_score: int = 13
     min_lead_to_1h_close_min: int = 30
     min_trigger_score: int = 10
     min_klines_15m: int = 80
@@ -63,6 +68,14 @@ def _zone_hash(zone: tuple[float, float], side: str) -> str:
     cluster_low = round(zl / 150.0) * 150
     cluster_high = round(zh / 150.0) * 150
     return hashlib.md5(f"{side}|{cluster_low:.0f}|{cluster_high:.0f}".encode()).hexdigest()[:10]
+
+
+def _zone_cluster_hash(zone: tuple[float, float]) -> str:
+    """Side-neutral zone cluster used to block rapid long/short flip-flop noise."""
+    zl, zh = zone
+    cluster_low = round(zl / 150.0) * 150
+    cluster_high = round(zh / 150.0) * 150
+    return hashlib.md5(f"any|{cluster_low:.0f}|{cluster_high:.0f}".encode()).hexdigest()[:10]
 
 
 def _temperature_bucket(k: dict[str, Any]) -> str:
@@ -719,6 +732,69 @@ def _score_setup(
     }
 
 
+def is_high_quality_new_information(decision: dict[str, Any], cfg: PrealertConfig = DEFAULT_PREALERT_CONFIG) -> bool:
+    """Return True when a 15m reminder carries fresh enough information to use fast cooldown.
+
+    This is intentionally not a daily signal cap.  It only separates stronger
+    sweep/reclaim/reject setups from ordinary zone reactions, so active market
+    days can still produce multiple useful entry-location reminders.
+    """
+
+    score = int(decision.get("trigger_score", decision.get("score", 0)) or 0)
+    liq_event = str(decision.get("liquidity_event", ""))
+    reaction_type = str(decision.get("reaction_type", ""))
+    has_true_sweep = liq_event in {"sweep_high_reject", "sweep_low_reclaim"} or reaction_type in {
+        "sweep_high_reject",
+        "sweep_low_reclaim",
+    }
+    has_key_context = "reaction=key_" in str(decision.get("key_level_context", ""))
+    return bool(score >= cfg.high_quality_score and has_true_sweep and has_key_context)
+
+
+def cooldown_bars_for_decision(
+    decision: dict[str, Any],
+    cfg: PrealertConfig = DEFAULT_PREALERT_CONFIG,
+) -> int:
+    """Adaptive cooldown for 15m shadow reminders.
+
+    Normal weak/ordinary zone reactions use the standard cooldown.  Strong new
+    sweep/reclaim/reject setups can use a shorter cooldown, allowing active days
+    to keep high-quality multiple signals without using a hard daily cap.
+    """
+
+    if is_high_quality_new_information(decision, cfg):
+        return max(1, int(cfg.fast_cooldown_bars))
+    return max(1, int(cfg.cooldown_bars))
+
+
+def decision_cadence_keys(decision: dict[str, Any]) -> dict[str, str]:
+    """Return keys used by shadow/backtest cadence control.
+
+    - same_side_zone: suppresses duplicate same-direction reminders in the same 1H area.
+    - zone_cluster: suppresses rapid long/short flip-flopping in the same 1H area.
+    """
+
+    side = str(decision.get("direction", "neutral"))
+    same = str(decision.get("zone_hash") or "")
+    cluster = str(decision.get("zone_cluster_hash") or "")
+    if not same:
+        zl = _f(decision.get("zone_low"))
+        zh = _f(decision.get("zone_high"))
+        if not (zl and zh) and decision.get("zone"):
+            zone_obj = decision.get("zone")
+            try:
+                zl, zh = _ordered_zone(zone_obj)
+            except Exception:
+                zl, zh = 0.0, 0.0
+        if zl and zh:
+            same = _zone_hash((min(zl, zh), max(zl, zh)), side)
+            cluster = cluster or _zone_cluster_hash((min(zl, zh), max(zl, zh)))
+    return {
+        "same_side_zone": f"{side}|{same}",
+        "zone_cluster": f"any|{cluster or same}",
+    }
+
+
 def evaluate_15m_prealert(
     symbol: str,
     klines_15m: list[dict[str, Any]],
@@ -728,10 +804,11 @@ def evaluate_15m_prealert(
 ) -> dict[str, Any]:
     """Return a 15m prealert decision.
 
-    v1.3.0 design:
+    v1.3.x design:
     - 1H remains the official alert body and logic owner.
     - 15m is only an early-entry location reminder.
     - This function is shadow/log/backtest safe and never sends Telegram.
+    - Cadence is duplicate/new-information based, never a hard daily cap.
     """
 
     if len(klines_15m) < cfg.min_klines_15m or len(klines_1h) < cfg.min_klines_1h or len(klines_4h) < 20:
@@ -824,6 +901,7 @@ def evaluate_15m_prealert(
                 "zone_high": zone[1],
                 "zone_source": cand.get("source", "context_zone"),
                 "zone_hash": _zone_hash(zone, side),
+                "zone_cluster_hash": _zone_cluster_hash(zone),
                 "invalid_level": scored["invalid_level"],
                 "risk_pct": round(risk_pct, 5),
                 "room_pct": scored.get("room_pct"),
@@ -842,6 +920,10 @@ def evaluate_15m_prealert(
                 **scored,
             }
             candidate["score"] = score
+            candidate["cadence_mode"] = (
+                "fast_new_information" if is_high_quality_new_information(candidate, cfg) else "normal"
+            )
+            candidate["recommended_cooldown_bars"] = cooldown_bars_for_decision(candidate, cfg)
             if best is None or (candidate["score"], -candidate["risk_pct"]) > (best["score"], -best["risk_pct"]):
                 best = candidate
 

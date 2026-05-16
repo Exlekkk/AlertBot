@@ -1340,3 +1340,32 @@ class AlertNatureCleanupTests(unittest.TestCase):
             decision = evaluate_15m_prealert("BTCUSDT", k15, k1h, k4h, cfg=PrealertConfig(max_risk_pct=0.02))
 
         self.assertFalse(decision["should_alert"])
+
+class PrealertCadenceTests(unittest.TestCase):
+    def test_high_quality_new_information_uses_fast_cooldown(self):
+        from engine.prealert_15m import PrealertConfig, cooldown_bars_for_decision, is_high_quality_new_information
+
+        cfg = PrealertConfig(cooldown_bars=16, fast_cooldown_bars=8, high_quality_score=13)
+        decision = {
+            "trigger_score": 13,
+            "liquidity_event": "sweep_high_reject",
+            "reaction_type": "sweep_high_reject",
+            "key_level_context": "整数位 81000.0 distance=0.050% reaction=key_reject",
+        }
+
+        self.assertTrue(is_high_quality_new_information(decision, cfg))
+        self.assertEqual(cooldown_bars_for_decision(decision, cfg), 8)
+
+    def test_ordinary_zone_reaction_uses_normal_cooldown(self):
+        from engine.prealert_15m import PrealertConfig, cooldown_bars_for_decision, is_high_quality_new_information
+
+        cfg = PrealertConfig(cooldown_bars=16, fast_cooldown_bars=8, high_quality_score=13)
+        decision = {
+            "trigger_score": 10,
+            "liquidity_event": "zone_reaction_without_local_sweep",
+            "reaction_type": "upper_reject",
+            "key_level_context": "none",
+        }
+
+        self.assertFalse(is_high_quality_new_information(decision, cfg))
+        self.assertEqual(cooldown_bars_for_decision(decision, cfg), 16)

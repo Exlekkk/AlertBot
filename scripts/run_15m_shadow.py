@@ -19,8 +19,11 @@ from engine.market_data import BinanceMarketDataClient
 from engine.prealert_15m import (
     DEFAULT_PREALERT_CONFIG,
     PrealertConfig,
+    cooldown_bars_for_decision,
+    decision_cadence_keys,
     evaluate_15m_prealert,
     format_prealert_log,
+    is_high_quality_new_information,
 )
 
 
@@ -42,6 +45,8 @@ def main() -> int:
     parser.add_argument("--log", default="logs/15m_shadow.log")
     parser.add_argument("--max-risk-pct", type=float, default=DEFAULT_PREALERT_CONFIG.max_risk_pct)
     parser.add_argument("--cooldown-bars", type=int, default=DEFAULT_PREALERT_CONFIG.cooldown_bars)
+    parser.add_argument("--fast-cooldown-bars", type=int, default=DEFAULT_PREALERT_CONFIG.fast_cooldown_bars)
+    parser.add_argument("--opposite-side-cooldown-bars", type=int, default=DEFAULT_PREALERT_CONFIG.opposite_side_cooldown_bars)
     args = parser.parse_args()
 
     if not args.shadow:
@@ -51,10 +56,13 @@ def main() -> int:
     cfg = PrealertConfig(
         max_risk_pct=float(args.max_risk_pct),
         cooldown_bars=int(args.cooldown_bars),
+        fast_cooldown_bars=int(args.fast_cooldown_bars),
+        opposite_side_cooldown_bars=int(args.opposite_side_cooldown_bars),
     )
 
     client = BinanceMarketDataClient()
     last_sent_by_zone: dict[str, int] = {}
+    last_sent_by_cluster: dict[str, tuple[int, str]] = {}
     last_seen_bar: int | None = None
 
     _append_line(args.log, f"{_now()} shadow_started symbol={args.symbol} interval_seconds={args.interval_seconds}")
@@ -78,13 +86,32 @@ def main() -> int:
             last_seen_bar = latest_open
 
             if decision.get("should_alert"):
-                zone_key = f"{decision['direction']}|{decision['zone_hash']}"
+                cadence_keys = decision_cadence_keys(decision)
+                zone_key = cadence_keys["same_side_zone"]
+                cluster_key = cadence_keys["zone_cluster"]
                 bar_id = latest_open // (15 * 60 * 1000)
+                cooldown_bars = cooldown_bars_for_decision(decision, cfg)
+
                 previous = last_sent_by_zone.get(zone_key)
-                if previous is not None and bar_id - previous < cfg.cooldown_bars:
+                if previous is not None and bar_id - previous < cooldown_bars:
                     _append_line(args.log, f"{_now()} suppress_15m_prealert_duplicate {json.dumps(decision, ensure_ascii=False)}")
                 else:
+                    last_cluster = last_sent_by_cluster.get(cluster_key)
+                    if last_cluster is not None:
+                        last_cluster_i, last_cluster_side = last_cluster
+                        is_opposite_side = last_cluster_side != str(decision["direction"])
+                        strong_new_info = is_high_quality_new_information(decision, cfg)
+                        if (
+                            is_opposite_side
+                            and bar_id - last_cluster_i < cfg.opposite_side_cooldown_bars
+                            and not strong_new_info
+                        ):
+                            _append_line(args.log, f"{_now()} suppress_15m_prealert_contradiction {json.dumps(decision, ensure_ascii=False)}")
+                            time.sleep(max(5, int(args.interval_seconds)))
+                            continue
+
                     last_sent_by_zone[zone_key] = bar_id
+                    last_sent_by_cluster[cluster_key] = (bar_id, str(decision["direction"]))
                     _append_line(args.log, f"{_now()} {format_prealert_log(decision)}")
                     _append_line(args.log, json.dumps(decision, ensure_ascii=False, sort_keys=True))
             else:

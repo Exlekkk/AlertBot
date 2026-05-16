@@ -2,7 +2,31 @@
 
 ## Current version
 
-v1.3.1-shadow-entry-tighten
+v1.3.2-adaptive-shadow-cadence
+
+## v1.3.2 reason
+
+v1.3.1 tightened the 15m shadow engine after v1.3.0 became too noisy.  The next design correction is about cadence: 1-4 reminders per day is useful as a normal-market reference, but it must not become a hard daily cap.
+
+TradingDexCat wants 15m only as an entry-location reminder.  On active/high-volatility days, the bot should be able to show more valid locations if each reminder has fresh structure information.  The correct filter is duplicate/contradiction control, not a fixed daily maximum.
+
+## v1.3.2 changes
+
+- Added adaptive cadence metadata:
+  - `zone_cluster_hash`
+  - `cadence_mode`
+  - `recommended_cooldown_bars`
+- Added reusable cadence helpers in `engine/prealert_15m.py`:
+  - `decision_cadence_keys`
+  - `cooldown_bars_for_decision`
+  - `is_high_quality_new_information`
+- Same-direction reminders in the same 1H area still use cooldown.
+- Strong new-information setups can use a shorter cooldown.
+- Rapid long/short flip-flops in the same 1H area are suppressed unless the new signal has strong sweep/reclaim/reject information.
+- Backtest summary now reports:
+  - `duplicate_skips`
+  - `contradiction_skips`
+- GitHub README clarifies that 1-4 signals/day is a baseline reference, not a hard cap.
 
 ## v1.3.1 reason
 
