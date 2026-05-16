@@ -1,5 +1,44 @@
 # Patch Notes — Trend Segment Engine v1
 
+## v1.2.0 - Alert Nature Cleanup / Tightened 15m Shadow Filters
+
+### Summary
+
+This release separates the meaning of 15m prealerts and 1H formal confirmations more clearly. It keeps the 15m layer in shadow/testing mode, tightens noisy long prealerts based on the first backtest result, and adds a late filter so 1H confirmations are not sent after the useful area has already moved away.
+
+### Key changes
+
+- Added `engine/late_filter.py`.
+- Scanner now applies a late filter before sending formal 1H confirmations.
+- 1H formal confirmations are suppressed when:
+  - short confirmation appears on a rebounding candle,
+  - long confirmation appears on a rejecting candle,
+  - price has already extended too far away from the focus zone.
+- 15m prealert titles remain fixed and single-emoji:
+  - `📍 BTC 15m 做空预警`
+  - `📍 BTC 15m 做多预警`
+- Added `format_prealert_message()` for a future Telegram prealert mode.
+- Prealert wording is explicitly separated from 1H formal confirmation wording.
+- Tightened 15m prealert filters:
+  - lower max risk,
+  - longer same-zone cooldown,
+  - stronger reclaim requirement for long prealerts,
+  - hot-market long prealerts suppressed by default,
+  - cold-market short prealerts suppressed by default.
+- 1H confirmation wording is more direct:
+  - `多头条件成立。回踩不破可继续按多头处理。`
+  - `空头条件成立。反抽不破可继续按空头处理。`
+
+### Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 54 tests.
+
+
+# Patch Notes — Trend Segment Engine v1
+
 ## v1.1.9-shadow - 15m Prealert Shadow Backtest
 
 ### Summary

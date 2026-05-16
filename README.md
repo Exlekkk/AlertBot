@@ -12,7 +12,7 @@ The current engine follows this timeframe model:
 
 - 4H: higher-timeframe background context, including range / bullish / bearish regime
 - 1H: primary structure and alert-decision timeframe
-- 15m: not used by the main trend engine
+- 15m: shadow prealert testing only; it is not a formal confirmation layer
 
 The 4H context is used as background only. It can raise or lower confidence, but it should not hard-block a high-quality 1H structure change.
 
@@ -33,6 +33,25 @@ Telegram messages are intentionally written in simple external-facing language. 
 The alert title is now a compact signal label. Position and context details are kept in the body:
 the status section explains what happened, and the focus range includes a one-line note below the price range.
 
+
+
+
+## 15m prealert shadow layer
+
+The 15m layer is currently kept in test / shadow mode.
+
+- It does not send Telegram messages.
+- It does not place orders.
+- It only logs potential early prealerts for review.
+- Prealert titles are separate from formal 1H confirmations:
+  - `📍 BTC 15m 做空预警`
+  - `📍 BTC 15m 做多预警`
+
+A 15m prealert is only an early hint near a 1H context zone. It is not a 1H confirmation.
+
+## Formal confirmation late filter
+
+The 1H scanner applies a late filter before sending formal confirmations. If price has already rebounded against a short confirmation, rejected against a long confirmation, or moved too far away from the focus zone, the confirmation is kept in logs and not sent to Telegram.
 
 ## Indicator stack
 

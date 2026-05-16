@@ -8,6 +8,7 @@ from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.liquidity import build_liquidity_context
 from engine.key_zones import decide_key_zone_observation
+from engine.late_filter import apply_late_filter
 from engine.market_data import BinanceMarketDataClient
 from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
@@ -105,6 +106,7 @@ class SMCTScanner:
                 except Exception as obs_exc:
                     self.logger.warning("key_zone_observation_failed symbol=%s error=%s", self.symbol, obs_exc)
 
+            decision = apply_late_filter(decision, klines_1h)
             decision["signature"] = make_snapshot_key(decision)
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 

@@ -14,15 +14,21 @@ from engine.trend_matrix import build_trend_matrix_proxy
 
 @dataclass(frozen=True)
 class PrealertConfig:
-    touch_atr_mult: float = 0.30
-    touch_pct: float = 0.0012
-    min_reaction_body_ratio: float = 0.42
-    min_wick_body_ratio: float = 0.55
-    min_risk_reward_room: float = 0.0025
-    max_risk_pct: float = 0.0065
-    cooldown_bars: int = 4
+    touch_atr_mult: float = 0.24
+    touch_pct: float = 0.0010
+    min_reaction_body_ratio: float = 0.48
+    min_wick_body_ratio: float = 0.70
+    min_long_wick_body_ratio: float = 1.05
+    min_short_wick_body_ratio: float = 0.65
+    min_risk_reward_room: float = 0.0028
+    max_risk_pct: float = 0.0048
+    cooldown_bars: int = 8
     min_klines_15m: int = 80
     min_klines_1h: int = 80
+    suppress_long_when_hot: bool = True
+    suppress_short_when_cold: bool = True
+    require_long_reclaim_close: bool = True
+    require_short_reject_close: bool = True
 
 
 DEFAULT_PREALERT_CONFIG = PrealertConfig()
@@ -153,24 +159,40 @@ def _reaction_quality(k: dict[str, Any]) -> tuple[float, float, float]:
     return body / rng, upper_wick / max(body, 1e-9), lower_wick / max(body, 1e-9)
 
 
+def _zone_position(zone: tuple[float, float], close: float) -> str:
+    zl, zh = zone
+    if close < zl:
+        return "below"
+    if close > zh:
+        return "above"
+    return "inside"
+
+
 def _is_short_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg: PrealertConfig) -> bool:
     latest = k15[-1]
     prev = k15[-2]
     atr = max(_f(latest.get("atr")), abs(_f(latest.get("close"))) * 0.001, 1.0)
     close = _f(latest.get("close"))
     open_ = _f(latest.get("open"))
+    prev_close = _f(prev.get("close"))
     zone_low, zone_high = zone
     zone_mid = (zone_low + zone_high) / 2
     body_ratio, upper_wick_ratio, _ = _reaction_quality(latest)
-    touched = _touches_zone(latest, zone, max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)) or _touches_zone(
-        prev, zone, max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)
-    )
+    pad = max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)
+    touched = _touches_zone(latest, zone, pad) or _touches_zone(prev, zone, pad)
     rar_now = _f(latest.get("rar_value"), 50.0)
     rar_prev = _f(prev.get("rar_value"), 50.0)
     rar_trigger = _f(latest.get("rar_trigger"), 50.0)
-    price_reject = close <= zone_mid or close < open_
+
+    # A short prealert must be a rejection from a nearby pressure area, not a
+    # random candle that happens to be near a zone.  This keeps it useful as an
+    # early-entry hint instead of a noisy 15m direction guess.
+    price_reject = close <= zone_mid or close < open_ or close < prev_close
+    if cfg.require_short_reject_close:
+        price_reject = price_reject and close <= zone_high + pad * 0.20
+
     momentum_turn = rar_now < rar_trigger or rar_now < rar_prev
-    wick_reject = upper_wick_ratio >= cfg.min_wick_body_ratio
+    wick_reject = upper_wick_ratio >= cfg.min_short_wick_body_ratio
     strong_body = body_ratio >= cfg.min_reaction_body_ratio and close < open_
     return touched and price_reject and (momentum_turn or wick_reject or strong_body)
 
@@ -181,20 +203,27 @@ def _is_long_reaction(k15: list[dict[str, Any]], zone: tuple[float, float], cfg:
     atr = max(_f(latest.get("atr")), abs(_f(latest.get("close"))) * 0.001, 1.0)
     close = _f(latest.get("close"))
     open_ = _f(latest.get("open"))
+    prev_close = _f(prev.get("close"))
     zone_low, zone_high = zone
     zone_mid = (zone_low + zone_high) / 2
     body_ratio, _, lower_wick_ratio = _reaction_quality(latest)
-    touched = _touches_zone(latest, zone, max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)) or _touches_zone(
-        prev, zone, max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)
-    )
+    pad = max(atr * cfg.touch_atr_mult, close * cfg.touch_pct)
+    touched = _touches_zone(latest, zone, pad) or _touches_zone(prev, zone, pad)
     rar_now = _f(latest.get("rar_value"), 50.0)
     rar_prev = _f(prev.get("rar_value"), 50.0)
     rar_trigger = _f(latest.get("rar_trigger"), 50.0)
-    price_reclaim = close >= zone_mid or close > open_
+
+    # Long prealerts were the weak side in the first shadow backtest.  Require
+    # an actual reclaim / hold pattern instead of only "price is near support".
+    price_reclaim = close >= zone_mid and close >= open_ and close >= prev_close
+    if cfg.require_long_reclaim_close:
+        price_reclaim = price_reclaim and close >= zone_low - pad * 0.20
+
     momentum_turn = rar_now > rar_trigger or rar_now > rar_prev
-    wick_reclaim = lower_wick_ratio >= cfg.min_wick_body_ratio
+    wick_reclaim = lower_wick_ratio >= cfg.min_long_wick_body_ratio
     strong_body = body_ratio >= cfg.min_reaction_body_ratio and close > open_
-    return touched and price_reclaim and (momentum_turn or wick_reclaim or strong_body)
+    tested_lower_half = _f(latest.get("low")) <= zone_mid + pad or _f(prev.get("low")) <= zone_mid + pad
+    return touched and tested_lower_half and price_reclaim and (momentum_turn or wick_reclaim or strong_body)
 
 
 def _risk_ok(side: str, entry: float, zone: tuple[float, float], latest: dict[str, Any], cfg: PrealertConfig) -> tuple[bool, float, float]:
@@ -254,6 +283,15 @@ def evaluate_15m_prealert(
 
         short_ok = _is_short_reaction(klines_15m, zone, cfg)
         long_ok = _is_long_reaction(klines_15m, zone, cfg)
+
+        temperature = _temperature_bucket(latest)
+        if cfg.suppress_long_when_hot and temperature in {"偏热", "过热"}:
+            # First shadow run showed long prealerts were the noisy side.  In a
+            # hot tape, do not call a 15m bounce a long prealert unless later
+            # versions add a stronger sweep/reclaim source.
+            long_ok = False
+        if cfg.suppress_short_when_cold and temperature in {"偏冷", "过冷"}:
+            short_ok = False
 
         # Prefer contextual direction when FVG / OB proxy has one, but do not
         # hard-lock it because reclaimed zones can flip role after displacement.

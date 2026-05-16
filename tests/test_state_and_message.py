@@ -1039,7 +1039,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             }
         )
         self.assertTrue(msg.startswith("✅ BTC 1H 多头确认 ✅"))
-        self.assertIn("具备小仓试探条件", msg)
+        self.assertIn("多头条件成立", msg)
 
 
     def test_scanner_health_compatibility_methods_exist(self):
@@ -1244,3 +1244,83 @@ class FifteenMinutePrealertTests(unittest.TestCase):
 
         self.assertFalse(decision["should_alert"])
         self.assertEqual(decision["alert_type"], "NO_15M_PREALERT")
+
+
+class AlertNatureCleanupTests(unittest.TestCase):
+    def test_prealert_message_is_separate_from_1h_confirmation(self):
+        from engine.trend_messages import format_prealert_message
+
+        msg = format_prealert_message(
+            {
+                "title": "📍 BTC 15m 做空预警",
+                "direction": "short",
+                "zone": (100.0, 110.0),
+                "htf_context": "4H 震荡",
+                "momentum_desc": "短线买盘衰减",
+                "temperature_desc": "热度 偏热",
+                "invalid_level": 111.0,
+            }
+        )
+
+        self.assertTrue(msg.startswith("📍 BTC 15m 做空预警"))
+        self.assertIn("不等同于 1H 正式确认", msg)
+        self.assertIn("具备试空观察条件", msg)
+        self.assertNotIn("空头确认", msg)
+
+    def test_late_filter_suppresses_rebounding_short_confirmation(self):
+        from engine.late_filter import apply_late_filter
+
+        decision = {
+            "alert_type": "SECONDARY_CONFIRM_UPPER",
+            "direction": "short",
+            "should_alert": True,
+            "zone": (100.0, 110.0),
+            "score_breakdown": {},
+        }
+        klines = [
+            {"open": 108.0, "high": 109.0, "low": 101.0, "close": 102.0, "atr": 2.0},
+            {"open": 101.0, "high": 104.0, "low": 99.0, "close": 103.0, "atr": 2.0},
+        ]
+
+        filtered = apply_late_filter(decision, klines)
+
+        self.assertFalse(filtered["should_alert"])
+        self.assertEqual(filtered["suppress_reason"], "late_confirm_rebound_against_short")
+
+    def test_hot_long_prealert_is_suppressed_after_shadow_backtest(self):
+        from engine.prealert_15m import PrealertConfig, evaluate_15m_prealert
+
+        def bar(close, open_=None, high=None, low=None, t=0, tai=20.8, rar=55.0, trigger=50.0):
+            open_ = close if open_ is None else open_
+            high = max(open_, close) + 20.0 if high is None else high
+            low = min(open_, close) - 20.0 if low is None else low
+            return {
+                "open_time": t,
+                "close_time": t + 899999,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1000.0,
+                "atr": 100.0,
+                "ema10": close,
+                "ema20": close,
+                "rar_value": rar,
+                "rar_trigger": trigger,
+                "tai_value": tai,
+                "tai_p20": 19.5,
+                "tai_p40": 20.0,
+                "tai_p60": 20.3,
+                "tai_p80": 20.7,
+            }
+
+        k15 = [bar(10000.0, t=i * 900000) for i in range(98)]
+        k15.append(bar(10020.0, open_=10080.0, high=10090.0, low=9950.0, t=98 * 900000, tai=20.8, rar=48.0))
+        k15.append(bar(10070.0, open_=10010.0, high=10090.0, low=9960.0, t=99 * 900000, tai=20.8, rar=56.0))
+        k1h = [bar(10000.0, t=i * 3600000) for i in range(100)]
+        k4h = [bar(10000.0, t=i * 14400000) for i in range(30)]
+
+        with patch("engine.prealert_15m._candidate_zones", return_value=[{"zone": (9960.0, 10100.0), "source": "test_zone", "priority": 3}]):
+            decision = evaluate_15m_prealert("BTCUSDT", k15, k1h, k4h, cfg=PrealertConfig(max_risk_pct=0.02))
+
+        self.assertFalse(decision["should_alert"])
