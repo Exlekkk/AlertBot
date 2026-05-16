@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 
 
@@ -7,9 +8,17 @@ def get_logger(name: str, log_file: str) -> logging.Logger:
     if logger.handlers:
         return logger
 
-    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     logger.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-    logger.addHandler(file_handler)
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+
+    try:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler: logging.Handler = logging.FileHandler(log_file)
+    except OSError:
+        # Local tests or restricted deployments may not be able to create
+        # /opt/smct-alert/logs.  Logging must not block FastAPI/scanner import.
+        handler = logging.StreamHandler(sys.stderr)
+
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
     return logger

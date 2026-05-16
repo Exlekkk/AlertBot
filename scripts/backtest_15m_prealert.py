@@ -104,13 +104,18 @@ def _outcome(
 
 def _summary(rows: list[dict[str, Any]], duplicate_skips: int, target_pct: float) -> str:
     lines = []
-    lines.append("15m prealert shadow backtest summary")
+    lines.append("15m early-entry shadow backtest summary")
+    lines.append("mode=shadow_only does_not_affect_1h=true")
     lines.append(f"target_pct={target_pct:.4%}")
     lines.append(f"signals={len(rows)}")
     lines.append(f"duplicate_skips={duplicate_skips}")
 
     if not rows:
         lines.append("No signals found under current filters.")
+        lines.append("")
+        lines.append("Interpretation guide:")
+        lines.append("- 15m is only an entry-location reminder; 1H remains the official alert body.")
+        lines.append("- If no signals appear, check whether 1H context gates are too strict.")
         return "\n".join(lines) + "\n"
 
     for side in ("long", "short"):
@@ -123,19 +128,30 @@ def _summary(rows: list[dict[str, Any]], duplicate_skips: int, target_pct: float
         avg_mfe_1h = sum(float(r["mfe_1h"]) for r in subset) / len(subset)
         avg_mfe_2h = sum(float(r["mfe_2h"]) for r in subset) / len(subset)
         avg_mae_2h = sum(float(r["mae_2h"]) for r in subset) / len(subset)
+        avg_lead = sum(float(r["lead_to_1h_close_min"]) for r in subset) / len(subset)
         lines.append(
             f"{side}: total={len(subset)} win={len(wins)} fail={len(fails)} "
-            f"win_rate={len(wins)/len(subset):.1%} avg_mfe_1h={avg_mfe_1h:.3%} "
-            f"avg_mfe_2h={avg_mfe_2h:.3%} avg_mae_2h={avg_mae_2h:.3%}"
+            f"win_rate={len(wins)/len(subset):.1%} avg_lead={avg_lead:.1f}m "
+            f"avg_mfe_1h={avg_mfe_1h:.3%} avg_mfe_2h={avg_mfe_2h:.3%} "
+            f"avg_mae_2h={avg_mae_2h:.3%}"
         )
 
-    per_day = len(rows) / max(1.0, len({str(r["trigger_time"])[:10] for r in rows}))
+    active_days = max(1.0, len({str(r["trigger_time"])[:10] for r in rows}))
+    per_day = len(rows) / active_days
     lines.append(f"approx_signals_per_active_day={per_day:.2f}")
+
+    setup_counts: dict[str, int] = {}
+    for r in rows:
+        key = str(r.get("setup_type") or r.get("reaction_type") or "unknown")
+        setup_counts[key] = setup_counts.get(key, 0) + 1
+    lines.append("setup_counts=" + ", ".join(f"{k}:{v}" for k, v in sorted(setup_counts.items())))
+
     lines.append("")
     lines.append("Interpretation guide:")
-    lines.append("- Good first pass: around 3-6 useful signals/day, low duplicate_skips, and win_rate above 50%.")
-    lines.append("- If signals/day is too high, tighten max_risk_pct or raise min_risk_reward_room.")
-    lines.append("- If signals are late, compare trigger_time with the 1H candle close in TradingView.")
+    lines.append("- 15m should provide earlier entry-location reminders, not rewrite 1H logic.")
+    lines.append("- Healthy first pass: both long/short can appear, 1-4 signals/day, win_rate preferably >=55%.")
+    lines.append("- Reject any version that relies on single FVG / single TAI / single zone-touch triggers.")
+    lines.append("- Compare lead_to_1h_close_min with TradingView to confirm it is early enough.")
     return "\n".join(lines) + "\n"
 
 
@@ -216,6 +232,26 @@ def main() -> int:
             "momentum_desc": decision["momentum_desc"],
             "temperature_desc": decision["temperature_desc"],
             "lead_to_1h_close_min": int(lead_to_1h_close_min),
+            "setup_type": decision.get("setup_type", ""),
+            "liquidity_event": decision.get("liquidity_event", ""),
+            "structure_context": decision.get("structure_context", ""),
+            "poi_type": decision.get("poi_type", decision.get("zone_source", "")),
+            "key_level_context": decision.get("key_level_context", ""),
+            "reaction_type": decision.get("reaction_type", ""),
+            "momentum_filter": decision.get("momentum_filter", decision.get("momentum_desc", "")),
+            "tai_regime": decision.get("tai_regime", ""),
+            "early_entry_reason": decision.get("early_entry_reason", ""),
+            "trigger_score": decision.get("trigger_score", decision.get("score", "")),
+            "reject_reason": decision.get("reject_reason", ""),
+            "risk_pct": decision.get("risk_pct", ""),
+            "room_pct": decision.get("room_pct", ""),
+            "reaction_score": decision.get("reaction_score", ""),
+            "zone_width_pct": decision.get("zone_width_pct", ""),
+            "zone_position": decision.get("zone_position", ""),
+            "rar_now": decision.get("rar_now", ""),
+            "rar_trigger": decision.get("rar_trigger", ""),
+            "price_impulse": decision.get("price_impulse", ""),
+            "volume_ratio": decision.get("volume_ratio", ""),
             **outcome,
         }
         rows.append(row)
@@ -233,6 +269,26 @@ def main() -> int:
         "momentum_desc",
         "temperature_desc",
         "lead_to_1h_close_min",
+        "setup_type",
+        "liquidity_event",
+        "structure_context",
+        "poi_type",
+        "key_level_context",
+        "reaction_type",
+        "momentum_filter",
+        "tai_regime",
+        "early_entry_reason",
+        "trigger_score",
+        "reject_reason",
+        "risk_pct",
+        "room_pct",
+        "reaction_score",
+        "zone_width_pct",
+        "zone_position",
+        "rar_now",
+        "rar_trigger",
+        "price_impulse",
+        "volume_ratio",
         "mfe_30m",
         "mfe_1h",
         "mfe_2h",

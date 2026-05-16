@@ -496,3 +496,14 @@ This update keeps the 15m layer in shadow/backtest mode and tightens its filters
 - `python -m compileall -q engine services scripts tests`
 
 Current test suite: 55 tests.
+
+## v1.3.0-shadow-entry-engine
+
+- Rebuilt 15m shadow prealert into an early-entry location reminder.
+- 1H remains isolated as official alert body; 15m does not affect scanner decisions.
+- Added 15m local sweep/reclaim/reject detection.
+- Added anti-noise gates against single FVG / single TAI / single zone touch triggers.
+- Added expanded backtest diagnostic CSV fields.
+- Added ALERTBOT_VERSION_CONTEXT.md and docs handoff files.
+- Added logger fallback when /opt/smct-alert/logs is not writable.
+
