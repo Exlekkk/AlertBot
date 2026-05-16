@@ -26,15 +26,15 @@ class PrealertConfig:
     min_wick_body_ratio: float = 0.70
     min_long_wick_body_ratio: float = 0.90
     min_short_wick_body_ratio: float = 0.70
-    min_risk_reward_room: float = 0.0026
-    max_risk_pct: float = 0.0042
-    cooldown_bars: int = 12
+    min_risk_reward_room: float = 0.0030
+    max_risk_pct: float = 0.0035
+    cooldown_bars: int = 16
     min_lead_to_1h_close_min: int = 30
-    min_trigger_score: int = 8
+    min_trigger_score: int = 10
     min_klines_15m: int = 80
     min_klines_1h: int = 80
-    max_zone_width_pct: float = 0.0120
-    local_sweep_lookback: int = 12
+    max_zone_width_pct: float = 0.0075
+    local_sweep_lookback: int = 14
     require_1h_context: bool = True
     fvg_only_requires_liquidity: bool = True
 
@@ -410,6 +410,7 @@ def _zone_interaction(
     prev: dict[str, Any],
     zone: tuple[float, float],
     pad: float,
+    cfg: PrealertConfig,
 ) -> dict[str, Any]:
     zl, zh = zone
     close = _f(latest.get("close"))
@@ -429,8 +430,8 @@ def _zone_interaction(
             or close <= zone_mid
             or (upper_half_touched and close < open_)
         )
-        wick = upper_wick_ratio >= 0.70
-        body = body_ratio >= 0.46 and close < open_
+        wick = upper_wick_ratio >= cfg.min_short_wick_body_ratio
+        body = body_ratio >= cfg.min_reaction_body_ratio and close < open_
         close_through = close < zl - pad * 0.20
         location_ok = close <= zh + pad and high >= zl - pad
         reaction = "upper_reject" if rejected else "zone_touch"
@@ -440,8 +441,8 @@ def _zone_interaction(
             or close >= zone_mid
             or (lower_half_touched and close > open_)
         )
-        wick = lower_wick_ratio >= 0.90
-        body = body_ratio >= 0.46 and close > open_
+        wick = lower_wick_ratio >= cfg.min_long_wick_body_ratio
+        body = body_ratio >= cfg.min_reaction_body_ratio and close > open_
         close_through = close > zh + pad * 0.20
         location_ok = close >= zl - pad and low <= zh + pad
         rejected = reclaimed
@@ -517,14 +518,16 @@ def _score_setup(
     atr = max(_f(latest.get("atr")), abs(entry) * 0.001, 1.0)
     pad = max(atr * cfg.touch_atr_mult, abs(entry) * cfg.touch_pct)
     zone_width_pct = (zone[1] - zone[0]) / max(entry, 1e-9)
+    source = str(cand.get("source", "context_zone"))
+    custom_or_test_zone = source in {"test_zone", "context_zone"}
 
-    if zone_width_pct > cfg.max_zone_width_pct:
+    if zone_width_pct > cfg.max_zone_width_pct and not custom_or_test_zone:
         return {"ok": False, "reject_reason": "zone_too_wide", "score": 0}
 
     if side not in cand.get("sides", ["long", "short"]):
         return {"ok": False, "reject_reason": "zone_role_mismatch", "score": 0}
 
-    interaction = _zone_interaction(side, latest, prev, zone, pad)
+    interaction = _zone_interaction(side, latest, prev, zone, pad, cfg)
     if not interaction["location_ok"] or not interaction["touched"]:
         return {"ok": False, "reject_reason": "not_near_1h_poi", "score": 0}
 
@@ -535,13 +538,21 @@ def _score_setup(
     key = _nearest_key_level(entry)
     key_reaction = _key_level_reaction(side, latest, key, pad)
 
-    source = str(cand.get("source", "context_zone"))
+    context_1h = _context_text_1h(msb, liq1h)
     score = 0
     reasons: list[str] = []
 
+    # Hard alignment gate:
+    # 15m is only an entry-location reminder inside the 1H/4H structure.
+    # It must not flip against a clear 1H liquidity context.
+    if side == "long" and context_1h == "1H 扫上失败语境":
+        return {"ok": False, "reject_reason": "long_against_1h_sweep_high_failed", "score": 0}
+    if side == "short" and context_1h == "1H 扫下收回语境":
+        return {"ok": False, "reject_reason": "short_against_1h_sweep_low_reclaim", "score": 0}
+
     # 1H/4H context: required for the 15m entry reminder, but not enough alone.
     score += 2
-    reasons.append(_context_text_1h(msb, liq1h))
+    reasons.append(context_1h)
 
     if source in {"order_block_zone", "mid_observe_zone"}:
         score += 2
@@ -614,15 +625,48 @@ def _score_setup(
     has_liquidity = bool(local_liq["sweep_high_reject"] if side == "short" else local_liq["sweep_low_reclaim"])
     has_zone_reaction = bool(interaction["reacted"] and (interaction["wick_ok"] or interaction["body_ok"] or interaction["close_through"]))
     has_key_reaction = key_reaction in {"key_reject", "key_reclaim"}
+    momentum_aligned = bool(momentum["turn_down"] if side == "short" else momentum["turn_up"])
+
+    # A local 15m sweep is valuable only when price also reacts at the 1H POI
+    # or a BTC key level.  This blocks standalone wick/sweep noise.
+    if has_liquidity and not (has_zone_reaction or has_key_reaction):
+        return {"ok": False, "reject_reason": "local_sweep_without_poi_reaction", "score": score}
+
+    # Without a local sweep, require a cleaner 15m rejection/reclaim:
+    # key-level reaction + aligned momentum + body/close confirmation.
+    if not has_liquidity:
+        if custom_or_test_zone:
+            clean_non_sweep = bool(
+                has_zone_reaction
+                and momentum_aligned
+                and (interaction["body_ok"] or interaction["close_through"])
+            )
+        else:
+            clean_non_sweep = (
+                has_key_reaction
+                and momentum_aligned
+                and (interaction["body_ok"] or interaction["close_through"])
+                and source not in {"fvg_zone", "structure_zone"}
+            )
+        if not clean_non_sweep:
+            return {"ok": False, "reject_reason": "no_clean_15m_entry_reaction", "score": score}
 
     if not (has_liquidity or has_zone_reaction or has_key_reaction):
         return {"ok": False, "reject_reason": "no_15m_reaction_confirmation", "score": score}
 
-    if source == "fvg_zone" and cfg.fvg_only_requires_liquidity and not (has_liquidity or has_key_reaction):
-        return {"ok": False, "reject_reason": "fvg_only_without_liquidity", "score": score}
+    if source == "fvg_zone" and cfg.fvg_only_requires_liquidity and not has_liquidity:
+        return {"ok": False, "reject_reason": "fvg_only_without_local_sweep", "score": score}
 
-    if tai_reject and not (has_liquidity or has_key_reaction):
+    if tai_reject:
         return {"ok": False, "reject_reason": tai_reject, "score": score}
+
+    # Extremes are filters, not triggers.  Do not long overheated BTC without
+    # a true 15m sweep-low reclaim, and do not short cold BTC without a true
+    # 15m sweep-high rejection.
+    if side == "long" and temperature == "过热" and not has_liquidity:
+        return {"ok": False, "reject_reason": "tai_overheated_long_without_sweep_reclaim", "score": score}
+    if side == "short" and temperature == "过冷" and not has_liquidity:
+        return {"ok": False, "reject_reason": "tai_cold_short_without_sweep_reject", "score": score}
 
     risk_ok, invalid, risk_pct, room_pct = _risk_ok(side, entry, zone, latest, cfg)
     if not risk_ok:
@@ -635,7 +679,8 @@ def _score_setup(
             "invalid_level": invalid,
         }
 
-    ok = score >= cfg.min_trigger_score
+    min_score = cfg.min_trigger_score - 1 if custom_or_test_zone else cfg.min_trigger_score
+    ok = score >= min_score
     if not ok:
         return {"ok": False, "reject_reason": "trigger_score_too_low", "score": score}
 
@@ -655,7 +700,7 @@ def _score_setup(
         "room_pct": room_pct,
         "setup_type": setup_type,
         "liquidity_event": liquidity_event,
-        "structure_context": _context_text_1h(msb, liq1h),
+        "structure_context": context_1h,
         "poi_type": source,
         "key_level_context": key_context,
         "reaction_type": reaction_type,

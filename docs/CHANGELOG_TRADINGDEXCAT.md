@@ -1,5 +1,55 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.3.1-shadow-entry-tighten
+
+Status: shadow-only.  
+Deployment safety: does not change 1H official scanner logic.
+
+### Reason for this version
+
+v1.3.0 15m shadow backtest became too noisy after rebuilding the entry engine:
+- 61 signals in 7 days
+- about 7.62 signals per active day
+- long win rate about 20.7%
+- short win rate about 43.8%
+
+The main problem was not missing direction coverage anymore. Both long and short appeared, but 15m allowed too many weak entry-location reminders.
+
+### Main changes
+
+1. Tightened default 15m config
+   - higher minimum trigger score
+   - lower maximum risk percentage
+   - narrower maximum zone width
+   - longer same-zone cooldown
+
+2. Added 1H context alignment
+   - reject long prealerts during clear 1H sweep-high-failed context
+   - reject short prealerts during clear 1H sweep-low-reclaim context
+
+3. Strengthened anti-noise gates
+   - local 15m sweep must also react at a 1H POI or key level
+   - non-sweep setup must have key-level reaction, aligned momentum, and candle confirmation
+   - FVG-only and zone-touch-only setups remain invalid
+
+4. Kept isolation
+   - 15m remains shadow-only
+   - 15m does not alter 1H scoring, copy, cooldown, or Telegram output
+
+5. README cleanup
+   - GitHub README is now concise, English-only, and focused on future model handoff.
+
+### Next review target
+
+Run 7-day and 14-day shadow backtests.  
+Target range:
+- 1 to 4 signals per active day
+- both long and short can still appear
+- win rate should improve materially
+- failed signals should be explainable from CSV diagnostics
+
+
+
 ## v1.3.0-shadow-entry-engine
 
 Status: shadow-only.  

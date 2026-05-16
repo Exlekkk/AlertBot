@@ -1,203 +1,128 @@
 # AlertBot
 
-AlertBot is a Telegram-based BTCUSDT market monitoring and alert delivery system.
+AlertBot is a BTCUSDT market-structure alert system. It is designed for TradingDexCat's crypto framework, where BTC is the core risk switch and the main analysis flow is:
 
-The current main path is built around a BTC 1H trend-segment decision engine. It is designed to identify meaningful market structure changes and trend-continuation areas while reducing noisy indicator-driven alerts.
+**4H background → 1H structure → 15m entry location**
 
-## Core design
+The project is currently BTC-only. Stock scanning is out of scope.
 
-AlertBot no longer uses the old ABCX signal framework as its primary alert path.
+## Current status
 
-The current engine follows this timeframe model:
+- Main production alert layer: **1H**
+- 15m layer: **shadow backtest only**
+- Telegram 15m prealerts: **disabled**
+- MACD / ABCX legacy framework: **removed from the main decision path**
 
-- 4H: higher-timeframe background context, including range / bullish / bearish regime
-- 1H: primary structure and alert-decision timeframe
-- 15m: shadow prealert testing only; it is not a formal confirmation layer
+The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy.
 
-The 4H context is used as background only. It can raise or lower confidence, but it should not hard-block a high-quality 1H structure change.
+## Strategy model
 
-## Alert philosophy
+AlertBot prioritizes liquidity and structure over standalone indicators.
 
-The bot is intended to send fewer, higher-quality alerts around important structural and observation moments, including:
+Primary context:
+- liquidity sweep and reclaim/reject
+- MSB / BOS
+- OB / MB / BB zones
+- FVG and key round levels
+- 1H close behavior around important zones
 
-- signal-style long/short trial observations
-- long/short confirmations after an initial reaction
-- long/short invalidation alerts
-- neutral key-area observations
-- wick/probe observations
-- range-boundary observations
-- no-trade range debug decisions
+Auxiliary filters:
+- RAR
+- Inertial Stochastic
+- Trading Activity Index using P20/P40/P60/P80 bands
+- MA Ribbon
+- MS Trend Matrix
 
-Telegram messages are intentionally written in simple external-facing language. Internal strategy terminology is not exposed in alert messages.
+Invalid standalone triggers:
+- FVG alone
+- TAI hot/cold alone
+- zone touch alone
+- one 15m wick without 1H/4H context
 
-The alert title is now a compact signal label. Position and context details are kept in the body:
-the status section explains what happened, and the focus range includes a one-line note below the price range.
+## Timeframes
 
+### 4H
+Higher-timeframe background only. It provides regime context such as range, bullish, or bearish pressure.
 
+### 1H
+The official alert body and the main structure engine. This is the primary timeframe for Telegram alerts.
 
+### 15m
+Entry-location reminder only. It answers: “Is there a possible long/short entry location worth checking now?”
 
-## 15m prealert shadow layer
+It does not decide market direction and does not rewrite 1H conclusions.
 
-The 15m layer is currently kept in test / shadow mode.
-
-- It does not send Telegram messages.
-- It does not place orders.
-- It only logs potential early prealerts for review.
-- Prealert titles are separate from formal 1H confirmations:
-  - `📍 BTC 15m 做空预警`
-  - `📍 BTC 15m 做多预警`
-
-A 15m prealert is only an early hint near a 1H context zone. It is not a 1H confirmation.
-
-## Formal confirmation late filter
-
-The 1H scanner applies a late filter before sending formal confirmations. If price has already rebounded against a short confirmation, rejected against a long confirmation, or moved too far away from the focus zone, the confirmation is kept in logs and not sent to Telegram.
-
-## Indicator stack
-
-The active trend engine does not use MACD_SSS_EQ as a decision input.
-
-The current auxiliary layer uses:
-
-- RAR direction and slope
-- Inertial Stochastic direction and slope
-- Trading Activity Index heat based on the Zeiierman dollar-volume formula
-- recent 1H price displacement
-- volume expansion
-
-TAI heat is classified by its P20/P40/P60/P80 bands, not by fixed 0-100 thresholds.
-
-## Main pipeline
-
-The main scanner path is implemented in `engine/scanner.py`.
-
-Pipeline overview:
-
-1. Fetch closed 4H and 1H candles.
-2. Build higher-timeframe context from 4H data.
-3. Build 1H key-area and structure context.
-4. Build auxiliary momentum and market-temperature filters.
-5. Produce a `TrendDecision`.
-6. If there is no structure alert, evaluate the key-zone observation layer for pullbacks, rebounds, support/resistance tests, range-edge probes, and pending secondary confirmations.
-7. Format an external-safe Telegram message.
-8. Apply cooldown and deduplication.
-9. Store trend and observation state for future continuation or confirmation alerts.
-
-## Key modules
+## Important files
 
 - `engine/scanner.py`  
-  Main orchestration pipeline for the trend engine.
+  Main 1H scanner pipeline.
 
-- `engine/liquidity.py`  
-  Builds key-area context and recent trigger context.
+- `engine/prealert_15m.py`  
+  Isolated 15m shadow entry-location engine.
 
-- `engine/msb_ob.py`  
-  Builds structure-shift context, structure quality, and relevant price zones.
-
-- `engine/trend_matrix.py`  
-  Provides a lightweight background-structure proxy.
+- `scripts/backtest_15m_prealert.py`  
+  Runs the 15m shadow backtest and writes CSV diagnostics.
 
 - `engine/aux_filters.py`  
-  Builds auxiliary momentum, heat, and participation filters.
+  RAR, Inertial, TAI, price displacement, and volume filters.
 
-- `engine/trend_segments.py`  
-  Produces the final trend decision, score, alert type, suppression reason, and debug fields.
+- `engine/msb_ob.py`  
+  MSB / OB / MB structure context.
 
-- `engine/trend_snapshot.py`  
-  Stores and loads trend state for continuation alerts.
+- `engine/liquidity.py`  
+  Liquidity sweep and reclaim/reject context.
 
-- `engine/trend_messages.py`  
-  Formats Telegram messages and protects against leaking internal terminology.
+- `ALERTBOT_VERSION_CONTEXT.md`  
+  Short handoff context for future AI conversations.
 
-- `engine/trend_config.py`  
-  Centralizes trend-engine thresholds and tuning parameters.
+- `docs/TRADING_FRAMEWORK.md`  
+  Trading framework used by this bot.
 
-- `engine/cooldown.py`  
-  Handles cooldown and deduplication for trend alerts.
+- `docs/CHANGELOG_TRADINGDEXCAT.md`  
+  Version history and reasoning.
 
-## Decision behavior
-
-Important rules:
-
-- The scanner requests only 4H and 1H candles for the main trend engine.
-- 15m candles are not requested or used by the main trend engine.
-- Short and noisy structure moves are suppressed by default.
-- Trend continuation requires existing saved trend state.
-- Higher-timeframe conflict lowers confidence, but it does not automatically reject strong 1H structure.
-- Medium-quality 1H setups can be suppressed when they are directly against a strong 4H background.
-- Initial key-zone observations can open an internal pending-confirmation switch; middle candles stay silent until confirmation, invalidation, or a meaningful reaction.
-- Final Telegram messages are checked against a banned-terms list before sending.
-
-## Telegram message structure
-
-The default Telegram message format is intentionally concise:
-
-- title
-- status
-- key price zone
-- higher-timeframe context
-- momentum and market heat
-- invalidation level
-- conclusion
-
-Examples of external-facing alert titles:
-
-- BTC 1H bullish structure shift
-- BTC 1H bearish structure shift
-- BTC 1H bullish continuation watch
-- BTC 1H bearish continuation watch
-
-## Testing
-
-Run the full test suite:
+## Test commands
 
 ```bash
 python -m unittest discover -s tests
-python -m compileall -q engine services tests
+python -m compileall -q engine services scripts tests
 ```
 
-Expected result:
+Run 15m shadow backtest:
 
-```text
-Ran 31 tests OK
-compileall OK
+```bash
+mkdir -p reports logs
+
+python scripts/backtest_15m_prealert.py \
+  --symbol BTCUSDT \
+  --days 7 \
+  --out reports/15m_prealert_backtest.csv \
+  --summary reports/15m_prealert_summary.txt
+
+cat reports/15m_prealert_summary.txt
+head -50 reports/15m_prealert_backtest.csv
 ```
 
 ## Deployment notes
 
-Before running the bot in production:
+The production services are expected to run under systemd:
 
-1. Confirm environment variables are configured.
-2. Confirm Telegram credentials are valid.
-3. Run the full test suite.
-4. Start with dry-run or observation mode.
-5. Review live alerts before using them in any trading workflow.
+- `smct-scanner.service`
+- `smct-alert.service`
+- `smct-webhook.service`
 
-## Current limitations
+The 15m shadow engine is not connected to Telegram unless explicitly enabled in a later version.
 
-Some auxiliary filters are proxy implementations and should be tuned with live replay data.
+## Handoff rule for future AI agents
 
-Closed-source TradingView indicators are not fully replicated. The bot uses transparent Python approximations where exact indicator logic is unavailable.
+Before changing trading logic, read:
 
-AlertBot is a market monitoring and decision-support tool. It does not provide financial advice and should not be treated as an automated trading system.
+1. `ALERTBOT_VERSION_CONTEXT.md`
+2. `docs/TRADING_FRAMEWORK.md`
+3. `docs/CHANGELOG_TRADINGDEXCAT.md`
+4. `engine/prealert_15m.py`
+5. `scripts/backtest_15m_prealert.py`
 
+Preserve the core rule:
 
-## Key-zone observation layer
-
-Version 1.1 adds a dedicated observation layer for cases that are useful to monitor but should not be mislabeled as structure shifts.
-
-This layer can alert when BTC quickly tests a lower or upper key area, including:
-
-- fast pullbacks into a lower key area
-- fast rebounds into an upper key area
-- lower/upper range-edge probes
-- tests of intermediate trend areas
-
-The observation layer uses re-entry based cooldown:
-
-- first touch of a key area can alert
-- repeated candles inside the same area are suppressed
-- once price leaves the area and later re-enters, the alert can re-arm
-- if the situation upgrades into a structure shift or continuation alert, the main trend engine takes priority
-
-Public Telegram text still avoids internal strategy terms.
+**1H is the official alert layer. 15m only reminds the trader of possible entry locations.**

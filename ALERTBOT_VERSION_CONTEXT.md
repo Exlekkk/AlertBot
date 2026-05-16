@@ -2,7 +2,36 @@
 
 ## Current version
 
-v1.3.0-shadow-entry-engine
+v1.3.1-shadow-entry-tighten
+
+## v1.3.1 reason
+
+v1.3.0 successfully made both long and short 15m shadow entries appear, but the backtest became too noisy:
+- 61 total 15m shadow signals in 7 days
+- about 7.62 signals per active day
+- long win rate around 20.7%
+- short win rate around 43.8%
+
+This is not acceptable for a future Telegram prealert layer. v1.3.1 tightens the 15m shadow engine while preserving the core separation rule: 15m never changes 1H logic.
+
+## v1.3.1 changes
+
+- Reduced broad-zone noise:
+  - lower max zone width
+  - higher minimum trigger score
+  - lower maximum risk percentage
+  - longer same-zone cooldown
+- Added hard 1H liquidity-context alignment:
+  - no long prealert inside a clear 1H sweep-high-failed context
+  - no short prealert inside a clear 1H sweep-low-reclaim context
+- Tightened 15m reaction requirements:
+  - standalone local sweep is not enough
+  - standalone zone reaction is not enough
+  - non-sweep setups need key-level reaction, aligned momentum, and candle confirmation
+- TAI remains a filter, not a trigger:
+  - overheated long without sweep reclaim is rejected
+  - cold short without sweep rejection is rejected
+- Replaced GitHub README with a concise English handoff README.
 
 ## Core rule
 
