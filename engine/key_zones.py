@@ -184,6 +184,9 @@ def _make_pending_alert_decision(
             "zone_high": zone[1],
         }
     )
+    public_alert = alert_type not in {"LOWER_CONFIRM_INVALIDATED", "UPPER_CONFIRM_INVALIDATED"}
+    suppress_reason = "" if public_alert else "confirmation_invalidated_no_public_alert"
+
     return {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -196,7 +199,7 @@ def _make_pending_alert_decision(
             "move_quality": 12,
             "htf_context": 0,
             "aux_filters": 4,
-            "penalty_reason": "",
+            "penalty_reason": suppress_reason,
         },
         "htf_context": htf_ctx.get("text", "4H 背景中性"),
         "htf_relation": htf_ctx.get("relation", "neutral"),
@@ -205,8 +208,8 @@ def _make_pending_alert_decision(
         "zone_high": zone[1],
         "zone_source": "pending_confirmation",
         "invalid_level": round(float(pending["invalid_level"]), 2),
-        "should_alert": True,
-        "suppress_reason": "",
+        "should_alert": public_alert,
+        "suppress_reason": suppress_reason,
         "state_version": phase.upper(),
         "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
         "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),

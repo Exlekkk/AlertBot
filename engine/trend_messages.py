@@ -35,8 +35,6 @@ UPPER_OBSERVATION_ALERTS = {
 CONFIRMATION_ALERTS = {
     "SECONDARY_CONFIRM_LOWER",
     "SECONDARY_CONFIRM_UPPER",
-    "LOWER_CONFIRM_INVALIDATED",
-    "UPPER_CONFIRM_INVALIDATED",
 }
 
 
@@ -66,19 +64,27 @@ def _short_probe_title() -> str:
 
 
 def _long_confirm_title() -> str:
-    return "✅ BTC 1H 多头确认 ✅"
+    return "📈 BTC 1H 多头确认 📈"
 
 
 def _short_confirm_title() -> str:
-    return "✅ BTC 1H 空头确认 ✅"
+    return "📉 BTC 1H 空头确认 📉"
 
 
-def _long_invalid_title() -> str:
-    return "⚠️ BTC 1H 多头失效 ⚠️"
+def _secondary_lower_title() -> str:
+    return "✅ BTC 1H 二次确认：承接成立 ✅"
 
 
-def _short_invalid_title() -> str:
-    return "⚠️ BTC 1H 空头失效 ⚠️"
+def _secondary_upper_title() -> str:
+    return "✅ BTC 1H 二次确认：承压成立 ✅"
+
+
+def _lower_observation_title() -> str:
+    return "📍 BTC 1H 下方关键区观察"
+
+
+def _upper_observation_title() -> str:
+    return "📍 BTC 1H 上方关键区观察"
 
 
 def _sanitize(text: str) -> str:
@@ -185,11 +191,11 @@ def _prealert_zone_note(d: dict) -> str:
 
 
 def format_prealert_message(d: dict) -> str:
-    """Format 15m prealerts as a separate, non-confirmation message family.
+    """Format 15m prealerts as a single-emoji, non-formal family.
 
-    A prealert is intentionally not a formal 1H confirmation.  Keep the title
-    single-emoji and the conclusion clear: it is an early warning with a risk
-    level, not a completed structure signal.
+    15m remains shadow-only unless explicitly enabled elsewhere.  This copy is
+    intentionally short: status, zone, and risk/handling only.  It must never
+    look like a 1H formal trade alert.
     """
 
     direction = str(d.get("direction", "neutral"))
@@ -197,17 +203,26 @@ def format_prealert_message(d: dict) -> str:
     invalid = float(d.get("invalid_level", 0.0) or 0.0)
 
     if direction == "short":
-        status = "价格反抽压力区后转弱，15m 做空预警触发。"
-        risk = f"若重新站上 {invalid:.2f}，预警失效。"
-        conclusion = "具备试空观察条件。\n严格以风险位控制。"
+        status = "15m 出现可能的做空位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
+        zone_note = "关注反抽是否继续受压。"
+        risk = (
+            f"若价格重新站回 {invalid:.2f}，本次 15m 做空预警失效。\n"
+            "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
+        )
     elif direction == "long":
-        status = "价格回踩承接区后收回，15m 做多预警触发。"
-        risk = f"若重新跌破 {invalid:.2f}，预警失效。"
-        conclusion = "具备试多观察条件。\n严格以风险位控制。"
+        status = "15m 出现可能的做多位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
+        zone_note = "关注回踩是否继续承接。"
+        risk = (
+            f"若价格重新跌破 {invalid:.2f}，本次 15m 做多预警失效。\n"
+            "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
+        )
     else:
-        status = "15m 出现短线预警条件。"
-        risk = f"若突破风险位 {invalid:.2f}，预警失效。"
-        conclusion = "仅作预警参考。\n等待更清晰的方向反应。"
+        status = "15m 出现可能的入场位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
+        zone_note = "关注该区间是否出现明确反应。"
+        risk = (
+            f"若价格突破风险位 {invalid:.2f}，本次 15m 预警失效。\n"
+            "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
+        )
 
     text = (
         f"{title}\n\n"
@@ -215,20 +230,24 @@ def format_prealert_message(d: dict) -> str:
         f"{status}\n\n"
         "🎯 关注区间：\n"
         f"{_zone_text(d)}\n"
-        f"{_prealert_zone_note(d)}\n\n"
-        "🧭 大周期：\n"
-        f"{d.get('htf_context', '4H 震荡')}\n"
-        "本次为 15m 提前预警，不等同于 1H 正式确认。\n\n"
-        "⚡ 动能与热度：\n"
-        f"{_clean_momentum(d.get('momentum_desc', ''))}\n"
-        f"{_clean_temperature(d.get('temperature_desc', ''))}\n\n"
-        "⚠️ 风险位：\n"
-        f"{risk}\n\n"
-        "✅ 结论：\n"
-        f"{conclusion}"
+        f"{zone_note}\n\n"
+        "⚠️ 风险点：\n"
+        f"{risk}"
     )
     return _sanitize(text)
 
+
+def _single_observation_sections(d: dict, title: str, detail: str, zone_note: str, risk_line: str) -> str:
+    return (
+        f"{title}\n\n"
+        "📌 状态：\n"
+        f"{detail}\n\n"
+        "🎯 关注区间：\n"
+        f"{_zone_text(d)}\n"
+        f"{zone_note}\n\n"
+        "⚠️ 风险点：\n"
+        f"{risk_line}"
+    )
 
 def _format_lower_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
@@ -237,29 +256,36 @@ def _format_lower_observation(d: dict) -> str:
         detail = "价格测试下方关键区后快速收回。\n当前出现试多观察条件。"
         conclusion = "具备试多观察条件。\n严格以风险位控制。"
         risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，下方结构可能再次转弱。"
-    elif alert_type == "FAST_PULLBACK_OBSERVE":
-        title = _neutral_observation_title(d)
-        detail = "价格快速回踩下方关键区。\n当前属于关键区观察，先看是否出现承接。"
-        conclusion = "不追空。\n观察关注区间是否出现承接。"
-        risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
+        return (
+            f"{title}\n\n"
+            "📌 状态：\n"
+            f"{detail}\n\n"
+            + _common_sections(d, risk_line, conclusion)
+        )
+
+    if alert_type == "FAST_PULLBACK_OBSERVE":
+        detail = "价格快速回踩下方关键区。\n当前仅属于观察提醒，尚未形成试多条件。"
+        zone_note = "观察下方是否出现收回、承接或继续失守。"
+        risk_line = (
+            f"若有效跌破 {float(d['invalid_level']):.2f}，下方结构可能继续转弱。\n"
+            "若快速收回，则可能转入试多观察。"
+        )
     elif alert_type == "RANGE_LOWER_PROBE":
-        title = _neutral_observation_title(d)
-        detail = "价格正在测试区间下沿。\n当前以关键区反应为主。"
-        conclusion = "不追空。\n观察下沿是否守住或快速收回。"
-        risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
+        detail = "价格正在测试区间下沿。\n当前仅属于观察提醒，尚未形成试多条件。"
+        zone_note = "观察区间下沿是否守住，或是否出现快速收回。"
+        risk_line = (
+            f"若有效跌破 {float(d['invalid_level']):.2f}，下方结构可能继续转弱。\n"
+            "若快速收回，则可能转入试多观察。"
+        )
     else:
-        title = _neutral_observation_title(d)
-        detail = "价格触及下方关键区。\n当前属于关键区观察，先看是否出现收回。"
-        conclusion = "不追空。\n观察关键区是否出现承接。"
-        risk_line = f"若继续跌破 {float(d['invalid_level']):.2f}，下方结构可能进一步转弱。"
+        detail = "价格接近下方关键区。\n当前仅属于观察提醒，尚未形成试多条件。"
+        zone_note = "观察下方是否出现收回、承接或继续失守。"
+        risk_line = (
+            f"若有效跌破 {float(d['invalid_level']):.2f}，下方结构可能继续转弱。\n"
+            "若快速收回，则可能转入试多观察。"
+        )
 
-    return (
-        f"{title}\n\n"
-        "📌 状态：\n"
-        f"{detail}\n\n"
-        + _common_sections(d, risk_line, conclusion)
-    )
-
+    return _single_observation_sections(d, _lower_observation_title(), detail, zone_note, risk_line)
 
 def _format_upper_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
@@ -268,60 +294,61 @@ def _format_upper_observation(d: dict) -> str:
         detail = "价格触及上方关键区后快速回落。\n当前出现试空观察条件。"
         conclusion = "具备试空观察条件。\n严格以风险位控制。"
         risk_line = f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能重新修复。"
-    elif alert_type == "FAST_REBOUND_OBSERVE":
-        title = _neutral_observation_title(d)
-        detail = "价格快速反抽上方关键区。\n当前属于关键区观察，先看是否出现承压。"
-        conclusion = "不追多。\n观察关注区间是否出现承压。"
-        risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
+        return (
+            f"{title}\n\n"
+            "📌 状态：\n"
+            f"{detail}\n\n"
+            + _common_sections(d, risk_line, conclusion)
+        )
+
+    if alert_type == "FAST_REBOUND_OBSERVE":
+        detail = "价格快速反抽上方关键区。\n当前仅属于观察提醒，尚未形成试空条件。"
+        zone_note = "观察反抽是否受压，或是否有效站回区间上方。"
+        risk_line = (
+            f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能继续修复。\n"
+            "若反抽失败，则可能转入试空观察。"
+        )
     elif alert_type == "RANGE_UPPER_PROBE":
-        title = _neutral_observation_title(d)
-        detail = "价格正在测试区间上沿。\n当前以关键区反应为主。"
-        conclusion = "不追多。\n观察上沿是否承压或快速回落。"
-        risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
+        detail = "价格正在测试区间上沿。\n当前仅属于观察提醒，尚未形成试空条件。"
+        zone_note = "观察区间上沿是否承压，或是否有效站回。"
+        risk_line = (
+            f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能继续修复。\n"
+            "若反抽失败，则可能转入试空观察。"
+        )
     else:
-        title = _neutral_observation_title(d)
-        detail = "价格触及上方关键区。\n当前属于关键区观察，先看是否出现回落。"
-        conclusion = "不追多。\n观察关键区是否出现承压。"
-        risk_line = f"若有效站上 {float(d['invalid_level']):.2f}，上方结构可能继续修复。"
+        detail = "价格接近上方关键区。\n当前仅属于观察提醒，尚未形成试空条件。"
+        zone_note = "观察反抽是否受压，或是否有效站回区间上方。"
+        risk_line = (
+            f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能继续修复。\n"
+            "若反抽失败，则可能转入试空观察。"
+        )
 
-    return (
-        f"{title}\n\n"
-        "📌 状态：\n"
-        f"{detail}\n\n"
-        + _common_sections(d, risk_line, conclusion)
-    )
-
+    return _single_observation_sections(d, _upper_observation_title(), detail, zone_note, risk_line)
 
 def _format_confirmation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type == "SECONDARY_CONFIRM_LOWER":
-        title = _long_confirm_title()
-        detail = "价格回踩关注区间不破，1H 多头确认成立。"
-        conclusion = "多头条件成立。\n回踩不破可继续按多头处理。"
-        risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，本轮承接失效。"
-    elif alert_type == "SECONDARY_CONFIRM_UPPER":
-        title = _short_confirm_title()
-        detail = "价格反抽关注区间失败，1H 空头确认成立。"
-        conclusion = "空头条件成立。\n反抽不破可继续按空头处理。"
-        risk_line = f"若重新站上 {float(d['invalid_level']):.2f}，本轮承压失效。"
-    elif alert_type == "LOWER_CONFIRM_INVALIDATED":
-        title = _long_invalid_title()
-        detail = "价格跌破前一关注区间的风险位。"
-        conclusion = "本轮观察失效。\n等待新的关键区重新形成。"
-        risk_line = f"已跌破 {float(d['invalid_level']):.2f}，下方结构需要重新评估。"
-    else:
-        title = _short_invalid_title()
-        detail = "价格站上前一关注区间的风险位。"
-        conclusion = "本轮观察失效。\n等待新的关键区重新形成。"
-        risk_line = f"已站上 {float(d['invalid_level']):.2f}，上方结构需要重新评估。"
+        return (
+            f"{_secondary_lower_title()}\n\n"
+            "⚠️ 风险位：\n"
+            f"若重新跌破 {float(d['invalid_level']):.2f}，承接确认失效。"
+        )
+    if alert_type == "SECONDARY_CONFIRM_UPPER":
+        return (
+            f"{_secondary_upper_title()}\n\n"
+            "⚠️ 风险位：\n"
+            f"若重新站回 {float(d['invalid_level']):.2f}，承压确认失效。"
+        )
 
-    return (
-        f"{title}\n\n"
-        "📌 状态：\n"
-        f"{detail}\n\n"
-        + _common_sections(d, risk_line, conclusion)
+    # Invalidation alerts are intentionally not part of the public copy family.
+    # They should be suppressed before formatting and only update internal state.
+    return _single_observation_sections(
+        d,
+        _neutral_observation_title(d),
+        "价格离开前一关注区间。\n当前仅属于观察提醒，等待新的关键区形成。",
+        "观察该区间是否重新出现收回、失守或承压。",
+        f"若突破 {float(d['invalid_level']):.2f}，需要重新评估结构。",
     )
-
 
 def format_trend_message(d: dict) -> str:
     direction = d.get("direction", "neutral")

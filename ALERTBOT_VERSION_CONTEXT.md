@@ -2,7 +2,42 @@
 
 ## Current version
 
-v1.3.2-adaptive-shadow-cadence
+v1.3.4-copy-layer-fix
+
+
+## v1.3.4 reason
+
+This version fixes Telegram copy layering only. It is based on v1.3.2 and does not include the discarded v1.3.3 observe-guard change.
+
+TradingDexCat clarified the final copy-family rule:
+- double emoji = formal 1H trade alert;
+- single emoji = non-formal observation or future 15m entry-location reminder;
+- secondary confirmation stays double emoji but must be very short;
+- standalone bull/bear invalidation Telegram alerts should be removed because they disturb decision flow.
+
+## v1.3.4 changes
+
+- Kept `📈 BTC 1H 试多观察 📈` and `📉 BTC 1H 试空观察 📉` as formal double-emoji alerts.
+- Changed formal confirmation titles to:
+  - `📈 BTC 1H 多头确认 📈`
+  - `📉 BTC 1H 空头确认 📉`
+- Changed secondary confirmations to minimal copy:
+  - `✅ BTC 1H 二次确认：承接成立 ✅`
+  - `✅ BTC 1H 二次确认：承压成立 ✅`
+  - body contains only the risk-level note.
+- Changed 1H single-emoji observations to compact three-section copy:
+  - status
+  - zone
+  - risk point
+- Removed standalone public copy for:
+  - `⚠️ BTC 1H 多头失效`
+  - `⚠️ BTC 1H 空头失效`
+- Internal invalidation tracking can still update state, but it no longer sends a standalone Telegram alert.
+- 15m remains shadow-only; its future copy template is compact single-emoji format.
+
+## Safety
+
+This version does not change the 15m shadow engine or official 1H signal scoring. It only changes Telegram copy formatting and suppresses standalone invalidation messages.
 
 ## v1.3.2 reason
 

@@ -8,6 +8,8 @@ The project is currently BTC-only. Stock scanning is out of scope.
 
 ## Current status
 
+Current package version: **v1.3.4-copy-layer-fix**
+
 - Main production alert layer: **1H**
 - 15m layer: **shadow backtest only**
 - Telegram 15m prealerts: **disabled**
@@ -54,6 +56,33 @@ Entry-location reminder only. It answers: “Is there a possible long/short entr
 It does not decide market direction and does not rewrite 1H conclusions.
 
 The bot should not enforce a fixed daily maximum for 15m reminders. Quiet days may produce only a few reminders, while high-volatility days may produce more. The control point is not a daily cap; it is whether each reminder has fresh structure information and is not a duplicate or rapid long/short flip-flop in the same 1H area.
+
+
+## Alert copy families
+
+1H formal trade alerts use double emoji and full context:
+- `📈 BTC 1H 试多观察 📈`
+- `📉 BTC 1H 试空观察 📉`
+- `📈 BTC 1H 多头确认 📈`
+- `📉 BTC 1H 空头确认 📉`
+
+1H secondary confirmation is still formal, but intentionally minimal:
+- `✅ BTC 1H 二次确认：承接成立 ✅`
+- `✅ BTC 1H 二次确认：承压成立 ✅`
+
+1H non-formal observation alerts use single emoji and only three sections:
+- status
+- zone
+- risk point
+
+Allowed 1H single-emoji observation titles:
+- `📍 BTC 1H 关键区观察`
+- `📍 BTC 1H 上方关键区观察`
+- `📍 BTC 1H 下方关键区观察`
+
+Do not use standalone invalidation Telegram alerts such as bull/bear invalidated. Internal risk-state tracking may still exist, but those titles are not part of the public copy family.
+
+15m prealert copy is also single-emoji and compact, but 15m remains shadow-only until explicitly enabled.
 
 ## Important files
 

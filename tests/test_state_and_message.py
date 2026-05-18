@@ -463,14 +463,14 @@ class MessageTests(unittest.TestCase):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("long", "BULLISH_STRUCTURE_SHIFT"))
-        self.assertTrue(msg.startswith("✅ BTC 1H 多头确认 ✅"))
+        self.assertTrue(msg.startswith("📈 BTC 1H 多头确认 📈"))
         self.assertIn("结构正在转多", msg)
 
     def test_bear_message_emoji(self):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("short", "BEARISH_STRUCTURE_SHIFT"))
-        self.assertTrue(msg.startswith("✅ BTC 1H 空头确认 ✅"))
+        self.assertTrue(msg.startswith("📉 BTC 1H 空头确认 📉"))
         self.assertIn("结构正在转空", msg)
 
     def test_continuation_message_uses_external_safe_wording(self):
@@ -776,7 +776,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         msg = format_trend_message(decision)
 
         self.assertTrue(msg.startswith("📍"))
-        self.assertIn("BTC 1H 关键区观察", msg)
+        self.assertIn("BTC 1H 下方关键区观察", msg)
         for term in BANNED:
             self.assertNotIn(term, msg)
 
@@ -1038,8 +1038,11 @@ class KeyZoneObservationTests(unittest.TestCase):
                 "invalid_level": 9690.0,
             }
         )
-        self.assertTrue(msg.startswith("✅ BTC 1H 多头确认 ✅"))
-        self.assertIn("多头条件成立", msg)
+        self.assertTrue(msg.startswith("✅ BTC 1H 二次确认：承接成立 ✅"))
+        self.assertIn("⚠️ 风险位", msg)
+        self.assertIn("承接确认失效", msg)
+        self.assertNotIn("📌 状态", msg)
+        self.assertNotIn("✅ 结论", msg)
 
 
     def test_scanner_health_compatibility_methods_exist(self):
@@ -1279,9 +1282,10 @@ class AlertNatureCleanupTests(unittest.TestCase):
         )
 
         self.assertTrue(msg.startswith("📍 BTC 15m 做空预警"))
-        self.assertIn("不等同于 1H 正式确认", msg)
-        self.assertIn("具备试空观察条件", msg)
+        self.assertIn("这不是 1H 正式单", msg)
+        self.assertIn("仅作为入场位置提醒", msg)
         self.assertNotIn("空头确认", msg)
+        self.assertNotIn("✅ 结论", msg)
 
     def test_late_filter_suppresses_rebounding_short_confirmation(self):
         from engine.late_filter import apply_late_filter
