@@ -14,8 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from engine.aux_filters import build_aux_filters_proxy
 from engine.indicators import enrich_klines
+from engine.key_zones import decide_key_zone_observation
+from engine.liquidity import build_liquidity_context
 from engine.market_data import BinanceMarketDataClient
+from engine.msb_ob import build_msb_ob_context
+from engine.trend_matrix import build_trend_matrix_proxy
 from engine.prealert_15m import (
     DEFAULT_PREALERT_CONFIG,
     PrealertConfig,
@@ -34,6 +39,56 @@ def _dt(ms: int) -> str:
 
 def _filter_closed_before(klines: list[dict[str, Any]], open_time: int) -> list[dict[str, Any]]:
     return [k for k in klines if int(k.get("close_time", 0) or 0) <= open_time]
+
+
+def _htf_context_for_backtest(klines_4h: list[dict[str, Any]], direction_1h: str) -> dict[str, Any]:
+    latest = klines_4h[-1]
+    ema10 = float(latest.get("ema10", 0.0) or 0.0)
+    ema20 = float(latest.get("ema20", 0.0) or 0.0)
+    close = float(latest.get("close", 0.0) or 0.0)
+    atr = max(float(latest.get("atr", max(abs(close) * 0.004, 1.0)) or 1.0), abs(close) * 0.002, 1.0)
+    raw_h4 = "bull" if ema10 > ema20 else "bear"
+    strength = abs(ema10 - ema20) / atr
+    h4 = "range" if strength <= 0.45 else raw_h4
+    if direction_1h == "neutral" or h4 == "range":
+        relation = "neutral"
+    else:
+        relation = "aligned" if (h4 == "bull" and direction_1h == "long") or (h4 == "bear" and direction_1h == "short") else "counter"
+    return {
+        "h4_direction": h4,
+        "h4_raw_direction": raw_h4,
+        "relation": relation,
+        "text": "4H 震荡" if h4 == "range" else "4H 偏多" if h4 == "bull" else "4H 偏空",
+        "h4_strength": strength,
+    }
+
+
+def _active_setup_from_state(state: dict[str, Any], current_open: int) -> dict[str, Any] | None:
+    """Expose the latest active 1H trial setup to the 15m shadow engine.
+
+    This is only a backtest/shadow bridge.  It does not change the 1H decision
+    or Telegram logic; it lets 15m test entry locations after a valid 1H
+    trial setup has already fired.
+    """
+
+    side = str(state.get("active_setup_side", ""))
+    if side not in {"long", "short"}:
+        return None
+    try:
+        zone = (float(state["active_setup_zone_low"]), float(state["active_setup_zone_high"]))
+        invalid = float(state.get("active_setup_invalid_level", 0.0) or 0.0)
+        opened = int(state.get("active_setup_open_time", 0) or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if opened and current_open > 10_000_000_000 and current_open - opened > 24 * 3_600_000:
+        return None
+    return {
+        "side": side,
+        "zone": zone,
+        "invalid_level": invalid,
+        "source": "active_1h_setup",
+        "phase": state.get("active_setup_phase", ""),
+    }
 
 
 def _outcome(
@@ -207,6 +262,8 @@ def main() -> int:
     last_sent_by_cluster: dict[str, tuple[int, str]] = {}
     duplicate_skips = 0
     contradiction_skips = 0
+    observation_state: dict[str, Any] = {}
+    last_processed_1h_open: int | None = None
 
     warmup = max(cfg.min_klines_15m, 80)
     for i in range(warmup, len(klines_15m) - 8):
@@ -217,12 +274,45 @@ def main() -> int:
         if len(h1_subset) < cfg.min_klines_1h or len(h4_subset) < 20:
             continue
 
+        h1_open = int(h1_subset[-1].get("open_time", 0) or 0)
+        if last_processed_1h_open != h1_open:
+            try:
+                liq = build_liquidity_context(h1_subset)
+                msb = build_msb_ob_context(h1_subset, liq)
+                matrix = build_trend_matrix_proxy(h1_subset)
+                aux = build_aux_filters_proxy(h1_subset, h4_subset)
+                htf = _htf_context_for_backtest(
+                    h4_subset,
+                    "long" if msb.get("direction") == "bull" else "short" if msb.get("direction") == "bear" else "neutral",
+                )
+                obs = decide_key_zone_observation(
+                    args.symbol,
+                    "1h",
+                    h1_subset,
+                    htf,
+                    liq,
+                    msb,
+                    matrix,
+                    aux,
+                    observation_state=observation_state,
+                )
+                if obs.get("observation_update") is not None:
+                    observation_state = obs["observation_update"]
+            except Exception:
+                # Backtest should never fail just because the 1H shadow bridge
+                # cannot be reconstructed for one bar.
+                pass
+            last_processed_1h_open = h1_open
+
+        active_1h_setup = _active_setup_from_state(observation_state, current_open)
+
         decision = evaluate_15m_prealert(
             args.symbol,
             klines_15m[: i + 1],
             h1_subset,
             h4_subset,
             cfg=cfg,
+            active_1h_setup=active_1h_setup,
         )
         if not decision.get("should_alert"):
             continue
@@ -271,6 +361,7 @@ def main() -> int:
             "momentum_desc": decision["momentum_desc"],
             "temperature_desc": decision["temperature_desc"],
             "lead_to_1h_close_min": int(lead_to_1h_close_min),
+            "active_1h_setup": decision.get("active_1h_setup", False),
             "setup_type": decision.get("setup_type", ""),
             "liquidity_event": decision.get("liquidity_event", ""),
             "structure_context": decision.get("structure_context", ""),
@@ -311,6 +402,7 @@ def main() -> int:
         "momentum_desc",
         "temperature_desc",
         "lead_to_1h_close_min",
+        "active_1h_setup",
         "setup_type",
         "liquidity_event",
         "structure_context",

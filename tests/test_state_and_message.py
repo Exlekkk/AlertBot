@@ -1006,9 +1006,9 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertFalse(middle["should_alert"])
         self.assertEqual(middle["suppress_reason"], "pending_confirmation_wait")
 
-        # Next bar: retests the first zone and closes back above its midpoint.
+        # Next bar: retests the first zone and closes cleanly above it.
         confirm_klines = list(klines)
-        confirm_klines.append(self._bar(9760, 9920, 9760, 9895, atr=100.0))
+        confirm_klines.append(self._bar(9890, 9940, 9860, 9925, atr=100.0))
         confirmed = decide(
             "BTCUSDT",
             "1h",
@@ -1023,6 +1023,41 @@ class KeyZoneObservationTests(unittest.TestCase):
 
         self.assertTrue(confirmed["should_alert"])
         self.assertEqual(confirmed["alert_type"], "SECONDARY_CONFIRM_LOWER")
+
+    def test_secondary_confirmation_requires_clean_reclaim(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        first = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={"inside_zone": False},
+        )
+
+        weak_retest = list(klines)
+        # This closes around the middle of the zone and near the original risk
+        # area. It should keep tracking, not claim承接成立.
+        weak_retest.append(self._bar(9760, 9920, 9760, 9895, atr=100.0))
+        pending = decide(
+            "BTCUSDT",
+            "1h",
+            weak_retest,
+            htf,
+            liq,
+            msb,
+            matrix,
+            {"momentum_desc": "短线动能修复", "temperature_desc": "热度 中性", "price": 9895},
+            observation_state=first["observation_update"],
+        )
+
+        self.assertFalse(pending["should_alert"])
+        self.assertEqual(pending["suppress_reason"], "pending_confirmation_wait")
 
     def test_secondary_confirmation_message(self):
         from engine.trend_messages import format_trend_message

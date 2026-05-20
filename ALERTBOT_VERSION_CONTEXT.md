@@ -2,7 +2,40 @@
 
 ## Current version
 
-v1.3.4-copy-layer-fix
+v1.3.5-active-setup-shadow-bridge
+
+
+
+## v1.3.5 reason
+
+This version fixes the 1H state-machine problem observed after v1.3.4:
+
+- same-zone `试多观察` repeated several hours apart;
+- the same setup later downgraded into `下方关键区观察`;
+- `二次确认：承接成立` fired too close to the original risk level;
+- 15m shadow did not see the "1H setup is active, now look for entry location" context.
+
+TradingDexCat clarified that after a 1H formal setup fires, 1H should not keep repeating the same official alert.  The trader would switch to 15m to find an entry location.  Therefore 15m shadow needs a bridge from the active 1H setup, but 15m still must not send Telegram or affect 1H logic.
+
+## v1.3.5 changes
+
+- Added active setup state tracking for 1H key-zone observations.
+- Suppressed repeated same-zone/same-direction 1H `试多观察` / `试空观察` alerts while the active setup is still live.
+- Suppressed same-zone single-emoji observation downgrade after a formal 1H setup is active.
+- Tightened secondary confirmation:
+  - `承接成立` now requires a clean reclaim above the zone, not just a mid-zone bounce.
+  - `承压成立` now requires a clean rejection below the zone, not just inside-zone weakness.
+- Added a 15m shadow bridge:
+  - backtest can expose active 1H setup context to the 15m early-entry evaluator;
+  - the bridge is shadow-only and does not change Telegram behavior.
+- Added test coverage for strict secondary confirmation.
+
+## v1.3.5 safety
+
+- 15m remains shadow-only.
+- 1H formal alert scoring is not replaced.
+- Telegram copy rules from v1.3.4 stay unchanged.
+- This version changes state flow and shadow diagnostics, not order execution.
 
 
 ## v1.3.4 reason

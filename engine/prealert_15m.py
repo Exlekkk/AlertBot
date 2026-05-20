@@ -42,6 +42,7 @@ class PrealertConfig:
     local_sweep_lookback: int = 14
     require_1h_context: bool = True
     fvg_only_requires_liquidity: bool = True
+    active_setup_score_bonus: int = 2
 
 
 DEFAULT_PREALERT_CONFIG = PrealertConfig()
@@ -240,6 +241,18 @@ def _candidate_zones(klines_1h: list[dict[str, Any]]) -> tuple[list[dict[str, An
             else:
                 sides = ["long", "short"]
                 role = "dual"
+
+            # If 1H just swept sell-side and reclaimed, the broad zone can be
+            # used by 15m to look for a long entry even in a still-bearish
+            # broader structure.  The reverse applies to buyside reject.
+            if str(liq.get("sweep_type", "none")) == "sellside" and str(liq.get("reclaim_or_reject", "none")) == "reclaim":
+                if "long" not in sides:
+                    sides.append("long")
+                role = "dual" if len(sides) > 1 else "support"
+            if str(liq.get("sweep_type", "none")) == "buyside" and str(liq.get("reclaim_or_reject", "none")) == "reject":
+                if "short" not in sides:
+                    sides.append("short")
+                role = "dual" if len(sides) > 1 else "resistance"
             zones.append(
                 {
                     "zone": _ordered_zone(zone),
@@ -567,7 +580,10 @@ def _score_setup(
     score += 2
     reasons.append(context_1h)
 
-    if source in {"order_block_zone", "mid_observe_zone"}:
+    if source == "active_1h_setup":
+        score += 2 + int(getattr(cfg, "active_setup_score_bonus", 2))
+        reasons.append("1H 已激活试多/试空语境")
+    elif source in {"order_block_zone", "mid_observe_zone"}:
         score += 2
         reasons.append("1H OB/MB POI")
     elif source == "structure_zone":
@@ -653,6 +669,12 @@ def _score_setup(
                 has_zone_reaction
                 and momentum_aligned
                 and (interaction["body_ok"] or interaction["close_through"])
+            )
+        elif source == "active_1h_setup":
+            clean_non_sweep = bool(
+                has_zone_reaction
+                and momentum_aligned
+                and (has_key_reaction or interaction["body_ok"] or interaction["close_through"])
             )
         else:
             clean_non_sweep = (
@@ -801,6 +823,7 @@ def evaluate_15m_prealert(
     klines_1h: list[dict[str, Any]],
     klines_4h: list[dict[str, Any]],
     cfg: PrealertConfig = DEFAULT_PREALERT_CONFIG,
+    active_1h_setup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a 15m prealert decision.
 
@@ -854,6 +877,31 @@ def evaluate_15m_prealert(
         candidates = candidate_result  # type: ignore[assignment]
         liq1h = build_liquidity_context(klines_1h)
         msb = build_msb_ob_context(klines_1h, liq1h)
+
+    if active_1h_setup:
+        try:
+            setup_side = str(active_1h_setup.get("side", ""))
+            zone_obj = active_1h_setup.get("zone") or (
+                active_1h_setup.get("zone_low"),
+                active_1h_setup.get("zone_high"),
+            )
+            setup_zone = _ordered_zone(zone_obj)  # type: ignore[arg-type]
+            if setup_side in {"long", "short"}:
+                candidates.insert(
+                    0,
+                    {
+                        "zone": setup_zone,
+                        "source": "active_1h_setup",
+                        "direction": setup_side,
+                        "sides": [setup_side],
+                        "role": "support" if setup_side == "long" else "resistance",
+                        "priority": 8,
+                        "structural": True,
+                    },
+                )
+        except Exception:
+            pass
+
     htf_text = _htf_context_text(klines_4h)
 
     if cfg.require_1h_context and not candidates:
@@ -917,6 +965,7 @@ def evaluate_15m_prealert(
                 "open_time": int(latest.get("open_time", 0) or 0),
                 "close_time": int(latest.get("close_time", 0) or 0),
                 "lead_to_1h_close_min": lead_to_close,
+                "active_1h_setup": bool(active_1h_setup and cand.get("source") == "active_1h_setup"),
                 **scored,
             }
             candidate["score"] = score

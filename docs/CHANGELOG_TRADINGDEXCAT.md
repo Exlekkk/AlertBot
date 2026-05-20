@@ -1,5 +1,40 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.3.5-active-setup-shadow-bridge
+
+Status: 1H state-machine and 15m shadow-bridge update.  
+Deployment safety: 15m remains shadow-only; Telegram copy rules from v1.3.4 remain unchanged.
+
+### Reason for this version
+
+After v1.3.4, the user observed a valid 1H trial-long context where the bot repeated the same official 1H setup, later downgraded to a same-zone key-zone observation, and then issued a loose secondary confirmation.  The intended workflow is different:
+
+1H should identify the setup once.  
+After that, the trader uses 15m to find the entry location.
+
+### Main changes
+
+1. Active 1H setup tracking
+   - same-zone/same-direction `试多观察` / `试空观察` is not repeated while active;
+   - same-zone `关键区观察` is not sent after a formal setup is active;
+   - the active setup remains available for 15m shadow testing.
+
+2. Secondary confirmation tightened
+   - `承接成立` requires a clean reclaim above the original zone;
+   - `承压成立` requires a clean rejection below the original zone;
+   - hovering around the risk level stays silent.
+
+3. 15m shadow bridge
+   - backtest can pass active 1H setup context into the 15m evaluator;
+   - this helps test entry-location reminders after a valid 1H setup;
+   - no Telegram 15m sending is enabled.
+
+4. Tests
+   - test count increased to 58;
+   - added coverage for loose secondary confirmation suppression.
+
+
+
 ## v1.3.4-copy-layer-fix
 
 Status: copy-only update.  
