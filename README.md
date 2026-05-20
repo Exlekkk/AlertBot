@@ -8,7 +8,7 @@ The project is currently BTC-only. Stock scanning is out of scope.
 
 ## Current status
 
-Current package version: **v1.3.5-active-setup-shadow-bridge**
+Current package version: **v1.3.6-historical-active-setup-bridge**
 
 - Main production alert layer: **1H**
 - 15m layer: **shadow backtest only**
@@ -18,6 +18,16 @@ Current package version: **v1.3.5-active-setup-shadow-bridge**
 
 The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy.
 
+
+## v1.3.6 historical active-setup bridge fix
+
+v1.3.6 fixes the v1.3.5 bridge implementation:
+
+- 1H formal `试多观察` / `试空观察` now writes explicit active setup state;
+- the 15m shadow backtest can reconstruct historical active 1H setups instead of always reporting `active_1h_setup=False`;
+- active 1H setup zones are inserted as high-priority 15m shadow POI;
+- active setup retests are allowed to be slightly less strict than standalone 15m setups, because the 1H context is already active;
+- 15m remains shadow-only and still does not send Telegram.
 
 ## v1.3.5 state-machine update
 

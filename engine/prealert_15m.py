@@ -42,7 +42,7 @@ class PrealertConfig:
     local_sweep_lookback: int = 14
     require_1h_context: bool = True
     fvg_only_requires_liquidity: bool = True
-    active_setup_score_bonus: int = 2
+    active_setup_score_bonus: int = 3
 
 
 DEFAULT_PREALERT_CONFIG = PrealertConfig()
@@ -546,8 +546,9 @@ def _score_setup(
     zone_width_pct = (zone[1] - zone[0]) / max(entry, 1e-9)
     source = str(cand.get("source", "context_zone"))
     custom_or_test_zone = source in {"test_zone", "context_zone"}
+    active_setup_source = source == "active_1h_setup"
 
-    if zone_width_pct > cfg.max_zone_width_pct and not custom_or_test_zone:
+    if zone_width_pct > cfg.max_zone_width_pct and not (custom_or_test_zone or active_setup_source):
         return {"ok": False, "reject_reason": "zone_too_wide", "score": 0}
 
     if side not in cand.get("sides", ["long", "short"]):
@@ -670,12 +671,21 @@ def _score_setup(
                 and momentum_aligned
                 and (interaction["body_ok"] or interaction["close_through"])
             )
-        elif source == "active_1h_setup":
-            clean_non_sweep = bool(
-                has_zone_reaction
-                and momentum_aligned
-                and (has_key_reaction or interaction["body_ok"] or interaction["close_through"])
+        elif active_setup_source:
+            # After a formal 1H trial setup, 15m should look for a practical
+            # entry-location retest.  It still needs POI reaction, but does not
+            # require every momentum proxy to have fully turned yet; otherwise
+            # the shadow layer misses the exact pullback area the user wants to
+            # inspect manually.
+            soft_momentum_ok = bool(
+                momentum_aligned
+                or has_key_reaction
+                or interaction["body_ok"]
+                or interaction["close_through"]
+                or (side == "long" and momentum["price_impulse"] > -0.20)
+                or (side == "short" and momentum["price_impulse"] < 0.20)
             )
+            clean_non_sweep = bool(has_zone_reaction and soft_momentum_ok)
         else:
             clean_non_sweep = (
                 has_key_reaction
@@ -698,9 +708,9 @@ def _score_setup(
     # Extremes are filters, not triggers.  Do not long overheated BTC without
     # a true 15m sweep-low reclaim, and do not short cold BTC without a true
     # 15m sweep-high rejection.
-    if side == "long" and temperature == "过热" and not has_liquidity:
+    if side == "long" and temperature == "过热" and not has_liquidity and not active_setup_source:
         return {"ok": False, "reject_reason": "tai_overheated_long_without_sweep_reclaim", "score": score}
-    if side == "short" and temperature == "过冷" and not has_liquidity:
+    if side == "short" and temperature == "过冷" and not has_liquidity and not active_setup_source:
         return {"ok": False, "reject_reason": "tai_cold_short_without_sweep_reject", "score": score}
 
     risk_ok, invalid, risk_pct, room_pct = _risk_ok(side, entry, zone, latest, cfg)
@@ -714,7 +724,10 @@ def _score_setup(
             "invalid_level": invalid,
         }
 
-    min_score = cfg.min_trigger_score - 1 if custom_or_test_zone else cfg.min_trigger_score
+    if active_setup_source:
+        min_score = max(7, cfg.min_trigger_score - 2)
+    else:
+        min_score = cfg.min_trigger_score - 1 if custom_or_test_zone else cfg.min_trigger_score
     ok = score >= min_score
     if not ok:
         return {"ok": False, "reject_reason": "trigger_score_too_low", "score": score}

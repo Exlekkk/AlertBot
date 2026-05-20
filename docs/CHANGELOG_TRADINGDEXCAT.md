@@ -1,5 +1,35 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.3.6-historical-active-setup-bridge
+
+Status: historical active-setup bridge fix.  
+Deployment safety: 15m remains shadow-only; 1H official Telegram logic remains the primary alert body.
+
+### Reason for this version
+
+v1.3.5 added an `active_1h_setup` field, but live backtest rows still showed `active_1h_setup=False`.  The issue was that 1H formal trial setups were not actually persisted into observation state, so the 15m shadow backtest could not reconstruct the context.
+
+### Main changes
+
+1. Active setup state persistence
+   - `试多观察` / `试空观察` writes active setup side, zone, invalid level, open time, phase, and alert type into observation state.
+
+2. Historical reconstruction
+   - `scripts/backtest_15m_prealert.py` can now read that active setup state while replaying historical 1H candles.
+
+3. Active setup 15m shadow bridge
+   - active 1H setup zones are passed into the 15m evaluator as high-priority shadow POI;
+   - this targets the intended workflow: 1H gives the setup once, then 15m tests the entry location.
+
+4. Active setup retest tuning
+   - active setup retests still need a 15m POI reaction;
+   - they are slightly less strict than standalone 15m signals because the 1H context is already active.
+
+5. Tests
+   - test count increased to 60;
+   - added coverage for active setup state writing and active setup shadow-prealert generation.
+
+
 ## v1.3.5-active-setup-shadow-bridge
 
 Status: 1H state-machine and 15m shadow-bridge update.  
