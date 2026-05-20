@@ -114,62 +114,6 @@ def _clear_pending(state: dict[str, Any]) -> dict[str, Any]:
     return update
 
 
-def _clear_active_setup(update: dict[str, Any]) -> dict[str, Any]:
-    """Remove the 1H active setup bridge without touching observation state."""
-
-    for key in (
-        "active_setup_side",
-        "active_setup_zone_low",
-        "active_setup_zone_high",
-        "active_setup_invalid_level",
-        "active_setup_open_time",
-        "active_setup_phase",
-        "active_setup_alert_type",
-        "active_setup_zone_cluster",
-    ):
-        update.pop(key, None)
-    return update
-
-
-def _mark_active_setup(
-    update: dict[str, Any],
-    *,
-    side: str,
-    zone: tuple[float, float],
-    invalid_level: float,
-    current_bar: int,
-    phase: str,
-    alert_type: str,
-    zone_cluster: str = "",
-) -> dict[str, Any]:
-    """Expose a formal 1H trial setup to the 15m shadow layer.
-
-    This is state only.  It does not send 15m Telegram and does not alter the
-    1H signal decision.  The backtest replays this state so 15m can test entry
-    locations after a valid 1H setup has already fired.
-    """
-
-    if phase not in ACTIVE_SETUP_PHASES:
-        return update
-    setup_side = "long" if side == "lower" else "short" if side == "upper" else ""
-    if setup_side not in {"long", "short"}:
-        return update
-    zl, zh = _ordered_zone(zone)
-    update.update(
-        {
-            "active_setup_side": setup_side,
-            "active_setup_zone_low": zl,
-            "active_setup_zone_high": zh,
-            "active_setup_invalid_level": round(float(invalid_level), 2),
-            "active_setup_open_time": int(current_bar),
-            "active_setup_phase": phase,
-            "active_setup_alert_type": alert_type,
-            "active_setup_zone_cluster": zone_cluster,
-        }
-    )
-    return update
-
-
 def _make_pending_wait_decision(
     symbol: str,
     timeframe: str,
@@ -245,20 +189,6 @@ def _make_pending_alert_decision(
             "zone_high": zone[1],
         }
     )
-    if alert_type in {"LOWER_CONFIRM_INVALIDATED", "UPPER_CONFIRM_INVALIDATED"}:
-        _clear_active_setup(update)
-    else:
-        _mark_active_setup(
-            update,
-            side=str(pending.get("side", "")),
-            zone=zone,
-            invalid_level=float(pending["invalid_level"]),
-            current_bar=current_bar,
-            phase=phase,
-            alert_type=alert_type,
-            zone_cluster=str(pending.get("zone_cluster") or state.get("active_setup_zone_cluster", "")),
-        )
-
     public_alert = alert_type not in {"LOWER_CONFIRM_INVALIDATED", "UPPER_CONFIRM_INVALIDATED"}
     suppress_reason = "" if public_alert else "confirmation_invalidated_no_public_alert"
 
@@ -850,16 +780,6 @@ def decide_key_zone_observation(
                 "pending_phase": phase,
                 "pending_zone_cluster": zone_cluster,
             }
-        )
-        _mark_active_setup(
-            update,
-            side=side,
-            zone=zone,
-            invalid_level=invalid_level,
-            current_bar=current_bar,
-            phase=phase,
-            alert_type=alert_type,
-            zone_cluster=zone_cluster,
         )
 
     return {

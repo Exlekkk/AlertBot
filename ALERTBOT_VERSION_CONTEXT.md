@@ -2,38 +2,8 @@
 
 ## Current version
 
-v1.3.6-historical-active-setup-bridge
+v1.3.5-active-setup-shadow-bridge
 
-
-
-## v1.3.6 reason
-
-v1.3.5 deployed correctly, but the 15m shadow backtest still showed `active_1h_setup=False` for every row.  That meant the active 1H setup bridge existed as an API field, but historical backtest reconstruction did not actually populate it.
-
-The user confirmed the intended workflow: after a valid 1H `试多观察` / `试空观察`, 1H should not repeat the same setup.  Instead, 15m shadow should test whether a later retest offers an entry-location reminder.
-
-## v1.3.6 changes
-
-- 1H formal trial setup state is now explicitly written into observation state:
-  - `active_setup_side`
-  - `active_setup_zone_low`
-  - `active_setup_zone_high`
-  - `active_setup_invalid_level`
-  - `active_setup_open_time`
-  - `active_setup_phase`
-- Historical 15m backtest can now reconstruct active 1H setup context.
-- Active 1H setup zones are inserted as high-priority 15m shadow POI.
-- Active setup 15m retests are slightly relaxed versus standalone 15m signals:
-  - still need POI reaction;
-  - do not require every momentum proxy to have fully turned yet.
-- Added tests for active setup state writing and active setup 15m bridge usage.
-
-## v1.3.6 safety
-
-- 15m remains shadow-only.
-- No Telegram 15m sending is enabled.
-- 1H official alert copy from v1.3.4 is unchanged.
-- This version fixes state/backtest bridging, not execution or order routing.
 
 
 ## v1.3.5 reason
