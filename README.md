@@ -8,7 +8,7 @@ The project is currently BTC-only. Stock scanning is out of scope.
 
 ## Current status
 
-Current package version: **v1.3.5-active-setup-shadow-bridge**
+Current package version: **v1.3.4-copy-layer-fix**
 
 - Main production alert layer: **1H**
 - 15m layer: **shadow backtest only**
@@ -17,17 +17,6 @@ Current package version: **v1.3.5-active-setup-shadow-bridge**
 - 15m cadence: **adaptive by duplicate/new-information quality, never hard-capped per day**
 
 The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy.
-
-
-## v1.3.5 state-machine update
-
-v1.3.5 keeps the v1.3.4 copy rules but tightens the 1H state flow:
-
-- once a 1H `试多观察` / `试空观察` setup is active, the same zone and same direction should not keep repeating official 1H alerts;
-- an active 1H setup should not downgrade back into a same-zone `关键区观察`;
-- secondary confirmation must be a clean reclaim/reject, not a candle hovering around the risk level;
-- the 15m shadow backtest can read an active 1H setup as context for entry-location testing, while still remaining shadow-only.
-
 
 ## Strategy model
 

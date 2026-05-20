@@ -19,10 +19,6 @@ UPPER_ALERT_TYPES = {
     "RANGE_UPPER_PROBE",
 }
 
-LOWER_ACTIVE_PHASES = {"lower_reclaim", "lower_confirmed"}
-UPPER_ACTIVE_PHASES = {"upper_rejection", "upper_confirmed"}
-ACTIVE_SETUP_PHASES = LOWER_ACTIVE_PHASES | UPPER_ACTIVE_PHASES
-
 
 def _zone_hash(zone: tuple[float, float]) -> str:
     zl, zh = zone
@@ -107,7 +103,6 @@ def _clear_pending(state: dict[str, Any]) -> dict[str, Any]:
         "pending_created_open_time",
         "pending_source_alert_type",
         "pending_phase",
-        "pending_zone_cluster",
     ):
         update.pop(key, None)
     update["pending_confirm"] = False
@@ -260,14 +255,9 @@ def _evaluate_pending_confirmation(
 
     if pending["side"] == "lower":
         invalidated = close < invalid - pad or low < invalid - pad * 1.5
-        # A second confirmation must be a real reclaim/hold, not a candle
-        # hovering around the risk level.  This prevents "承接成立" while price
-        # is still stuck at or below the original risk area.
-        confirmed = (
-            after_first_bar
-            and not invalidated
-            and close >= zone_high + pad * 0.2
-            and close >= open_
+        confirmed = after_first_bar and not invalidated and (
+            close >= zone_high + pad * 0.2
+            or (low <= zone_high + pad and low >= zone_low - pad and close >= zone_mid and close >= open_)
         )
         if confirmed:
             return (
@@ -305,14 +295,9 @@ def _evaluate_pending_confirmation(
             )
     else:
         invalidated = close > invalid + pad or high > invalid + pad * 1.5
-        # Same for承压: only a clean rejection below the pressure area should
-        # become a second confirmation.  A candle still inside/near the zone
-        # remains silent.
-        confirmed = (
-            after_first_bar
-            and not invalidated
-            and close <= zone_low - pad * 0.2
-            and close <= open_
+        confirmed = after_first_bar and not invalidated and (
+            close <= zone_low - pad * 0.2
+            or (high >= zone_low - pad and high <= zone_high + pad and close <= zone_mid and close <= open_)
         )
         if confirmed:
             return (
@@ -701,21 +686,6 @@ def decide_key_zone_observation(
         "range_upper_probe",
     }
 
-    prev_active_same_setup = (
-        same_cluster
-        and prev_side == side
-        and (
-            (side == "lower" and prev_phase in LOWER_ACTIVE_PHASES)
-            or (side == "upper" and prev_phase in UPPER_ACTIVE_PHASES)
-        )
-    )
-    active_setup_bars = _bars_between(current_bar, observation_state.get("last_alert_open_time"))
-    active_setup_expire_bars = int(cfg.get("active_setup_expire_bars", 12))
-    active_setup_still_live = (
-        prev_active_same_setup
-        and (active_setup_bars is None or active_setup_bars <= active_setup_expire_bars)
-    )
-
     reentered = not was_inside or not same_cluster
     if reentered:
         reentry_count += 1
@@ -727,10 +697,6 @@ def decide_key_zone_observation(
         suppress_reason = "inside_zone_unchanged"
     elif was_inside and same_exact_zone and phase == prev_phase:
         suppress_reason = "inside_zone_unchanged"
-    elif active_setup_still_live and phase == prev_phase:
-        suppress_reason = "active_setup_already_open"
-    elif active_setup_still_live and passive_observation:
-        suppress_reason = "active_setup_waiting_for_15m_entry"
     elif was_inside and same_cluster and prev_phase in {"lower_confirmed", "upper_confirmed", "lower_invalidated", "upper_invalidated"}:
         suppress_reason = "confirmation_already_sent"
     elif was_inside and passive_observation and bars_since_alert is not None and bars_since_alert < cfg.get("min_realert_bars", 4):
@@ -743,29 +709,19 @@ def decide_key_zone_observation(
     should_alert = suppress_reason == ""
     state_version = f"{phase.upper()}_R{reentry_count}"
 
-    preserve_active = suppress_reason in {
-        "active_setup_already_open",
-        "active_setup_waiting_for_15m_entry",
-        "confirmation_already_sent",
+    update = {
+        "inside_zone": True,
+        "active_zone_hash": zone_hash,
+        "active_zone_cluster": zone_cluster,
+        "reentry_count": reentry_count,
+        "last_phase": phase,
+        "last_side": side,
+        "last_alert_type": alert_type if should_alert else observation_state.get("last_alert_type", alert_type),
+        "last_alert_open_time": current_bar if should_alert else observation_state.get("last_alert_open_time"),
+        "last_price": close,
+        "zone_low": zone[0],
+        "zone_high": zone[1],
     }
-    update = dict(observation_state) if preserve_active else {}
-    update.update(
-        {
-            "inside_zone": True,
-            "active_zone_hash": observation_state.get("active_zone_hash", zone_hash) if preserve_active else zone_hash,
-            "active_zone_cluster": observation_state.get("active_zone_cluster", zone_cluster) if preserve_active else zone_cluster,
-            "reentry_count": reentry_count,
-            "last_phase": observation_state.get("last_phase", phase) if preserve_active else phase,
-            "last_side": observation_state.get("last_side", side) if preserve_active else side,
-            "last_alert_type": (
-                alert_type if should_alert else observation_state.get("last_alert_type", alert_type)
-            ),
-            "last_alert_open_time": current_bar if should_alert else observation_state.get("last_alert_open_time"),
-            "last_price": close,
-            "zone_low": observation_state.get("zone_low", zone[0]) if preserve_active else zone[0],
-            "zone_high": observation_state.get("zone_high", zone[1]) if preserve_active else zone[1],
-        }
-    )
 
     if should_alert:
         update.update(
