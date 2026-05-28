@@ -1,3 +1,26 @@
+# Patch Notes — v1.3.7 SMC/VP 1H Filter
+
+## Summary
+
+This release keeps v1.3.4 copy layering but adds an internal SMC/ICT + Volume Profile filter before 1H observations are upgraded into formal trial alerts.
+
+## Key changes
+
+- Added `engine/volume_profile.py`.
+- Scanner now builds an internal 1H Volume Profile proxy.
+- Formal 1H `试多观察` / `试空观察` upgrades can be downgraded to single-emoji key-zone observations when value acceptance does not support the side.
+- Passive single-emoji observations no longer create secondary-confirmation pending state.
+- Secondary confirmations can be blocked by the same Volume Profile filter.
+- 15m remains shadow-only and does not send Telegram.
+
+## Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+
+Current test suite: 58 tests.
+
+
 # Patch Notes — Trend Segment Engine v1
 
 ## v1.2.0 - Alert Nature Cleanup / Tightened 15m Shadow Filters

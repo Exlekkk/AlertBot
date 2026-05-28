@@ -8,15 +8,16 @@ The project is currently BTC-only. Stock scanning is out of scope.
 
 ## Current status
 
-Current package version: **v1.3.4-copy-layer-fix**
+Current package version: **v1.3.7-smc-vp-1h-filter**
 
 - Main production alert layer: **1H**
 - 15m layer: **shadow backtest only**
 - Telegram 15m prealerts: **disabled**
 - MACD / ABCX legacy framework: **removed from the main decision path**
 - 15m cadence: **adaptive by duplicate/new-information quality, never hard-capped per day**
+- 1H trial alerts now use an internal SMC/ICT + Volume Profile filter before upgrading observations into formal trial alerts
 
-The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy.
+The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy. It remains server-side shadow only in this version.
 
 ## Strategy model
 
@@ -28,6 +29,12 @@ Primary context:
 - OB / MB / BB zones
 - FVG and key round levels
 - 1H close behavior around important zones
+
+Volume/value filter:
+- approximate 1H Volume Profile proxy from exchange candles
+- POC / HVN / LVN / VAH / VAL context
+- VAL reclaim / VAH rejection
+- LVN / Volume Gap thin-air pressure
 
 Auxiliary filters:
 - RAR
@@ -97,6 +104,9 @@ Do not use standalone invalidation Telegram alerts such as bull/bear invalidated
 
 - `engine/aux_filters.py`  
   RAR, Inertial, TAI, price displacement, and volume filters.
+
+- `engine/volume_profile.py`  
+  Internal 1H Volume Profile proxy used only as a filter for formal 1H trial alerts.
 
 - `engine/msb_ob.py`  
   MSB / OB / MB structure context.

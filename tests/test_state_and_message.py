@@ -699,7 +699,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         )
 
         self.assertFalse(unchanged["should_alert"])
-        self.assertEqual(unchanged["suppress_reason"], "pending_confirmation_wait")
+        self.assertEqual(unchanged["suppress_reason"], "inside_zone_unchanged")
 
         left_then_reentered_state = dict(first["observation_update"])
         left_then_reentered_state["inside_zone"] = False
@@ -716,7 +716,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         )
 
         self.assertFalse(reentered["should_alert"])
-        self.assertEqual(reentered["suppress_reason"], "pending_confirmation_wait")
+        self.assertEqual(reentered["suppress_reason"], "post_impulse_waiting_for_reaction")
 
 
     def test_post_waterfall_same_cluster_waits_for_real_reaction(self):
@@ -934,6 +934,46 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertIn("BTC 1H 试多观察", msg)
         self.assertIn("⚡ 动能与热度", msg)
 
+    def test_formal_lower_reclaim_creates_pending_confirmation(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(9900, 9950, 9800, 9850, atr=100.0),
+            self._bar(9850, 9900, 9750, 9820, atr=100.0),
+            self._bar(9820, 10180, 9750, 10140, atr=100.0),
+        ]
+        liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "has_order_block_context": False,
+            "structure_zone": (9850, 10050),
+            "order_block_zone": (9850, 10050),
+            "mid_observe_zone": (9850, 10050),
+            "active_fvg_zone": (9850, 10050),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
+            "metrics": {},
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
+            observation_state={"inside_zone": False},
+        )
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "LOWER_KEY_ZONE_RECLAIM")
+        self.assertTrue(decision["observation_update"].get("pending_confirm"))
+
+
     def test_lower_zone_reclaim_uses_signal_title(self):
         from engine.key_zones import decide_key_zone_observation
         from engine.trend_messages import format_trend_message
@@ -989,9 +1029,9 @@ class KeyZoneObservationTests(unittest.TestCase):
             observation_state={"inside_zone": False},
         )
         self.assertTrue(first["should_alert"])
-        self.assertTrue(first["observation_update"].get("pending_confirm"))
+        # Single-emoji passive observations must not create a formal second-confirmation state.
+        self.assertFalse(first["observation_update"].get("pending_confirm"))
 
-        # Same closed candle: no "pending" Telegram message, just silent tracking.
         middle = decide(
             "BTCUSDT",
             "1h",
@@ -1004,25 +1044,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             observation_state=first["observation_update"],
         )
         self.assertFalse(middle["should_alert"])
-        self.assertEqual(middle["suppress_reason"], "pending_confirmation_wait")
-
-        # Next bar: retests the first zone and closes back above its midpoint.
-        confirm_klines = list(klines)
-        confirm_klines.append(self._bar(9760, 9920, 9760, 9895, atr=100.0))
-        confirmed = decide(
-            "BTCUSDT",
-            "1h",
-            confirm_klines,
-            htf,
-            liq,
-            msb,
-            matrix,
-            {"momentum_desc": "短线动能修复", "temperature_desc": "热度 中性", "price": 9895},
-            observation_state=first["observation_update"],
-        )
-
-        self.assertTrue(confirmed["should_alert"])
-        self.assertEqual(confirmed["alert_type"], "SECONDARY_CONFIRM_LOWER")
+        self.assertEqual(middle["suppress_reason"], "inside_zone_unchanged")
 
     def test_secondary_confirmation_message(self):
         from engine.trend_messages import format_trend_message

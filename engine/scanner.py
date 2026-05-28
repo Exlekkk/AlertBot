@@ -13,6 +13,7 @@ from engine.market_data import BinanceMarketDataClient
 from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.trend_matrix import build_trend_matrix_proxy
+from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message
 from engine.trend_segments import decide_trend_segment
 from engine.trend_snapshot import load_observation_state, load_trend_state, make_snapshot_key, save_observation_state, save_trend_state
@@ -80,10 +81,11 @@ class SMCTScanner:
             liq = build_liquidity_context(klines_1h)
             msb = build_msb_ob_context(klines_1h, liq)
             matrix = build_trend_matrix_proxy(klines_1h)
+            vp = build_volume_profile_context(klines_1h)
             aux = build_aux_filters_proxy(klines_1h, klines_4h)
             htf = self._htf_context(klines_4h, "long" if msb["direction"] == "bull" else "short" if msb["direction"] == "bear" else "neutral")
             trend_state = load_trend_state(self.symbol, "1h")
-            decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state)
+            decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp)
 
             if not decision.get("should_alert"):
                 try:
@@ -98,6 +100,7 @@ class SMCTScanner:
                         matrix,
                         aux,
                         observation_state=observation_state,
+                        vp=vp,
                     )
                     if observation.get("observation_update") is not None:
                         save_observation_state(self.symbol, "1h", observation["observation_update"])

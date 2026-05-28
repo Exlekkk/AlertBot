@@ -2,8 +2,35 @@
 
 ## Current version
 
-v1.3.4-copy-layer-fix
+v1.3.7-smc-vp-1h-filter
 
+
+## v1.3.7 reason
+
+This version is based on v1.3.4-copy-layer-fix after the user rolled back the experimental v1.3.5/v1.3.6 active-setup changes.
+
+TradingDexCat identified a high-priority 1H issue: during weak or bearish BTC conditions, especially below BE-OB / supply and inside LVN / Volume Gap paths, the bot kept upgrading lower-area reactions into formal `📈 BTC 1H 试多观察 📈` alerts. That violated the user's indicator order: MSB-OB/SMC/ICT structure first, Volume Profile value acceptance second, and RAR/Inertial/TAI only as filters.
+
+## v1.3.7 changes
+
+- Added `engine/volume_profile.py`, an internal 1H Volume Profile proxy from exchange candles:
+  - POC / HVN / LVN / VAH / VAL approximation
+  - value-area position
+  - VAL reclaim / VAH rejection
+  - LVN / thin-air pressure
+- 1H formal trial alerts now pass an SMC/ICT + Volume Profile filter before being sent.
+- `LOWER_KEY_ZONE_RECLAIM` can be downgraded to `LOWER_KEY_ZONE_TEST` when value acceptance does not support a formal long trial.
+- `UPPER_KEY_ZONE_REJECTION` can be downgraded to `UPPER_KEY_ZONE_TEST` when value acceptance does not support a formal short trial.
+- Passive single-emoji observations no longer create the pending state for `✅ BTC 1H 二次确认`.
+- Secondary confirmations are blocked when the Volume Profile filter says the original side has not been accepted.
+- 15m remains server-side shadow only; no 15m Telegram pilot is enabled.
+
+## v1.3.7 safety
+
+- Does not enable 15m Telegram.
+- Does not change 15m shadow isolation.
+- Does not expose internal indicator names in Telegram copy.
+- Keeps v1.3.4 copy layering.
 
 ## v1.3.4 reason
 

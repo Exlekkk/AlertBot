@@ -1,5 +1,43 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.3.7-smc-vp-1h-filter
+
+Status: 1H signal-quality update.  
+Deployment safety: 15m remains shadow-only and Telegram 15m is not enabled.
+
+### Reason for this version
+
+The user observed repeated wrong or premature `📈 BTC 1H 试多观察 📈` alerts during weak BTC price action. The live chart showed price under supply / BE-OB context, failing to reclaim value, and moving through thin low-volume areas. In that environment, a lower-zone touch or short-term RAR/Inertial repair should not become a formal long trial.
+
+The update follows the user's indicator priority:
+MSB-OB / SMC / ICT structure first, Volume Profile value acceptance second, RAR / Inertial / TAI as filters only.
+
+### Main changes
+
+1. Added internal Volume Profile filter
+   - approximate 1H POC / HVN / LVN / VAH / VAL from exchange candles
+   - detects value-area position, VAL reclaim, VAH rejection, LVN / thin-air pressure
+   - used only as a filter, never as a standalone trigger
+
+2. Tightened formal 1H trial upgrades
+   - weak lower-area reclaim can stay `📍 BTC 1H 下方关键区观察` instead of becoming `📈 BTC 1H 试多观察 📈`
+   - weak upper-area rejection can stay `📍 BTC 1H 上方关键区观察` instead of becoming `📉 BTC 1H 试空观察 📉`
+
+3. Secondary confirmation is now formal-only
+   - single-emoji observations do not open a pending secondary-confirmation state
+   - secondary confirmation can be blocked if value acceptance does not support the side
+
+4. Isolation remains unchanged
+   - 15m continues server-side shadow testing only
+   - no 15m Telegram pilot is enabled
+   - 15m does not decide direction or modify 1H logic
+
+### Review target
+
+The main live-review target is whether 1H stops calling formal long trials while price is below value / under supply / inside LVN continuation with no real acceptance.
+
+
+
 ## v1.3.4-copy-layer-fix
 
 Status: copy-only update.  

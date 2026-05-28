@@ -4,6 +4,7 @@ import hashlib
 from typing import Any
 
 from engine.trend_config import TREND_ENGINE_CONFIG
+from engine.volume_profile import attach_vp_fields, block_formal_long, block_formal_short
 
 
 LOWER_ALERT_TYPES = {
@@ -226,6 +227,9 @@ def _evaluate_pending_confirmation(
     observation_state: dict[str, Any],
     current_bar: int,
     atr: float,
+    msb: dict[str, Any] | None = None,
+    matrix: dict[str, Any] | None = None,
+    vp: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Track the 1 -> 3 confirmation switch.
 
@@ -260,19 +264,39 @@ def _evaluate_pending_confirmation(
             or (low <= zone_high + pad and low >= zone_low - pad and close >= zone_mid and close >= open_)
         )
         if confirmed:
-            return (
-                _make_pending_alert_decision(
-                    symbol,
-                    timeframe,
-                    latest,
-                    htf_ctx,
-                    aux,
+            vp_reasons = block_formal_long(htf_ctx, msb or {}, matrix or {}, aux, vp)
+            if vp_reasons:
+                return (
+                    _make_pending_wait_decision(
+                        symbol,
+                        timeframe,
+                        latest,
+                        htf_ctx,
+                        aux,
+                        observation_state,
+                        pending,
+                        current_bar,
+                        "vp_value_filter_secondary_lower",
+                    ),
                     observation_state,
-                    pending,
-                    current_bar,
-                    "SECONDARY_CONFIRM_LOWER",
-                    "long",
-                    "lower_confirmed",
+                )
+            return (
+                attach_vp_fields(
+                    _make_pending_alert_decision(
+                        symbol,
+                        timeframe,
+                        latest,
+                        htf_ctx,
+                        aux,
+                        observation_state,
+                        pending,
+                        current_bar,
+                        "SECONDARY_CONFIRM_LOWER",
+                        "long",
+                        "lower_confirmed",
+                    ),
+                    vp,
+                    vp_reasons,
                 ),
                 observation_state,
             )
@@ -300,19 +324,39 @@ def _evaluate_pending_confirmation(
             or (high >= zone_low - pad and high <= zone_high + pad and close <= zone_mid and close <= open_)
         )
         if confirmed:
-            return (
-                _make_pending_alert_decision(
-                    symbol,
-                    timeframe,
-                    latest,
-                    htf_ctx,
-                    aux,
+            vp_reasons = block_formal_short(htf_ctx, msb or {}, matrix or {}, aux, vp)
+            if vp_reasons:
+                return (
+                    _make_pending_wait_decision(
+                        symbol,
+                        timeframe,
+                        latest,
+                        htf_ctx,
+                        aux,
+                        observation_state,
+                        pending,
+                        current_bar,
+                        "vp_value_filter_secondary_upper",
+                    ),
                     observation_state,
-                    pending,
-                    current_bar,
-                    "SECONDARY_CONFIRM_UPPER",
-                    "short",
-                    "upper_confirmed",
+                )
+            return (
+                attach_vp_fields(
+                    _make_pending_alert_decision(
+                        symbol,
+                        timeframe,
+                        latest,
+                        htf_ctx,
+                        aux,
+                        observation_state,
+                        pending,
+                        current_bar,
+                        "SECONDARY_CONFIRM_UPPER",
+                        "short",
+                        "upper_confirmed",
+                    ),
+                    vp,
+                    vp_reasons,
                 ),
                 observation_state,
             )
@@ -538,6 +582,7 @@ def decide_key_zone_observation(
     matrix: dict[str, Any],
     aux: dict[str, Any],
     observation_state: dict[str, Any] | None = None,
+    vp: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Detect key-area observation alerts.
 
@@ -571,6 +616,9 @@ def decide_key_zone_observation(
         observation_state,
         current_bar,
         atr,
+        msb,
+        matrix,
+        vp,
     )
     if pending_decision is not None:
         return pending_decision
@@ -661,6 +709,21 @@ def decide_key_zone_observation(
             phase = "upper_test"
         invalid_level = max(float(latest["high"]), zone[1])
 
+    vp_reasons: list[str] = []
+    if alert_type == "LOWER_KEY_ZONE_RECLAIM":
+        vp_reasons = block_formal_long(htf_ctx, msb, matrix, aux, vp)
+        if vp_reasons:
+            # Do not call this a formal 1H trial long when value acceptance is
+            # not back on the long side.  Keep it as a single-emoji lower area
+            # observation so the user can watch whether real demand appears.
+            alert_type = "LOWER_KEY_ZONE_TEST"
+            phase = "lower_test"
+    elif alert_type == "UPPER_KEY_ZONE_REJECTION":
+        vp_reasons = block_formal_short(htf_ctx, msb, matrix, aux, vp)
+        if vp_reasons:
+            alert_type = "UPPER_KEY_ZONE_TEST"
+            phase = "upper_test"
+
     move_quality = min(40, int(abs(two_bar_move) * 18 + abs(one_bar_move) * 8))
     key_zone_score = 34 if "range" not in zone_source else 28
     aux_score = 4 if ("偏弱" in str(aux.get("momentum_desc", "")) and side == "lower") or ("偏强" in str(aux.get("momentum_desc", "")) and side == "upper") else 0
@@ -699,7 +762,7 @@ def decide_key_zone_observation(
         suppress_reason = "inside_zone_unchanged"
     elif was_inside and same_cluster and prev_phase in {"lower_confirmed", "upper_confirmed", "lower_invalidated", "upper_invalidated"}:
         suppress_reason = "confirmation_already_sent"
-    elif was_inside and passive_observation and bars_since_alert is not None and bars_since_alert < cfg.get("min_realert_bars", 4):
+    elif passive_observation and same_cluster and bars_since_alert is not None and bars_since_alert < cfg.get("min_realert_bars", 4):
         # After an impulse / waterfall, repeated passive tests are not useful.
         # Wait for reclaim/rejection/real boundary break before speaking again.
         suppress_reason = "post_impulse_waiting_for_reaction"
@@ -723,7 +786,8 @@ def decide_key_zone_observation(
         "zone_high": zone[1],
     }
 
-    if should_alert:
+    formal_trial_alert = alert_type in {"LOWER_KEY_ZONE_RECLAIM", "UPPER_KEY_ZONE_REJECTION"}
+    if should_alert and formal_trial_alert:
         update.update(
             {
                 "pending_confirm": True,
@@ -737,8 +801,10 @@ def decide_key_zone_observation(
                 "pending_zone_cluster": zone_cluster,
             }
         )
+    else:
+        update["pending_confirm"] = False
 
-    return {
+    decision = {
         "symbol": symbol,
         "timeframe": timeframe,
         "alert_type": alert_type,
@@ -766,3 +832,4 @@ def decide_key_zone_observation(
         "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
         "observation_update": update,
     }
+    return attach_vp_fields(decision, vp, vp_reasons)

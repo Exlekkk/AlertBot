@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from engine.trend_config import TREND_ENGINE_CONFIG
+from engine.volume_profile import attach_vp_fields, block_formal_long, block_formal_short
 
 
 def apply_higher_timeframe_bias(base_score: int, relation: str) -> tuple[int, int, bool]:
@@ -52,6 +53,7 @@ def decide_trend_segment(
     matrix: dict[str, Any],
     aux: dict[str, Any],
     trend_state: dict[str, Any] | None = None,
+    vp: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     trend_state = trend_state or {}
     cfg = TREND_ENGINE_CONFIG["score"]
@@ -94,6 +96,20 @@ def decide_trend_segment(
     elif score < cfg["min_alert_score"]:
         suppress_reason = "below_min_score"
 
+    vp_reasons: list[str] = []
+    if alert_type != "NO_TRADE_RANGE" and suppress_reason == "":
+        if direction == "long":
+            vp_reasons = block_formal_long(htf_ctx, msb, matrix, aux, vp)
+        elif direction == "short":
+            vp_reasons = block_formal_short(htf_ctx, msb, matrix, aux, vp)
+
+        # Volume Profile is a filter, not a standalone signal.  A high-quality
+        # confirmed structure can still pass, but medium trial/continuation
+        # alerts must not fight value acceptance, HVN/POC pressure, or LVN
+        # thin-air continuation.
+        if vp_reasons and (alert_type.endswith("CONTINUATION") or score < 72):
+            suppress_reason = "vp_value_filter_" + vp_reasons[0]
+
     should_alert = alert_type != "NO_TRADE_RANGE" and suppress_reason == ""
 
     if alert_type.endswith("CONTINUATION"):
@@ -113,7 +129,7 @@ def decide_trend_segment(
     else:
         invalid_level = liq["prev_low"] if direction == "long" else liq["prev_high"]
 
-    return {
+    decision = {
         "symbol": symbol,
         "timeframe": timeframe,
         "alert_type": alert_type,
@@ -150,3 +166,4 @@ def decide_trend_segment(
         "momentum_desc": momentum_desc,
         "temperature_desc": temperature_desc,
     }
+    return attach_vp_fields(decision, vp, vp_reasons)
