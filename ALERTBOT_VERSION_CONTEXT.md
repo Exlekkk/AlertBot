@@ -2,7 +2,31 @@
 
 ## Current version
 
-v1.3.7-smc-vp-1h-filter
+v1.3.8-range-lock-noise-control
+
+
+## v1.3.8 reason
+
+After v1.3.7, the weak-market false-long issue improved, but the bot produced too many single-emoji key-zone observations and some formal试多/试空 alerts while BTC was rotating in a pure sideways / accumulation box. The user clarified that in this environment, repeated upper/lower touches are not fresh information; the bot should prioritize silence or one recent observation until the range breaks or a true sweep-reclaim/reject appears.
+
+## v1.3.8 changes
+
+- Added `engine/range_lock.py`.
+- Scanner now builds an internal 1H range/accumulation-lock context after SMC/ICT + Volume Profile context.
+- Key-zone observations now respect range-lock:
+  - same value box has a shared cooldown across upper/lower observations;
+  - repeated passive observations inside the same box are suppressed;
+  - synthetic range-edge observations are ignored while range-lock is active;
+  - formal trial upgrades inside range-lock are downgraded unless there is a strong sweep-reclaim/reject exception.
+- Added tests for range-lock cooldown and downgrade behavior.
+- 15m remains server-side shadow only; no Telegram 15m pilot is enabled.
+
+## v1.3.8 safety
+
+- Does not enable 15m Telegram.
+- Does not change 15m shadow isolation.
+- Keeps v1.3.7 SMC/ICT + Volume Profile filter.
+- Adds a noise-control layer for sideways/accumulation environments only.
 
 
 ## v1.3.7 reason

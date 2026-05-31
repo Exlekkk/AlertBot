@@ -5,6 +5,7 @@ from typing import Any
 
 from engine.trend_config import TREND_ENGINE_CONFIG
 from engine.volume_profile import attach_vp_fields, block_formal_long, block_formal_short
+from engine.range_lock import attach_range_lock_fields, is_strong_sweep_reversal
 
 
 LOWER_ALERT_TYPES = {
@@ -583,6 +584,7 @@ def decide_key_zone_observation(
     aux: dict[str, Any],
     observation_state: dict[str, Any] | None = None,
     vp: dict[str, Any] | None = None,
+    range_lock: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Detect key-area observation alerts.
 
@@ -595,6 +597,7 @@ def decide_key_zone_observation(
 
     observation_state = observation_state or {}
     cfg = TREND_ENGINE_CONFIG["key_zone"]
+    range_lock = range_lock or {"active": False}
     latest = klines_1h[-1]
     prev = klines_1h[-2]
     prev2 = klines_1h[-3] if len(klines_1h) >= 3 else prev
@@ -632,7 +635,7 @@ def decide_key_zone_observation(
             "last_phase": observation_state.get("last_phase", ""),
             "last_price": close,
         }
-        return {
+        return attach_range_lock_fields({
             "symbol": symbol,
             "timeframe": timeframe,
             "alert_type": "NO_TRADE_RANGE",
@@ -659,7 +662,7 @@ def decide_key_zone_observation(
             "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
             "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
             "observation_update": update,
-        }
+        }, range_lock)
 
     zone = _ordered_zone(selected["zone"])
     zone_hash = _zone_hash(zone)
@@ -677,6 +680,9 @@ def decide_key_zone_observation(
 
     fast_down = two_bar_move <= -cfg["fast_move_atr"] or (is_red and prev_red and abs(two_bar_move) >= cfg["two_bar_min_atr"])
     fast_up = two_bar_move >= cfg["fast_move_atr"] or (is_green and prev_green and abs(two_bar_move) >= cfg["two_bar_min_atr"])
+
+    range_lock_active = bool(range_lock.get("active", False))
+    range_lock_cluster = str(range_lock.get("cluster", ""))
 
     if side == "lower":
         direction = "long"
@@ -724,6 +730,16 @@ def decide_key_zone_observation(
             alert_type = "UPPER_KEY_ZONE_TEST"
             phase = "upper_test"
 
+    # Pure range / accumulation lock:
+    # In a locked sideways box, do not convert every upper/lower touch into a
+    # formal trial.  Only a true high-impulse sweep-reclaim/reject can escape
+    # this downgrade.
+    if range_lock_active and alert_type in {"LOWER_KEY_ZONE_RECLAIM", "UPPER_KEY_ZONE_REJECTION"}:
+        if not is_strong_sweep_reversal(side, latest, prev2_close, zone, atr, aux, range_lock):
+            alert_type = "LOWER_KEY_ZONE_TEST" if side == "lower" else "UPPER_KEY_ZONE_TEST"
+            phase = "lower_test" if side == "lower" else "upper_test"
+            passive_observation = True
+
     move_quality = min(40, int(abs(two_bar_move) * 18 + abs(one_bar_move) * 8))
     key_zone_score = 34 if "range" not in zone_source else 28
     aux_score = 4 if ("偏弱" in str(aux.get("momentum_desc", "")) and side == "lower") or ("偏强" in str(aux.get("momentum_desc", "")) and side == "upper") else 0
@@ -748,6 +764,9 @@ def decide_key_zone_observation(
         "range_lower_probe",
         "range_upper_probe",
     }
+    prev_range_lock_cluster = str(observation_state.get("range_lock_cluster", ""))
+    bars_since_range_lock_alert = _bars_between(current_bar, observation_state.get("range_lock_last_alert_open_time"))
+    same_range_lock = range_lock_active and range_lock_cluster and range_lock_cluster == prev_range_lock_cluster
 
     reentered = not was_inside or not same_cluster
     if reentered:
@@ -756,6 +775,12 @@ def decide_key_zone_observation(
     suppress_reason = ""
     if score < cfg["min_observation_score"]:
         suppress_reason = "below_observation_score"
+    elif range_lock_active and passive_observation and same_range_lock and bars_since_range_lock_alert is not None and bars_since_range_lock_alert < int(TREND_ENGINE_CONFIG["range_lock"].get("cooldown_bars", 8)):
+        suppress_reason = "range_lock_same_box_cooldown"
+    elif range_lock_active and passive_observation and same_cluster:
+        suppress_reason = "range_lock_same_zone_no_new_information"
+    elif range_lock_active and passive_observation and zone_source.startswith("range_"):
+        suppress_reason = "range_lock_ignore_range_edge"
     elif was_inside and same_cluster and phase == prev_phase:
         suppress_reason = "inside_zone_unchanged"
     elif was_inside and same_exact_zone and phase == prev_phase:
@@ -784,6 +809,9 @@ def decide_key_zone_observation(
         "last_price": close,
         "zone_low": zone[0],
         "zone_high": zone[1],
+        "range_lock_active": range_lock_active,
+        "range_lock_cluster": range_lock_cluster if range_lock_active else observation_state.get("range_lock_cluster", ""),
+        "range_lock_last_alert_open_time": current_bar if (should_alert and range_lock_active) else observation_state.get("range_lock_last_alert_open_time"),
     }
 
     formal_trial_alert = alert_type in {"LOWER_KEY_ZONE_RECLAIM", "UPPER_KEY_ZONE_REJECTION"}
@@ -832,4 +860,4 @@ def decide_key_zone_observation(
         "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
         "observation_update": update,
     }
-    return attach_vp_fields(decision, vp, vp_reasons)
+    return attach_range_lock_fields(attach_vp_fields(decision, vp, vp_reasons), range_lock)

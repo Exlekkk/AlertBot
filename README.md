@@ -8,14 +8,15 @@ The project is currently BTC-only. Stock scanning is out of scope.
 
 ## Current status
 
-Current package version: **v1.3.7-smc-vp-1h-filter**
+Current package version: **v1.3.8-range-lock-noise-control**
 
 - Main production alert layer: **1H**
 - 15m layer: **shadow backtest only**
 - Telegram 15m prealerts: **disabled**
 - MACD / ABCX legacy framework: **removed from the main decision path**
 - 15m cadence: **adaptive by duplicate/new-information quality, never hard-capped per day**
-- 1H trial alerts now use an internal SMC/ICT + Volume Profile filter before upgrading observations into formal trial alerts
+- 1H trial alerts use an internal SMC/ICT + Volume Profile filter before upgrading observations into formal trial alerts
+- Horizontal / accumulation range-lock suppresses repeated key-zone observations inside the same value box
 
 The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy. It remains server-side shadow only in this version.
 
@@ -35,6 +36,13 @@ Volume/value filter:
 - POC / HVN / LVN / VAH / VAL context
 - VAL reclaim / VAH rejection
 - LVN / Volume Gap thin-air pressure
+
+
+Range / accumulation lock:
+- detects when price is rotating inside the same accepted value box
+- suppresses repeated lower/upper key-zone observations inside that box
+- downgrades formal trial alerts inside a pure range unless there is a strong sweep-reclaim/reject
+- keeps 15m shadow-only; 15m still does not decide 1H direction
 
 Auxiliary filters:
 - RAR

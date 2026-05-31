@@ -940,8 +940,8 @@ class KeyZoneObservationTests(unittest.TestCase):
         klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
         klines += [
             self._bar(9900, 9950, 9800, 9850, atr=100.0),
-            self._bar(9850, 9900, 9750, 9820, atr=100.0),
-            self._bar(9820, 10180, 9750, 10140, atr=100.0),
+            self._bar(9850, 9900, 9750, 9880, atr=100.0),
+            self._bar(9880, 10180, 9750, 10140, atr=100.0),
         ]
         liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
         msb = {
@@ -1012,6 +1012,74 @@ class KeyZoneObservationTests(unittest.TestCase):
         msg = format_trend_message(decision)
         first_line = msg.splitlines()[0]
         self.assertEqual(first_line, "📈 BTC 1H 试多观察 📈")
+
+    def test_range_lock_suppresses_same_box_passive_noise(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
+        current_bar = len(klines)
+        decision = decide(
+            "BTCUSDT",
+            "1h",
+            klines,
+            htf,
+            liq,
+            msb,
+            matrix,
+            aux,
+            observation_state={
+                "inside_zone": False,
+                "range_lock_cluster": "box-a",
+                "range_lock_last_alert_open_time": current_bar - 2,
+            },
+            range_lock={"active": True, "cluster": "box-a", "box_low": 9600.0, "box_high": 10200.0},
+        )
+
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "range_lock_same_box_cooldown")
+        self.assertTrue(decision["range_lock_active"])
+
+    def test_range_lock_downgrades_reclaim_without_strong_sweep_exception(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
+        klines += [
+            self._bar(9900, 9950, 9800, 9850, atr=100.0),
+            self._bar(9850, 9900, 9750, 9880, atr=100.0),
+            self._bar(9880, 10180, 9750, 10140, atr=100.0),
+        ]
+        liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
+        msb = {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "has_order_block_context": False,
+            "structure_zone": (9850, 10050),
+            "order_block_zone": (9850, 10050),
+            "mid_observe_zone": (9850, 10050),
+            "active_fvg_zone": (9850, 10050),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
+            "metrics": {},
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            klines,
+            {"text": "4H 震荡", "relation": "neutral"},
+            liq,
+            msb,
+            {},
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140, "volume_ratio": 1.0},
+            observation_state={"inside_zone": False},
+            range_lock={"active": True, "cluster": "box-b", "box_low": 9700.0, "box_high": 10200.0},
+        )
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "LOWER_KEY_ZONE_TEST")
+        self.assertFalse(decision["observation_update"].get("pending_confirm"))
+        self.assertTrue(decision["range_lock_active"])
+
 
     def test_pending_confirmation_silences_middle_and_alerts_confirmation(self):
         from engine.key_zones import decide_key_zone_observation

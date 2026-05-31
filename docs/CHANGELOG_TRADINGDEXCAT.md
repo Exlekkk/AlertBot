@@ -1,5 +1,39 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.3.8-range-lock-noise-control
+
+Status: 1H range/noise-control update.  
+Deployment safety: 15m remains shadow-only and Telegram 15m is not enabled.
+
+### Reason for this version
+
+After v1.3.7, weak-market false long trials were reduced, but live review showed a new problem: in sideways / accumulation boxes the bot kept emitting repeated `📍 BTC 1H 上方/下方关键区观察` and occasional formal试多/试空 alerts. In that environment, upper/lower touches are usually the same box being tested, not fresh direction information.
+
+### Main changes
+
+1. Added range / accumulation lock
+   - detects when price is rotating inside a compact 1H value box
+   - uses recent high/low compression, edge touches, lack of directional expansion, and VP/HVN/POC acceptance context
+   - this is a noise gate only, not a standalone signal
+
+2. Reduced repeated key-zone observations
+   - same range box shares a cooldown across upper and lower observations
+   - passive observations inside the same box are suppressed
+   - synthetic range-edge observations are ignored while range-lock is active
+
+3. Protected formal trial alerts inside ranges
+   - `LOWER_KEY_ZONE_RECLAIM` / `UPPER_KEY_ZONE_REJECTION` are downgraded inside range-lock
+   - only a strong high-impulse sweep-reclaim/reject exception can escape the lock
+
+4. Isolation remains unchanged
+   - 15m continues server-side shadow testing only
+   - no 15m Telegram pilot is enabled
+   - 15m does not decide direction or modify 1H logic
+
+### Review target
+
+The main live-review target is whether pure sideways / accumulation conditions stop producing hourly key-zone noise, while true sweep-reclaim/reject reactions can still surface.
+
 ## v1.3.7-smc-vp-1h-filter
 
 Status: 1H signal-quality update.  

@@ -47,4 +47,19 @@ TREND_ENGINE_CONFIG = {
         "range_edge_requires_context": True,
         "structural_zone_requires_context": True,
     },
+    "range_lock": {
+        # Sideways / accumulation lock.  The bot should not keep generating new
+        # 1H key zones while price is rotating inside the same accepted value
+        # box.  It may still speak when there is a real breakout/acceptance or a
+        # high-impulse sweep-reclaim.
+        "lookback_bars": 14,
+        "max_range_atr": 3.4,
+        "max_range_pct": 0.024,
+        "min_edge_touches": 3,
+        "cooldown_bars": 8,
+        "box_shift_atr_mult": 1.25,
+        "breakout_accept_atr_mult": 0.35,
+        "strong_reversal_atr": 1.35,
+        "strong_reversal_volume_ratio": 1.15,
+    },
 }

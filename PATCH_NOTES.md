@@ -1,3 +1,26 @@
+# Patch Notes — v1.3.8 Range-Lock Noise Control
+
+## Summary
+
+This release keeps v1.3.7 SMC/ICT + Volume Profile filtering and adds a range/accumulation-lock layer so pure sideways boxes do not keep generating repeated 1H key-zone observations or weak trial alerts.
+
+## Key changes
+
+- Added `engine/range_lock.py`.
+- Scanner now builds a 1H range-lock context.
+- Key-zone observation layer suppresses repeated upper/lower observations in the same range box.
+- Formal trial upgrades inside a locked range are downgraded unless there is a strong sweep-reclaim/reject exception.
+- 15m remains shadow-only and does not send Telegram.
+
+## Validation
+
+- `python -m unittest discover -s tests`
+- `python -m compileall -q engine services scripts tests`
+- `python -c "import app"`
+
+Current test suite: 60 tests.
+
+
 # Patch Notes — v1.3.7 SMC/VP 1H Filter
 
 ## Summary
