@@ -23,6 +23,7 @@ LOWER_OBSERVATION_ALERTS = {
     "LOWER_KEY_ZONE_RECLAIM",
     "FAST_PULLBACK_OBSERVE",
     "RANGE_LOWER_PROBE",
+    "EARLY_LONG_TRIAL",
 }
 
 UPPER_OBSERVATION_ALERTS = {
@@ -30,6 +31,7 @@ UPPER_OBSERVATION_ALERTS = {
     "UPPER_KEY_ZONE_REJECTION",
     "FAST_REBOUND_OBSERVE",
     "RANGE_UPPER_PROBE",
+    "EARLY_SHORT_TRIAL",
 }
 
 CONFIRMATION_ALERTS = {
@@ -95,6 +97,37 @@ def _sanitize(text: str) -> str:
     return text
 
 
+MAJOR_SECTION_HEADERS = {
+    "📌 状态：",
+    "🎯 关注区间：",
+    "🧭 大周期：",
+    "⚡ 动能与热度：",
+    "⚠️ 风险位：",
+    "⚠️ 风险点：",
+    "✅ 结论：",
+}
+
+
+def _dedupe_major_sections(text: str) -> str:
+    """Keep one copy of each Telegram section if upstream text is duplicated."""
+
+    output: list[str] = []
+    seen: set[str] = set()
+    skipping_duplicate = False
+    for line in text.splitlines():
+        if line in MAJOR_SECTION_HEADERS:
+            if line in seen:
+                skipping_duplicate = True
+                continue
+            seen.add(line)
+            skipping_duplicate = False
+            output.append(line)
+            continue
+        if not skipping_duplicate:
+            output.append(line)
+    return "\n".join(output).strip()
+
+
 def _zone_text(d: dict) -> str:
     zl, zh = d["zone"]
     return f"{float(zl):.2f} - {float(zh):.2f}"
@@ -108,7 +141,9 @@ def _zone_note(d: dict) -> str:
 
     notes = {
         "LOWER_KEY_ZONE_RECLAIM": "下方承接观察区，回踩不破才有确认价值。",
+        "EARLY_LONG_TRIAL": "下方早期承接观察区，守住风险位才有延续价值。",
         "UPPER_KEY_ZONE_REJECTION": "上方承压观察区，反抽不破才有确认价值。",
+        "EARLY_SHORT_TRIAL": "上方早期承压观察区，站不上风险位才有延续价值。",
         "FAST_PULLBACK_OBSERVE": "急跌后的下方反应区，先看是否收回区间上沿。",
         "FAST_REBOUND_OBSERVE": "急拉后的上方反应区，先看是否跌回区间下沿。",
         "LOWER_KEY_ZONE_TEST": "下方反应观察区，先看是否出现收回。",
@@ -234,7 +269,7 @@ def format_prealert_message(d: dict) -> str:
         "⚠️ 风险点：\n"
         f"{risk}"
     )
-    return _sanitize(text)
+    return _sanitize(_dedupe_major_sections(text))
 
 
 def _single_observation_sections(d: dict, title: str, detail: str, zone_note: str, risk_line: str) -> str:
@@ -251,10 +286,14 @@ def _single_observation_sections(d: dict, title: str, detail: str, zone_note: st
 
 def _format_lower_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
-    if alert_type == "LOWER_KEY_ZONE_RECLAIM":
+    if alert_type in {"LOWER_KEY_ZONE_RECLAIM", "EARLY_LONG_TRIAL"}:
         title = _long_probe_title()
-        detail = "价格测试下方关键区后快速收回。\n当前出现试多观察条件。"
-        conclusion = "具备试多观察条件。\n严格以风险位控制。"
+        if alert_type == "EARLY_LONG_TRIAL":
+            detail = "下方关键区已出现早期承接和修复迹象。\n当前出现试多观察条件，但结构仍在选择方向。"
+            conclusion = "具备早期试多观察条件。\n不追高，严格以风险位控制。"
+        else:
+            detail = "价格测试下方关键区后快速收回。\n当前出现试多观察条件。"
+            conclusion = "具备试多观察条件。\n严格以风险位控制。"
         risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，下方结构可能再次转弱。"
         return (
             f"{title}\n\n"
@@ -289,10 +328,14 @@ def _format_lower_observation(d: dict) -> str:
 
 def _format_upper_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
-    if alert_type == "UPPER_KEY_ZONE_REJECTION":
+    if alert_type in {"UPPER_KEY_ZONE_REJECTION", "EARLY_SHORT_TRIAL"}:
         title = _short_probe_title()
-        detail = "价格触及上方关键区后快速回落。\n当前出现试空观察条件。"
-        conclusion = "具备试空观察条件。\n严格以风险位控制。"
+        if alert_type == "EARLY_SHORT_TRIAL":
+            detail = "上方关键区已出现早期承压和转弱迹象。\n当前出现试空观察条件，但结构仍在选择方向。"
+            conclusion = "具备早期试空观察条件。\n不追空，严格以风险位控制。"
+        else:
+            detail = "价格触及上方关键区后快速回落。\n当前出现试空观察条件。"
+            conclusion = "具备试空观察条件。\n严格以风险位控制。"
         risk_line = f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能重新修复。"
         return (
             f"{title}\n\n"
@@ -420,4 +463,4 @@ def format_trend_message(d: dict) -> str:
             )
         )
 
-    return _sanitize(text)
+    return _sanitize(_dedupe_major_sections(text))

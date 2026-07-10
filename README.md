@@ -8,15 +8,20 @@ The project is currently BTC-only. Stock scanning is out of scope.
 
 ## Current status
 
-Current package version: **v1.3.8-range-lock-noise-control**
+Current package version: **v1.4.0-btc-smc-ict-chart-alignment**
 
 - Main production alert layer: **1H**
 - 15m layer: **shadow backtest only**
 - Telegram 15m prealerts: **disabled**
-- MACD / ABCX legacy framework: **removed from the main decision path**
+- Main decision inputs: **the supplied BTC TradingView Pine framework**
+- MACD / ABCX / EMA Ribbon legacy framework: **not used by the scanner decision path**
 - 15m cadence: **adaptive by duplicate/new-information quality, never hard-capped per day**
-- 1H trial alerts use an internal SMC/ICT + Volume Profile filter before upgrading observations into formal trial alerts
-- Horizontal / accumulation range-lock suppresses repeated key-zone observations inside the same value box
+- 1H formal trials use market phase → structure state → weighted evidence → entry-quality validation
+- ICT Concepts uses the supplied Pine logic and the user's custom `6 / 14 / 5` settings; `+OB` / `-OB` remain separate from MSB-OB
+- RAR, Inertial Stochastic and TAI use the supplied source, including custom TAI `30 / 350`
+- Order-flow language is explicitly a closed-candle volume/CVD proxy; it is never labelled true footprint/order-book flow
+- Horizontal / accumulation range state suppresses duplicate noise but does not blanket-block a valid early edge trial
+- Secondary confirmation revalidates progress, direction, chase distance, risk and current structure instead of trusting the parent alert mechanically
 
 The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy. It remains server-side shadow only in this version.
 
@@ -26,30 +31,41 @@ AlertBot prioritizes liquidity and structure over standalone indicators.
 
 Primary context:
 - liquidity sweep and reclaim/reject
-- MSB / BOS
-- OB / MB / BB zones
-- FVG and key round levels
+- MSS / CHoCH / BOS
+- ICT Order Block, Breaker Block and Mitigation state
+- MSB-OB `9 / 0.33` OB / MB / BB zones
+- ICT FVG and ChartPrime FVG Volume Profile
+- Premium / Discount, PD Array and Killzone context
 - 1H close behavior around important zones
 
-Volume/value filter:
-- approximate 1H Volume Profile proxy from exchange candles
-- POC / HVN / LVN / VAH / VAL context
-- VAL reclaim / VAH rejection
-- LVN / Volume Gap thin-air pressure
+Fibonacci and classical context:
+- Smart Money Fibonacci OTE anchors and 0.5 equilibrium
+- 0.618 / 0.705 / 0.786 / 0.79 retracements
+- 1.272 / 1.618 continuation extensions
+- Dual Log Regression Channels (`300 / 2.0`, `50 / 1.5`)
+- Dow swing structure, volume-price confirmation and market-cycle phase
+
+Volume / order-flow proxy:
+- native Binance closed-candle volume
+- High Volume Pivot Support & Resistance Zones (`40 / 40 / 20 / 1.2`)
+- FVG Volume Profile (`13 / 20 / 0.6` chart settings; available 15m candles are a labelled lower-timeframe proxy)
+- candle-direction CVD proxy, stop-run acceptance, fake breakout and absorption proxy
 
 
-Range / accumulation lock:
+Range / accumulation state:
 - detects when price is rotating inside the same accepted value box
+- treats simultaneous ICT `+OB` / `-OB` as unresolved box context until one side is accepted
 - suppresses repeated lower/upper key-zone observations inside that box
-- downgrades formal trial alerts inside a pure range unless there is a strong sweep-reclaim/reject
+- allows an early edge trial when weighted evidence is asymmetric; no breakout or fixed indicator checklist is required
+- blocks rapid opposite formal trials in the same practical box unless fresh structure information appears
 - keeps 15m shadow-only; 15m still does not decide 1H direction
 
 Auxiliary filters:
 - RAR
-- Inertial Stochastic
-- Trading Activity Index using P20/P40/P60/P80 bands
-- MA Ribbon
-- MS Trend Matrix
+- Inertial Stochastic (`10 / 40 / 3 / 3`)
+- Trading Activity Index (`30 / 350`) using P20/P40/P60/P80 bands
+
+These filters add timing/confidence evidence. They are not standalone triggers.
 
 Invalid standalone triggers:
 - FVG alone
@@ -60,7 +76,7 @@ Invalid standalone triggers:
 ## Timeframes
 
 ### 4H
-Higher-timeframe background only. It provides regime context such as range, bullish, or bearish pressure.
+Higher-timeframe bias from SMC/ICT structure, liquidity, Fibonacci swing state, Dow structure and log-regression channels. EMA crosses are not used for the official 4H bias.
 
 ### 1H
 The official alert body and the main structure engine. This is the primary timeframe for Telegram alerts.
@@ -111,16 +127,34 @@ Do not use standalone invalidation Telegram alerts such as bull/bear invalidated
   Runs the 15m shadow backtest and writes CSV diagnostics.
 
 - `engine/aux_filters.py`  
-  RAR, Inertial, TAI, price displacement, and volume filters.
+  RAR, exact supplied Inertial logic, custom TAI, price displacement, and volume filters.
+
+- `engine/chart_indicators.py`
+  Supplied Pine translations for Fibonacci OTE, dual log channels, high-volume pivots, FVG Volume Profile, volume/order-flow proxy, Dow/cycle context and Killzones.
+
+- `engine/framework.py`
+  BTC 4H SMC/ICT + classical-theory bias aggregation.
+
+- `engine/ict_ob.py`
+  Dedicated ICT MSS/BOS, liquidity, `+OB` / `-OB`, breaker, mitigation, FVG, PD Array and Premium/Discount context.
+
+- `engine/trial_decision.py`
+  Market phase, weighted direction evidence, anti-chase/risk checks, and same-box flip control.
 
 - `engine/volume_profile.py`  
-  Internal 1H Volume Profile proxy used only as a filter for formal 1H trial alerts.
+  Compatibility adapter backed by FVG Volume Profile and high-volume pivot context. The former generic fixed-range VP is no longer in the live decision path.
 
 - `engine/msb_ob.py`  
   MSB / OB / MB structure context.
 
 - `engine/liquidity.py`  
   Liquidity sweep and reclaim/reject context.
+
+- `scripts/replay_1h_decisions.py`
+  Deterministic 1H replay from Binance Vision CSV/ZIP kline archives.
+
+- `docs/V1_4_0_REPLAY_REVIEW.md`
+  v1.4.0 BTC framework review for the 2026-06-09 through 2026-06-12 incident window.
 
 - `ALERTBOT_VERSION_CONTEXT.md`  
   Short handoff context for future AI conversations.
@@ -136,6 +170,19 @@ Do not use standalone invalidation Telegram alerts such as bull/bear invalidated
 ```bash
 python -m unittest discover -s tests
 python -m compileall -q engine services scripts tests
+```
+
+Current v1.4.0 validation: **84 tests pass**.
+
+Run the deterministic 1H incident replay after placing Binance Vision 1H/4H archives in a local data directory:
+
+```bash
+python scripts/replay_1h_decisions.py \
+  --data-dir /tmp/alertbot-market \
+  --start '2026-06-09T00:00:00' \
+  --end '2026-06-12T23:59:59' \
+  --timezone Asia/Singapore \
+  --output reports/v1.4.0_btc_framework_replay_2026-06-09_12.csv
 ```
 
 Run 15m shadow backtest:

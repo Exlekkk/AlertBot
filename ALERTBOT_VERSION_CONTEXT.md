@@ -2,6 +2,86 @@
 
 ## Current version
 
+v1.4.0-btc-smc-ict-chart-alignment
+
+
+## v1.4.0 scope
+
+- BTCUSDT only. US-stock work is explicitly out of scope.
+- Trading hierarchy is fixed at 4H direction -> 1H structure/official Telegram -> 15m entry-location shadow.
+- The supplied Pine files and the user's ICT screenshots are the implementation source for this release.
+- 15m remains shadow-only: no Telegram, no order path and no influence on the 1H decision.
+
+## v1.4.0 changes
+
+- Replaced the official EMA/MACD/ABCX/generic fixed-range VP decision path with the requested BTC framework:
+  - SMC/ICT liquidity sweep, MSS/CHoCH, BOS, FVG, OB, Breaker, mitigation, Premium/Discount and PD Array;
+  - 4H bias and 1H structure;
+  - Smart Money Fibonacci OTE, 0.5 equilibrium, 0.618/0.705/0.786/0.79 and 1.272/1.618 extensions;
+  - Dual Log Regression Channels, Dow structure, volume-price confirmation and market-cycle context.
+- Transcribed the user's chart settings, including ICT `6 / 14 / 5`, MSB-OB `9 / 0.33`, high-volume pivots `40 / 40 / 20 / 1.2`, FVG VP `13 / 20 / 0.6`, RAR `15 / 1`, Inertial `10 / 40 / 3 / 3` and TAI `30 / 350`.
+- Added deterministic closed-candle translations for ICT Concepts, MSB-OB, Smart Money Fibonacci OTE, Dual Log Regression Channels, High Volume Pivot zones and FVG Volume Profile.
+- Restored RAR, Inertial Stochastic and TAI as auxiliary timing/confidence evidence. They cannot trigger a formal alert alone.
+- Order-flow wording is explicitly `candle_direction_volume_proxy`; no candle-volume calculation is represented as footprint, order-book or true trade-delta flow.
+- Formal trials now require fresh directional information, valid box location, acceptable risk/chase distance and sufficient directional advantage. Same-box duplicate trials and rapid opposite flips are blocked without new information.
+- Secondary confirmation requires a real post-trial push and full context revalidation. It can still pass without demanding a second MSS on the same candle.
+- The scanner no longer falls back to EMA direction when 4H history is short; it stays neutral until SMC/ICT history is sufficient.
+
+## v1.4.0 validation
+
+- 84 unit tests pass; compile and diff-whitespace checks pass.
+- Binance Vision decision replay covers all 96 hourly closes from 2026-06-09 00:59 through 2026-06-12 23:59 (Asia/Singapore).
+- Replay output: 12 public alerts = 7 formal trials + 2 structure shifts + 3 passive observations; no mechanical secondary confirmation was emitted.
+- The reported late/wrong examples at 6/9 23:00, 6/10 07:00/11:00, 6/11 07:00/10:00 and 6/12 10:00/11:00/15:00 are absent or explicitly suppressed.
+- This is a deterministic decision replay, not a profitability backtest. It has no native footprint/order-book feed, and the 15m shadow layer still needs a separate real-15m archive review before any future Telegram pilot.
+
+See `docs/V1_4_0_REPLAY_REVIEW.md` and `reports/v1.4.0_btc_framework_replay_2026-06-09_12.csv`.
+
+
+## v1.3.9
+
+v1.3.9-layered-trial-decision
+
+
+## v1.3.9 reason
+
+Live review of v1.3.8 showed that the 1H trial layer was still a key-zone trigger with extra blockers. It could flip long/short inside the same box, report after the useful entry window, issue the wrong side near active support, and mechanically confirm a stale parent trial. The v1.3.8 range lock also became a hard downgrade that incorrectly required an exceptional sweep before any range-edge trial could pass.
+
+## v1.3.9 changes
+
+- Added `engine/ict_ob.py` so ICT Concepts `+OB` / `-OB` are separate from MSB-OB.
+  - exact external fields are supported;
+  - Binance-only fallback is labelled `price_proxy` and is never called an exact LuxAlgo match;
+  - active `+OB` and `-OB` coexistence creates unresolved box context.
+- Added `engine/trial_decision.py` with four layers:
+  - market phase;
+  - structure/location state;
+  - weighted evidence (not a fixed confluence checklist);
+  - chase, risk, box location, and reward/risk validation.
+- Range state no longer blanket-downgrades every formal trial. A weighted early trial may pass at an edge before breakout.
+- Opposite formal trials inside the same practical box require fresh structure information, not a touch or score flip alone.
+- Secondary confirmation now requires a valid push beyond the parent alert, re-scores current context, and rejects stale/chased/wrong-side confirmation.
+- Observation pending state is persisted only after Telegram confirms delivery. A failed or deduped parent alert cannot create a phantom second confirmation.
+- Added exact Inertial adapter fields and a labelled Stochastic fallback because the original Pine source is not stored in this repository.
+- Telegram formatting removes repeated major sections before send.
+- Added deterministic 1H replay tooling and a 6/9-6/12 review artifact.
+- 15m remains server-side shadow only and never changes 1H logic or Telegram output.
+
+## v1.3.9 validation
+
+- 70 unit tests pass.
+- compileall and app import pass.
+- Binance Vision replay for 2026-06-09 through 2026-06-12:
+  - v1.3.8 formal trial/secondary alerts: 8;
+  - v1.3.9 formal trial/secondary alerts: 4;
+  - targeted late/wrong alerts from the issue summary are blocked;
+  - useful long candidates are not silenced and appear earlier in the replay.
+
+See `docs/V1_3_9_REPLAY_REVIEW.md` for limits and incident-level results.
+
+
+## v1.3.8
+
 v1.3.8-range-lock-noise-control
 
 

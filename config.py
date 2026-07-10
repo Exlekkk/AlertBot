@@ -21,7 +21,11 @@ BINANCE_SYMBOL = os.getenv("BINANCE_SYMBOL", "BTCUSDT")
 MARKET_SOURCE = os.getenv("MARKET_SOURCE", "binance_futures").lower()
 BINANCE_SPOT_KLINES_URL = os.getenv("BINANCE_SPOT_KLINES_URL", "https://api.binance.com/api/v3/klines")
 BINANCE_FUTURES_KLINES_URL = os.getenv("BINANCE_FUTURES_KLINES_URL", "https://fapi.binance.com/fapi/v1/klines")
-KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "300"))
+# TAI on the supplied chart uses a 30-bar formation window and a 350-bar
+# percentile history.  Five hundred closed parent candles leaves sufficient
+# warm-up while remaining below Binance's per-request limit.
+KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "500"))
+KLINE_LIMIT_15M = int(os.getenv("KLINE_LIMIT_15M", "600"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 
 SMCT_SIGNAL_STATE_FILE = os.getenv("SMCT_SIGNAL_STATE_FILE", "/opt/smct-alert/state/signal_state.json")

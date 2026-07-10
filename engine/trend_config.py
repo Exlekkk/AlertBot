@@ -1,6 +1,80 @@
 from __future__ import annotations
 
 TREND_ENGINE_CONFIG = {
+    "chart_framework": {
+        # Values transcribed from the user's BTC 15m / 1H TradingView layout
+        # and the three ICT settings screenshots supplied with the Pine bundle.
+        "ict": {
+            "mode": "Historical",
+            "structure_length": 6,
+            "show_mss": True,
+            "show_bos": False,
+            "show_displacement": False,
+            "show_volume_imbalance": False,
+            "ob_swing_lookback": 14,
+            "visible_bullish_ob": 1,
+            "visible_bearish_ob": 1,
+            "historical_polarity_changes": False,
+            "use_candle_body": False,
+            "liquidity_margin": 5.0,
+            "visible_liquidity_boxes": 2,
+            "show_fvg": True,
+            "balance_price_range": False,
+            "fvg_mode": "FVG",
+            "visible_fvg": 2,
+            "show_nwog": False,
+            "show_ndog": False,
+            "fibonacci_source": "NONE",
+            "extend_fibonacci": False,
+            "show_killzones": False,
+        },
+        "msb_ob": {
+            "zigzag_length": 9,
+            "fib_factor": 0.33,
+        },
+        "dual_log_regression": {
+            "macro_length": 300,
+            "macro_width": 2.0,
+            "macro_bins": 50,
+            "macro_extension_bars": 50,
+            "short_length": 50,
+            "short_width": 1.5,
+            "short_bins": 50,
+            "short_extension_bars": 20,
+        },
+        "high_volume_pivots": {
+            "resistance_length": 40,
+            "support_length": 40,
+            "volume_ma_length": 20,
+            "volume_multiplier": 1.2,
+            "atr_length": 200,
+        },
+        "fvg_volume_profile": {
+            # The custom lower-timeframe input displayed on the chart is 13.
+            # Binance has no native 13-minute candle.  The bot profiles with
+            # available closed 15m candles and labels that part as a proxy.
+            "lower_timeframe_input": "13",
+            "bins": 20,
+            "gap_filter": 0.6,
+            "max_active": 10,
+        },
+        "fibonacci_ote": {
+            "pivot_length": 10,
+            "ote_low": 0.618,
+            "ote_high": 0.786,
+            "levels": (0.0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 0.79, 1.0),
+            "extensions": (1.272, 1.618),
+        },
+        "rar": {"length": 15, "power": 1.0},
+        "inertial": {"min_length": 10, "max_length": 40, "smooth_k": 3, "smooth_d": 3},
+        "tai": {"formation_length": 30, "history_length": 350},
+        "killzones": {
+            "new_york": ("America/New_York", "07:00", "09:00"),
+            "london_open": ("Europe/London", "07:00", "10:00"),
+            "london_close": ("Europe/London", "15:00", "17:00"),
+            "asian": ("Asia/Tokyo", "10:00", "14:00"),
+        },
+    },
     "liquidity": {
         "sweep_lookback": 24,
         "eq_tolerance": 0.001,
@@ -36,6 +110,14 @@ TREND_ENGINE_CONFIG = {
         "merge_width_atr_mult": 0.25,
         "continuation_mid_ratio": 0.5,
     },
+    "ict_ob": {
+        # Exact +OB/-OB values may be supplied by an external TradingView
+        # adapter.  Otherwise the supplied LuxAlgo Pine logic is translated
+        # from closed candles; these bounds only limit decision-active zones.
+        "max_active_distance_atr": 5.0,
+        "max_conflict_width_atr": 8.0,
+        "max_conflict_width_pct": 0.04,
+    },
     "key_zone": {
         "touch_atr_mult": 0.18,
         "touch_pct": 0.0012,
@@ -61,5 +143,28 @@ TREND_ENGINE_CONFIG = {
         "breakout_accept_atr_mult": 0.35,
         "strong_reversal_atr": 1.35,
         "strong_reversal_volume_ratio": 1.15,
+    },
+    "trial_decision": {
+        # Formal 1H trial alerts use weighted evidence.  No individual
+        # auxiliary indicator is required; hard blocks are reserved for poor
+        # location, invalid risk, stale/chased entries, or a clear opposite
+        # structure advantage.
+        "formal_min_score": 7.0,
+        "range_mid_min_score": 10.0,
+        "early_trial_min_score": 8.0,
+        "direction_advantage_min": 1.0,
+        "opposite_conflict_margin": 2.5,
+        "max_zone_chase_atr": 1.0,
+        "max_recent_extension_atr": 2.3,
+        "max_risk_atr": 2.4,
+        "max_risk_pct": 0.018,
+        "min_range_reward_risk": 0.80,
+        "range_lower_cut": 0.38,
+        "range_upper_cut": 0.62,
+        "opposite_flip_cooldown_bars": 6,
+        "same_side_formal_cooldown_bars": 12,
+        "secondary_min_progress_atr": 0.22,
+        "secondary_max_chase_atr": 1.05,
+        "pending_confirm_expire_bars": 4,
     },
 }

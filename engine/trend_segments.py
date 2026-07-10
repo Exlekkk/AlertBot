@@ -54,33 +54,46 @@ def decide_trend_segment(
     aux: dict[str, Any],
     trend_state: dict[str, Any] | None = None,
     vp: dict[str, Any] | None = None,
+    ict: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     trend_state = trend_state or {}
+    ict = ict or {}
     cfg = TREND_ENGINE_CONFIG["score"]
 
-    direction = _direction_from_msb(str(msb.get("direction", "neutral")))
+    ict_direction = str(ict.get("structure_direction", "neutral"))
+    ict_event = str(ict.get("structure_event", "none"))
+    ict_event_age = ict.get("structure_event_age")
+    fresh_ict_structure = ict_event_age is not None and float(ict_event_age) <= 4 and ict_event != "none"
+    direction = _direction_from_msb(ict_direction if ict_direction in {"bull", "bear"} else str(msb.get("direction", "neutral")))
     leg_type = str(msb.get("leg_type", "SHORT"))
     has_recent_sweep = bool(liq.get("recent_sweep_valid", False)) and liq.get("reclaim_or_reject") != "none"
     has_sweep = has_recent_sweep and _matching_sweep(direction, liq)
+    ict_liquidity_event = str((ict.get("liquidity") or {}).get("event", "none")) if isinstance(ict.get("liquidity"), dict) else "none"
+    if direction == "long" and ict_liquidity_event == "sellside_sweep_reclaim":
+        has_sweep = True
+    elif direction == "short" and ict_liquidity_event == "buyside_sweep_reject":
+        has_sweep = True
     same_trend = trend_state.get("direction") == direction and bool(trend_state.get("has_snapshot", False))
 
     alert_type = "NO_TRADE_RANGE"
     tradable_leg = leg_type in {"MID", "LONG", "EXTENDED"}
     if direction != "neutral":
-        if has_sweep and tradable_leg:
+        structure_shift_ready = fresh_ict_structure or str(msb.get("structure_event", "none")) in {"bullish_msb", "bearish_msb"}
+        if has_sweep and tradable_leg and (structure_shift_ready or not ict):
             alert_type = "BULLISH_STRUCTURE_SHIFT" if direction == "long" else "BEARISH_STRUCTURE_SHIFT"
-        elif same_trend and tradable_leg:
+        elif same_trend and tradable_leg and (not fresh_ict_structure or "bos" in ict_event or str(msb.get("direction")) in {"bull", "bear"}):
             alert_type = "BULLISH_CONTINUATION" if direction == "long" else "BEARISH_CONTINUATION"
 
     liq_score = 12 if has_sweep else 2
     msb_score = int(msb.get("quality", 0))
     expected_matrix_direction = "bull" if direction == "long" else "bear" if direction == "short" else "neutral"
     matrix_score = 6 if direction != "neutral" and matrix.get("matrix_direction") == expected_matrix_direction else 0
+    ict_score = 8 if fresh_ict_structure and ict_direction == expected_matrix_direction else 3 if ict_direction == expected_matrix_direction else 0
     momentum_desc = str(aux.get("momentum_desc", "动能 一般"))
     temperature_desc = str(aux.get("temperature_desc", "热度 中性"))
     aux_score = 4 if (("偏强" in momentum_desc and direction == "long") or ("偏弱" in momentum_desc and direction == "short")) else 0
 
-    base_score = liq_score + int(msb_score * 0.75) + matrix_score + aux_score
+    base_score = liq_score + int(msb_score * 0.75) + matrix_score + ict_score + aux_score
     htf_relation = str(htf_ctx.get("relation", "neutral"))
     score, htf_delta, htf_filtered = apply_higher_timeframe_bias(base_score, htf_relation)
 
@@ -91,6 +104,8 @@ def decide_trend_segment(
         suppress_reason = "short_structure_leg"
     elif not has_sweep and not same_trend:
         suppress_reason = "no_sweep_no_trend_state"
+    elif has_sweep and ict and not fresh_ict_structure and alert_type == "NO_TRADE_RANGE":
+        suppress_reason = "sweep_without_fresh_mss_choch"
     elif htf_filtered and alert_type.endswith("STRUCTURE_SHIFT"):
         suppress_reason = "medium_quality_1h_against_strong_4h"
     elif score < cfg["min_alert_score"]:
@@ -116,8 +131,16 @@ def decide_trend_segment(
         zone_source = "mid_continuation_zone"
         zone = tuple(msb["mid_observe_zone"])
     elif has_sweep:
-        zone_source = "structure_shift_zone"
-        zone = tuple(msb["structure_zone"])
+        matching_ict_zone = ict.get("bullish_nearest") if direction == "long" else ict.get("bearish_nearest")
+        matching_ict_distance = ict.get("bullish_distance_atr") if direction == "long" else ict.get("bearish_distance_atr")
+        if matching_ict_distance is not None and float(matching_ict_distance) > 3.0:
+            matching_ict_zone = None
+        if matching_ict_zone:
+            zone_source = "ict_plus_ob" if direction == "long" else "ict_minus_ob"
+            zone = tuple(matching_ict_zone)
+        else:
+            zone_source = "structure_shift_zone"
+            zone = tuple(msb["structure_zone"])
     else:
         zone_source = "context_zone"
         zone = tuple(msb["order_block_zone"])
@@ -140,7 +163,8 @@ def decide_trend_segment(
             "liquidity": liq_score,
             "msb_ob": int(msb_score * 0.75),
             "htf_context": htf_delta,
-            "trend_matrix": matrix_score,
+            "classical_trend": matrix_score,
+            "ict_structure": ict_score,
             "aux_filters": aux_score,
             "penalty_reason": suppress_reason,
         },
@@ -155,6 +179,9 @@ def decide_trend_segment(
         "msb_atr_ratio": msb.get("metrics", {}).get("atr_move", 0.0),
         "msb_range_ratio": msb.get("metrics", {}).get("range_ratio", 0.0),
         "msb_body_quality": msb.get("metrics", {}).get("body_quality", 0.0),
+        "ict_structure_direction": ict_direction,
+        "ict_structure_event": ict_event,
+        "ict_structure_event_age": ict_event_age,
         "zone_source": zone_source,
         "zone_low": zone[0],
         "zone_high": zone[1],

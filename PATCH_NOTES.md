@@ -1,3 +1,64 @@
+# Patch Notes — v1.4.0 BTC SMC/ICT Chart Alignment
+
+## Summary
+
+This release aligns AlertBot's BTC decision path with the supplied 15m/1H TradingView Pine bundle and the user's 4H -> 1H -> 15m workflow. The production scanner stays 1H-only for Telegram; 15m remains isolated shadow logic.
+
+## Key changes
+
+- Added supplied-source translations for ICT Concepts, Smart Money Fibonacci OTE, Dual Log Regression Channels, High Volume Pivot zones and FVG Volume Profile.
+- Rebuilt ICT `+OB` / `-OB`, MSS/BOS, liquidity, FVG, breaker/mitigation, Premium/Discount and PD Array context using the user's custom settings.
+- Rebuilt MSB-OB around the supplied `9 / 0.33` state machine.
+- Restored RAR `15 / 1`, Inertial `10 / 40 / 3 / 3` and TAI `30 / 350` as auxiliary filters.
+- Replaced the former generic VP live path with ChartPrime FVG VP plus BigBeluga high-volume pivot context.
+- Added Fibonacci OTE/equilibrium/retracement/extensions and Dow/log-regression market context to 4H and 1H decisions.
+- Removed EMA fallback from official 4H bias; insufficient history now stays neutral.
+- Labelled candle-volume/CVD calculations as proxies and never as true order flow.
+- Required a directional catalyst for formal trials, while preserving valid early edge trials from weighted evidence.
+- Added same-box same-side cooldown and retained fresh-information protection for opposite flips.
+- Revalidated secondary confirmations with real progress, current score, risk and chase checks.
+- Kept 15m shadow-only and excluded it from the scanner's fetch/decision/Telegram path.
+
+## Validation
+
+- `python -m unittest discover -s tests -q` — 84 tests OK
+- `python -m compileall -q engine services scripts tests`
+- 2026-06-09 through 2026-06-12 Binance Vision replay: 96 rows, 12 public alerts, 7 formal trials, 2 structure shifts and 3 passive observations.
+- Targeted late/wrong alerts in the v1.3.8 issue summary are absent or carry an explicit suppression reason.
+
+See `docs/V1_4_0_REPLAY_REVIEW.md` and `reports/v1.4.0_btc_framework_replay_2026-06-09_12.csv`.
+
+
+# Patch Notes — v1.3.9 Layered Trial Decision
+
+## Summary
+
+This release replaces the v1.3.8 1H key-zone trigger/gate path with market phase, separate ICT order-block state, weighted direction evidence, and entry-quality revalidation. It fixes the 6/9-6/12 late/wrong trial examples without turning range breakout or full indicator confluence into mandatory switches.
+
+## Key changes
+
+- Added separate ICT `+OB` / `-OB` context (`engine/ict_ob.py`).
+- Added layered 1H formal-trial evaluation (`engine/trial_decision.py`).
+- Range state can allow an early edge trial before breakout when evidence is asymmetric.
+- Same-box opposite trial flips require fresh structure information.
+- Added anti-chase, risk-distance, wrong-edge, and range reward/risk checks.
+- Secondary confirmation requires a real post-trial push and complete context revalidation.
+- Telegram failure/dedupe no longer creates a pending secondary-confirmation state.
+- Added exact Inertial adapter fields plus an explicitly-labelled Stochastic fallback.
+- Telegram major sections are deduplicated before send.
+- Added Binance Vision 1H replay tooling and incident-window CSV diagnostics.
+- 15m remains shadow-only and isolated from Telegram and 1H decisions.
+
+## Validation
+
+- `python -m unittest discover -s tests` — 70 tests OK
+- `python -m compileall -q engine services scripts tests`
+- `python -c "import app"`
+- 2026-06-09 through 2026-06-12 replay: formal trial/secondary alerts reduced from 8 (v1.3.8) to 4, with the listed late/wrong examples blocked.
+
+See `docs/V1_3_9_REPLAY_REVIEW.md`.
+
+
 # Patch Notes — v1.3.8 Range-Lock Noise Control
 
 ## Summary
@@ -552,4 +613,3 @@ Current test suite: 55 tests.
 - Added expanded backtest diagnostic CSV fields.
 - Added ALERTBOT_VERSION_CONTEXT.md and docs handoff files.
 - Added logger fallback when /opt/smct-alert/logs is not writable.
-

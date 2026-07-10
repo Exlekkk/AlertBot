@@ -183,9 +183,11 @@ def main() -> int:
     os.makedirs(os.path.dirname(args.summary) or ".", exist_ok=True)
 
     client = BinanceMarketDataClient()
-    limit_15m = min(1000, max(220, args.days * 96 + 120))
-    limit_1h = min(1000, max(220, args.days * 24 + 180))
-    limit_4h = min(1000, max(120, args.days * 6 + 100))
+    limit_15m = min(1000, max(600, args.days * 96 + 200))
+    # 1H needs 30 formation bars plus 350 completed TAI history values.
+    limit_1h = min(1000, max(500, args.days * 24 + 400))
+    # Dual Log Regression macro context requires 300 completed 4H candles.
+    limit_4h = min(1000, max(330, args.days * 6 + 310))
 
     raw_15m = client.get_klines(args.symbol, "15m", limit=limit_15m)
     raw_1h = client.get_klines(args.symbol, "1h", limit=limit_1h)

@@ -5,7 +5,8 @@ from typing import Any
 
 from engine.trend_config import TREND_ENGINE_CONFIG
 from engine.volume_profile import attach_vp_fields, block_formal_long, block_formal_short
-from engine.range_lock import attach_range_lock_fields, is_strong_sweep_reversal
+from engine.range_lock import attach_range_lock_fields
+from engine.trial_decision import assess_trial_candidate, build_trial_context
 
 
 LOWER_ALERT_TYPES = {
@@ -13,12 +14,14 @@ LOWER_ALERT_TYPES = {
     "LOWER_KEY_ZONE_RECLAIM",
     "FAST_PULLBACK_OBSERVE",
     "RANGE_LOWER_PROBE",
+    "EARLY_LONG_TRIAL",
 }
 UPPER_ALERT_TYPES = {
     "UPPER_KEY_ZONE_TEST",
     "UPPER_KEY_ZONE_REJECTION",
     "FAST_REBOUND_OBSERVE",
     "RANGE_UPPER_PROBE",
+    "EARLY_SHORT_TRIAL",
 }
 
 
@@ -89,6 +92,9 @@ def _pending_zone(state: dict[str, Any]) -> dict[str, Any] | None:
             "source_alert_type": state.get("pending_source_alert_type", ""),
             "source_phase": state.get("pending_phase", ""),
             "zone_cluster": state.get("pending_zone_cluster", ""),
+            "source_price": float(state.get("pending_source_price", (zone[0] + zone[1]) / 2.0)),
+            "source_score": float(state.get("pending_source_score", 0.0) or 0.0),
+            "range_cluster": state.get("pending_range_cluster", ""),
         }
     except (KeyError, TypeError, ValueError):
         return None
@@ -105,6 +111,10 @@ def _clear_pending(state: dict[str, Any]) -> dict[str, Any]:
         "pending_created_open_time",
         "pending_source_alert_type",
         "pending_phase",
+        "pending_zone_cluster",
+        "pending_source_price",
+        "pending_source_score",
+        "pending_range_cluster",
     ):
         update.pop(key, None)
     update["pending_confirm"] = False
@@ -228,9 +238,12 @@ def _evaluate_pending_confirmation(
     observation_state: dict[str, Any],
     current_bar: int,
     atr: float,
+    klines_1h: list[dict[str, Any]],
+    trial_context: dict[str, Any],
     msb: dict[str, Any] | None = None,
     matrix: dict[str, Any] | None = None,
     vp: dict[str, Any] | None = None,
+    range_lock: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Track the 1 -> 3 confirmation switch.
 
@@ -243,10 +256,19 @@ def _evaluate_pending_confirmation(
         return None, observation_state
 
     cfg = TREND_ENGINE_CONFIG["key_zone"]
-    expire_bars = int(cfg.get("pending_confirm_expire_bars", 8))
+    trial_cfg = TREND_ENGINE_CONFIG["trial_decision"]
+    range_lock = range_lock or {}
+    expire_bars = int(trial_cfg.get("pending_confirm_expire_bars", 4))
     bars_since = _bars_between(current_bar, pending.get("created_open_time"))
     if bars_since is not None and bars_since > expire_bars:
         return None, _clear_pending(observation_state)
+
+    pending_range_cluster = str(pending.get("range_cluster", ""))
+    current_range_cluster = str(range_lock.get("cluster", ""))
+    if pending_range_cluster and current_range_cluster and pending_range_cluster != current_range_cluster:
+        update = _clear_pending(observation_state)
+        update["last_pending_reject_reason"] = "pending_range_context_changed"
+        return None, update
 
     close = float(latest["close"])
     open_ = float(latest["open"])
@@ -258,129 +280,8 @@ def _evaluate_pending_confirmation(
     pad = max(atr * cfg["touch_atr_mult"], abs(close) * cfg["touch_pct"])
     after_first_bar = bars_since is None or bars_since >= 1
 
-    if pending["side"] == "lower":
-        invalidated = close < invalid - pad or low < invalid - pad * 1.5
-        confirmed = after_first_bar and not invalidated and (
-            close >= zone_high + pad * 0.2
-            or (low <= zone_high + pad and low >= zone_low - pad and close >= zone_mid and close >= open_)
-        )
-        if confirmed:
-            vp_reasons = block_formal_long(htf_ctx, msb or {}, matrix or {}, aux, vp)
-            if vp_reasons:
-                return (
-                    _make_pending_wait_decision(
-                        symbol,
-                        timeframe,
-                        latest,
-                        htf_ctx,
-                        aux,
-                        observation_state,
-                        pending,
-                        current_bar,
-                        "vp_value_filter_secondary_lower",
-                    ),
-                    observation_state,
-                )
-            return (
-                attach_vp_fields(
-                    _make_pending_alert_decision(
-                        symbol,
-                        timeframe,
-                        latest,
-                        htf_ctx,
-                        aux,
-                        observation_state,
-                        pending,
-                        current_bar,
-                        "SECONDARY_CONFIRM_LOWER",
-                        "long",
-                        "lower_confirmed",
-                    ),
-                    vp,
-                    vp_reasons,
-                ),
-                observation_state,
-            )
-        if invalidated:
-            return (
-                _make_pending_alert_decision(
-                    symbol,
-                    timeframe,
-                    latest,
-                    htf_ctx,
-                    aux,
-                    observation_state,
-                    pending,
-                    current_bar,
-                    "LOWER_CONFIRM_INVALIDATED",
-                    "short",
-                    "lower_invalidated",
-                ),
-                observation_state,
-            )
-    else:
-        invalidated = close > invalid + pad or high > invalid + pad * 1.5
-        confirmed = after_first_bar and not invalidated and (
-            close <= zone_low - pad * 0.2
-            or (high >= zone_low - pad and high <= zone_high + pad and close <= zone_mid and close <= open_)
-        )
-        if confirmed:
-            vp_reasons = block_formal_short(htf_ctx, msb or {}, matrix or {}, aux, vp)
-            if vp_reasons:
-                return (
-                    _make_pending_wait_decision(
-                        symbol,
-                        timeframe,
-                        latest,
-                        htf_ctx,
-                        aux,
-                        observation_state,
-                        pending,
-                        current_bar,
-                        "vp_value_filter_secondary_upper",
-                    ),
-                    observation_state,
-                )
-            return (
-                attach_vp_fields(
-                    _make_pending_alert_decision(
-                        symbol,
-                        timeframe,
-                        latest,
-                        htf_ctx,
-                        aux,
-                        observation_state,
-                        pending,
-                        current_bar,
-                        "SECONDARY_CONFIRM_UPPER",
-                        "short",
-                        "upper_confirmed",
-                    ),
-                    vp,
-                    vp_reasons,
-                ),
-                observation_state,
-            )
-        if invalidated:
-            return (
-                _make_pending_alert_decision(
-                    symbol,
-                    timeframe,
-                    latest,
-                    htf_ctx,
-                    aux,
-                    observation_state,
-                    pending,
-                    current_bar,
-                    "UPPER_CONFIRM_INVALIDATED",
-                    "long",
-                    "upper_invalidated",
-                ),
-                observation_state,
-            )
-
-    return (
-        _make_pending_wait_decision(
+    def wait(reason: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        decision = _make_pending_wait_decision(
             symbol,
             timeframe,
             latest,
@@ -389,9 +290,100 @@ def _evaluate_pending_confirmation(
             observation_state,
             pending,
             current_bar,
-        ),
-        observation_state,
-    )
+            reason,
+        )
+        decision["market_phase"] = trial_context.get("market_phase", "undetermined")
+        decision["ict_ob_coexist"] = bool(trial_context.get("ict_ob_coexist", False))
+        return attach_range_lock_fields(attach_vp_fields(decision, vp), range_lock), observation_state
+
+    def reject(reason: str) -> tuple[None, dict[str, Any]]:
+        update = _clear_pending(observation_state)
+        update["last_pending_reject_reason"] = reason
+        update["last_pending_reject_open_time"] = current_bar
+        update["last_price"] = close
+        return None, update
+
+    def confirm(direction: str, alert_type: str, phase: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        prev2_close = float(klines_1h[-3]["close"]) if len(klines_1h) >= 3 else float(klines_1h[-2]["close"])
+        assessment = assess_trial_candidate(
+            direction,
+            alert_type,
+            pending["zone"],
+            pending["invalid_level"],
+            latest,
+            prev2_close,
+            "pending_confirmation",
+            "reclaimed_above" if direction == "long" else "rejected_below",
+            trial_context,
+            observation_state,
+            current_bar,
+        )
+        source_price = float(pending.get("source_price", zone_mid))
+        progress_atr = (close - source_price) / atr if direction == "long" else (source_price - close) / atr
+        left_zone = close >= zone_high + pad * 0.1 if direction == "long" else close <= zone_low - pad * 0.1
+
+        if progress_atr < float(trial_cfg.get("secondary_min_progress_atr", 0.22)) or not left_zone:
+            return wait("secondary_no_valid_push")
+
+        hard_blocks = list(assessment.get("hard_blocks", []))
+        if assessment.get("zone_chase_atr", 0.0) > float(trial_cfg.get("secondary_max_chase_atr", 1.05)):
+            hard_blocks.append("secondary_already_chased")
+        if hard_blocks:
+            return reject("secondary_revalidation_" + hard_blocks[0])
+        if not assessment.get("allow_formal"):
+            return wait("secondary_context_not_ready")
+
+        decision = _make_pending_alert_decision(
+            symbol,
+            timeframe,
+            latest,
+            htf_ctx,
+            aux,
+            observation_state,
+            pending,
+            current_bar,
+            alert_type,
+            direction,
+            phase,
+        )
+        decision.update(
+            {
+                "market_phase": trial_context.get("market_phase", "undetermined"),
+                "trial_score": assessment.get("score"),
+                "trial_opposite_score": assessment.get("opposite_score"),
+                "trial_direction_advantage": assessment.get("direction_advantage"),
+                "trial_quality_blocks": assessment.get("hard_blocks", []),
+                "trial_zone_chase_atr": assessment.get("zone_chase_atr"),
+                "trial_risk_atr": assessment.get("risk_atr"),
+                "trial_recent_extension_atr": assessment.get("recent_extension_atr"),
+                "secondary_progress_atr": round(progress_atr, 3),
+                "ict_ob_coexist": bool(trial_context.get("ict_ob_coexist", False)),
+            }
+        )
+        return attach_range_lock_fields(attach_vp_fields(decision, vp), range_lock), observation_state
+
+    if pending["side"] == "lower":
+        invalidated = close < invalid - pad or low < invalid - pad * 1.5
+        confirmed = after_first_bar and not invalidated and (
+            close >= zone_high + pad * 0.2
+            or (low <= zone_high + pad and low >= zone_low - pad and close >= zone_mid and close >= open_)
+        )
+        if confirmed:
+            return confirm("long", "SECONDARY_CONFIRM_LOWER", "lower_confirmed")
+        if invalidated:
+            return reject("secondary_lower_invalidated")
+    else:
+        invalidated = close > invalid + pad or high > invalid + pad * 1.5
+        confirmed = after_first_bar and not invalidated and (
+            close <= zone_low - pad * 0.2
+            or (high >= zone_low - pad and high <= zone_high + pad and close <= zone_mid and close <= open_)
+        )
+        if confirmed:
+            return confirm("short", "SECONDARY_CONFIRM_UPPER", "upper_confirmed")
+        if invalidated:
+            return reject("secondary_upper_invalidated")
+
+    return wait("pending_confirmation_wait")
 
 
 def _ordered_zone(zone: tuple[float, float]) -> tuple[float, float]:
@@ -399,14 +391,39 @@ def _ordered_zone(zone: tuple[float, float]) -> tuple[float, float]:
     return (round(min(low, high), 2), round(max(low, high), 2))
 
 
+def _ict_entry_boundary(
+    full_zone: tuple[float, float],
+    side: str,
+    atr: float,
+    pad: float,
+) -> tuple[float, float]:
+    """Narrow a broad ICT block to the first mitigation boundary.
+
+    A full-wick OB can span several percent.  Being somewhere inside that box
+    is context, not hourly new information.  Alerts therefore watch the edge
+    first reached by price while the far edge remains the invalidation level.
+    """
+
+    low, high = _ordered_zone(full_zone)
+    if high - low <= max(atr * 0.60, pad * 2.0):
+        return (low, high)
+    half_width = max(pad, atr * 0.18)
+    boundary = high if side == "lower" else low
+    return (round(boundary - half_width, 2), round(boundary + half_width, 2))
+
+
 
 
 def _source_priority(source: str) -> int:
-    if source == "fvg_zone":
+    if source in {"ict_plus_ob", "ict_minus_ob"}:
         return 0
-    if source in {"order_block_zone", "structure_zone", "mid_observe_zone"}:
+    if source in {"fibonacci_ote", "fvg_volume_profile", "high_volume_support", "high_volume_resistance"}:
         return 1
-    return 2
+    if source == "fvg_zone":
+        return 2
+    if source in {"order_block_zone", "structure_zone", "mid_observe_zone"}:
+        return 3
+    return 4
 
 
 def _zone_distance(close: float, z: dict[str, Any]) -> float:
@@ -466,6 +483,8 @@ def _select_zone(
     klines_1h: list[dict[str, Any]],
     liq: dict[str, Any],
     msb: dict[str, Any],
+    ict: dict[str, Any] | None = None,
+    vp: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cfg = TREND_ENGINE_CONFIG["key_zone"]
     latest = klines_1h[-1]
@@ -476,14 +495,92 @@ def _select_zone(
     pad = max(atr * cfg["touch_atr_mult"], close * cfg["touch_pct"])
 
     zones: list[dict[str, Any]] = []
+    ict = ict or {}
+    vp = vp or {}
 
     has_ob_context = bool(msb.get("has_order_block_context"))
     has_fvg_context = bool(msb.get("active_fvg_zone"))
-    has_recent_sweep = bool(liq.get("recent_sweep_valid"))
     # Sweep alone is not enough for observation alerts.  It is useful for the
     # structure-shift engine, but key-zone observation must be anchored to an
     # actual FVG/structure/POI context to avoid hourly noise after a waterfall.
-    has_structural_context = has_ob_context or has_fvg_context
+    has_ict_context = bool(ict.get("bullish_active")) or bool(ict.get("bearish_active"))
+    has_structural_context = has_ob_context or has_fvg_context or has_ict_context
+
+    # ICT Concepts +OB/-OB are a dedicated source.  They are never folded into
+    # the MSB-OB proxy.  Exact feed zones and the clearly-labelled price proxy
+    # use the same downstream interface but remain distinguishable in logs.
+    bull_ict = ict.get("bullish_nearest")
+    if bull_ict:
+        full_zone = _ordered_zone(tuple(bull_ict))
+        zone = _ict_entry_boundary(full_zone, "lower", atr, pad)
+        zones.append(
+            {
+                "side": "lower",
+                "source": "ict_plus_ob",
+                "ict_ob_source": ict.get("source", "none"),
+                "zone": zone,
+                "full_zone": full_zone,
+                "interaction": _zone_relation(latest, zone, pad),
+            }
+        )
+    bear_ict = ict.get("bearish_nearest")
+    if bear_ict:
+        full_zone = _ordered_zone(tuple(bear_ict))
+        zone = _ict_entry_boundary(full_zone, "upper", atr, pad)
+        zones.append(
+            {
+                "side": "upper",
+                "source": "ict_minus_ob",
+                "ict_ob_source": ict.get("source", "none"),
+                "zone": zone,
+                "full_zone": full_zone,
+                "interaction": _zone_relation(latest, zone, pad),
+            }
+        )
+
+    fibonacci = msb.get("fibonacci", {}) if isinstance(msb.get("fibonacci"), dict) else {}
+    ote_zone = fibonacci.get("ote_zone")
+    if ote_zone and fibonacci.get("trend") in {"bull", "bear"}:
+        zone = _ordered_zone(tuple(ote_zone))
+        is_bull = fibonacci.get("trend") == "bull"
+        zones.append(
+            {
+                "side": "lower" if is_bull else "upper",
+                "source": "fibonacci_ote",
+                "zone": zone,
+                "interaction": _zone_relation(latest, zone, pad),
+            }
+        )
+
+    fvg_profile = vp.get("fvg_profile", {}) if isinstance(vp.get("fvg_profile"), dict) else {}
+    for item in list(fvg_profile.get("bullish", []))[:1] + list(fvg_profile.get("bearish", []))[:1]:
+        zone = _ordered_zone(tuple(item["zone"]))
+        zones.append(
+            {
+                "side": "lower" if item.get("direction") == "bull" else "upper",
+                "source": "fvg_volume_profile",
+                "zone": zone,
+                "interaction": _zone_relation(latest, zone, pad),
+            }
+        )
+
+    high_volume = vp.get("high_volume_pivots", {}) if isinstance(vp.get("high_volume_pivots"), dict) else {}
+    for key, default_side in (("support", "lower"), ("resistance", "upper")):
+        item = high_volume.get(key)
+        if not isinstance(item, dict) or not item.get("zone"):
+            continue
+        zone = _ordered_zone(tuple(item["zone"]))
+        side = default_side
+        if item.get("broken"):
+            side = "upper" if default_side == "lower" else "lower"
+        zones.append(
+            {
+                "side": side,
+                "source": f"high_volume_{key}",
+                "zone": zone,
+                "interaction": _zone_relation(latest, zone, pad),
+            }
+        )
 
     # FVG-style zones are valid observation targets even before a full
     # structure-shift alert.  They are internal-only and never exposed by name.
@@ -585,6 +682,7 @@ def decide_key_zone_observation(
     observation_state: dict[str, Any] | None = None,
     vp: dict[str, Any] | None = None,
     range_lock: dict[str, Any] | None = None,
+    ict: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Detect key-area observation alerts.
 
@@ -598,6 +696,7 @@ def decide_key_zone_observation(
     observation_state = observation_state or {}
     cfg = TREND_ENGINE_CONFIG["key_zone"]
     range_lock = range_lock or {"active": False}
+    ict = ict or {}
     latest = klines_1h[-1]
     prev = klines_1h[-2]
     prev2 = klines_1h[-3] if len(klines_1h) >= 3 else prev
@@ -609,6 +708,17 @@ def decide_key_zone_observation(
     atr = float(latest.get("atr", max(close * 0.004, 1.0)))
     atr = max(atr, 1e-9)
     current_bar = _bar_open_time(latest, len(klines_1h))
+    trial_context = build_trial_context(
+        klines_1h,
+        htf_ctx,
+        liq,
+        msb,
+        matrix,
+        aux,
+        vp=vp,
+        range_lock=range_lock,
+        ict=ict,
+    )
 
     pending_decision, observation_state = _evaluate_pending_confirmation(
         symbol,
@@ -619,22 +729,58 @@ def decide_key_zone_observation(
         observation_state,
         current_bar,
         atr,
+        klines_1h,
+        trial_context,
         msb,
         matrix,
         vp,
+        range_lock,
     )
     if pending_decision is not None:
         return pending_decision
 
-    selected = _select_zone(klines_1h, liq, msb)
+    if observation_state.get("last_pending_reject_open_time") == current_bar:
+        reason = str(observation_state.get("last_pending_reject_reason", "pending_revalidation_failed"))
+        return attach_range_lock_fields(
+            attach_vp_fields(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "alert_type": "NO_TRADE_RANGE",
+                    "direction": "neutral",
+                    "price": close,
+                    "score": 0,
+                    "score_breakdown": {"penalty_reason": reason},
+                    "htf_context": htf_ctx.get("text", "4H 背景中性"),
+                    "htf_relation": htf_ctx.get("relation", "neutral"),
+                    "zone": (round(close, 2), round(close, 2)),
+                    "zone_low": round(close, 2),
+                    "zone_high": round(close, 2),
+                    "zone_source": "pending_revalidation",
+                    "invalid_level": close,
+                    "should_alert": False,
+                    "suppress_reason": reason,
+                    "state_version": "PENDING_REJECTED",
+                    "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
+                    "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
+                    "market_phase": trial_context.get("market_phase", "undetermined"),
+                    "observation_update": observation_state,
+                },
+                vp,
+            ),
+            range_lock,
+        )
+
+    selected = _select_zone(klines_1h, liq, msb, ict=ict, vp=vp)
     if not selected:
-        update = {
+        update = dict(observation_state)
+        update.update({
             "inside_zone": False,
             "active_zone_hash": observation_state.get("active_zone_hash", ""),
             "reentry_count": int(observation_state.get("reentry_count", 0) or 0),
             "last_phase": observation_state.get("last_phase", ""),
             "last_price": close,
-        }
+        })
         return attach_range_lock_fields({
             "symbol": symbol,
             "timeframe": timeframe,
@@ -661,10 +807,14 @@ def decide_key_zone_observation(
             "state_version": "NO_TOUCH",
             "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
             "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
+            "market_phase": trial_context.get("market_phase", "undetermined"),
+            "ict_ob_coexist": bool(trial_context.get("ict_ob_coexist", False)),
+            "ict_ob_source": trial_context.get("ict_ob_source", "none"),
             "observation_update": update,
         }, range_lock)
 
     zone = _ordered_zone(selected["zone"])
+    full_zone = _ordered_zone(selected.get("full_zone", zone))
     zone_hash = _zone_hash(zone)
     side = selected["side"]
     zone_source = selected["source"]
@@ -698,7 +848,7 @@ def decide_key_zone_observation(
         else:
             alert_type = "LOWER_KEY_ZONE_TEST"
             phase = "lower_test"
-        invalid_level = min(float(latest["low"]), zone[0])
+        invalid_level = min(float(latest["low"]), full_zone[0])
     else:
         direction = "short"
         if interaction == "rejected_below" or (fast_down and close < zone[0]):
@@ -713,36 +863,67 @@ def decide_key_zone_observation(
         else:
             alert_type = "UPPER_KEY_ZONE_TEST"
             phase = "upper_test"
-        invalid_level = max(float(latest["high"]), zone[1])
+        invalid_level = max(float(latest["high"]), full_zone[1])
+
+    original_alert_type = alert_type
+    trial_assessment = assess_trial_candidate(
+        direction,
+        alert_type,
+        zone,
+        invalid_level,
+        latest,
+        prev2_close,
+        zone_source,
+        interaction,
+        trial_context,
+        observation_state,
+        current_bar,
+    )
+
+    formal_reaction = alert_type in {"LOWER_KEY_ZONE_RECLAIM", "UPPER_KEY_ZONE_REJECTION"}
+    trial_quality_suppress_reason = ""
+    if formal_reaction and not trial_assessment.get("allow_formal"):
+        alert_type = "LOWER_KEY_ZONE_TEST" if side == "lower" else "UPPER_KEY_ZONE_TEST"
+        phase = "lower_test" if side == "lower" else "upper_test"
+        hard_blocks = list(trial_assessment.get("hard_blocks", []))
+        if hard_blocks:
+            # A stale/wrong-side candidate has no useful value as a late
+            # Telegram observation either.  Keep it in debug logs only.
+            trial_quality_suppress_reason = "trial_quality_" + hard_blocks[0]
+    elif not formal_reaction and trial_assessment.get("promote_early"):
+        # An edge trial may be reported before a box breaks when weighted
+        # structure/location/momentum evidence is already asymmetric.  This is
+        # intentionally not a hard indicator-confluence checklist.
+        alert_type = "EARLY_LONG_TRIAL" if side == "lower" else "EARLY_SHORT_TRIAL"
+        phase = "early_long_trial" if side == "lower" else "early_short_trial"
+    elif not formal_reaction:
+        severe_passive_blocks = {
+            "wrong_range_edge",
+            "opposite_structure_dominates",
+            "short_into_active_ict_plus_ob",
+            "long_into_active_ict_minus_ob",
+            "ict_coexist_without_fresh_directional_evidence",
+            "same_box_same_side_cooldown_without_new_information",
+            "same_box_opposite_flip_without_new_information",
+        }
+        hard_blocks = list(trial_assessment.get("hard_blocks", []))
+        severe = next((reason for reason in hard_blocks if reason in severe_passive_blocks), None)
+        if severe:
+            trial_quality_suppress_reason = "observation_quality_" + severe
 
     vp_reasons: list[str] = []
-    if alert_type == "LOWER_KEY_ZONE_RECLAIM":
+    if alert_type in {"LOWER_KEY_ZONE_RECLAIM", "EARLY_LONG_TRIAL"}:
         vp_reasons = block_formal_long(htf_ctx, msb, matrix, aux, vp)
-        if vp_reasons:
-            # Do not call this a formal 1H trial long when value acceptance is
-            # not back on the long side.  Keep it as a single-emoji lower area
-            # observation so the user can watch whether real demand appears.
-            alert_type = "LOWER_KEY_ZONE_TEST"
-            phase = "lower_test"
-    elif alert_type == "UPPER_KEY_ZONE_REJECTION":
+    elif alert_type in {"UPPER_KEY_ZONE_REJECTION", "EARLY_SHORT_TRIAL"}:
         vp_reasons = block_formal_short(htf_ctx, msb, matrix, aux, vp)
-        if vp_reasons:
-            alert_type = "UPPER_KEY_ZONE_TEST"
-            phase = "upper_test"
-
-    # Pure range / accumulation lock:
-    # In a locked sideways box, do not convert every upper/lower touch into a
-    # formal trial.  Only a true high-impulse sweep-reclaim/reject can escape
-    # this downgrade.
-    if range_lock_active and alert_type in {"LOWER_KEY_ZONE_RECLAIM", "UPPER_KEY_ZONE_REJECTION"}:
-        if not is_strong_sweep_reversal(side, latest, prev2_close, zone, atr, aux, range_lock):
-            alert_type = "LOWER_KEY_ZONE_TEST" if side == "lower" else "UPPER_KEY_ZONE_TEST"
-            phase = "lower_test" if side == "lower" else "upper_test"
-            passive_observation = True
 
     move_quality = min(40, int(abs(two_bar_move) * 18 + abs(one_bar_move) * 8))
     key_zone_score = 34 if "range" not in zone_source else 28
-    aux_score = 4 if ("偏弱" in str(aux.get("momentum_desc", "")) and side == "lower") or ("偏强" in str(aux.get("momentum_desc", "")) and side == "upper") else 0
+    momentum_text = str(aux.get("momentum_desc", ""))
+    aux_score = 4 if (
+        (side == "lower" and ("偏强" in momentum_text or "修复" in momentum_text or "买盘" in momentum_text))
+        or (side == "upper" and ("偏弱" in momentum_text or "转弱" in momentum_text or "卖压" in momentum_text))
+    ) else 0
     score = key_zone_score + move_quality + aux_score
 
     prev_zone_hash = str(observation_state.get("active_zone_hash", ""))
@@ -755,7 +936,7 @@ def decide_key_zone_observation(
 
     same_exact_zone = zone_hash == prev_zone_hash
     same_cluster = zone_cluster == prev_zone_cluster and side == prev_side
-    actionable_upgrade = phase in {"lower_reclaim", "upper_rejection"}
+    actionable_upgrade = phase in {"lower_reclaim", "upper_rejection", "early_long_trial", "early_short_trial"}
     passive_observation = phase in {
         "fast_pullback",
         "fast_rebound",
@@ -773,7 +954,9 @@ def decide_key_zone_observation(
         reentry_count += 1
 
     suppress_reason = ""
-    if score < cfg["min_observation_score"]:
+    if trial_quality_suppress_reason:
+        suppress_reason = trial_quality_suppress_reason
+    elif score < cfg["min_observation_score"]:
         suppress_reason = "below_observation_score"
     elif range_lock_active and passive_observation and same_range_lock and bars_since_range_lock_alert is not None and bars_since_range_lock_alert < int(TREND_ENGINE_CONFIG["range_lock"].get("cooldown_bars", 8)):
         suppress_reason = "range_lock_same_box_cooldown"
@@ -797,7 +980,8 @@ def decide_key_zone_observation(
     should_alert = suppress_reason == ""
     state_version = f"{phase.upper()}_R{reentry_count}"
 
-    update = {
+    update = dict(observation_state)
+    update.update({
         "inside_zone": True,
         "active_zone_hash": zone_hash,
         "active_zone_cluster": zone_cluster,
@@ -812,9 +996,16 @@ def decide_key_zone_observation(
         "range_lock_active": range_lock_active,
         "range_lock_cluster": range_lock_cluster if range_lock_active else observation_state.get("range_lock_cluster", ""),
         "range_lock_last_alert_open_time": current_bar if (should_alert and range_lock_active) else observation_state.get("range_lock_last_alert_open_time"),
-    }
+        "market_phase": trial_context.get("market_phase", "undetermined"),
+        "ict_ob_coexist": bool(trial_context.get("ict_ob_coexist", False)),
+    })
 
-    formal_trial_alert = alert_type in {"LOWER_KEY_ZONE_RECLAIM", "UPPER_KEY_ZONE_REJECTION"}
+    formal_trial_alert = alert_type in {
+        "LOWER_KEY_ZONE_RECLAIM",
+        "UPPER_KEY_ZONE_REJECTION",
+        "EARLY_LONG_TRIAL",
+        "EARLY_SHORT_TRIAL",
+    }
     if should_alert and formal_trial_alert:
         update.update(
             {
@@ -827,6 +1018,15 @@ def decide_key_zone_observation(
                 "pending_source_alert_type": alert_type,
                 "pending_phase": phase,
                 "pending_zone_cluster": zone_cluster,
+                "pending_source_price": round(close, 2),
+                "pending_source_score": trial_assessment.get("score", 0.0),
+                "pending_range_cluster": range_lock_cluster if range_lock_active else "",
+                "last_formal_side": side,
+                "last_formal_open_time": current_bar,
+                "last_formal_range_cluster": range_lock_cluster if range_lock_active else "",
+                "last_formal_box_low": trial_context.get("box_low"),
+                "last_formal_box_high": trial_context.get("box_high"),
+                "last_formal_score": trial_assessment.get("score", 0.0),
             }
         )
     else:
@@ -844,11 +1044,14 @@ def decide_key_zone_observation(
             "move_quality": move_quality,
             "htf_context": 0,
             "aux_filters": aux_score,
+            "trial_weighted_score": trial_assessment.get("score", 0.0),
+            "trial_opposite_score": trial_assessment.get("opposite_score", 0.0),
             "penalty_reason": suppress_reason,
         },
         "htf_context": htf_ctx.get("text", "4H 背景中性"),
         "htf_relation": htf_ctx.get("relation", "neutral"),
         "zone_source": zone_source,
+        "ict_ob_source": selected.get("ict_ob_source", trial_context.get("ict_ob_source", "none")),
         "zone_low": zone[0],
         "zone_high": zone[1],
         "zone": zone,
@@ -858,6 +1061,20 @@ def decide_key_zone_observation(
         "state_version": state_version,
         "momentum_desc": str(aux.get("momentum_desc", "动能 一般")),
         "temperature_desc": str(aux.get("temperature_desc", "热度 中性")),
+        "market_phase": trial_context.get("market_phase", "undetermined"),
+        "market_box_position": trial_context.get("box_position", "unknown"),
+        "ict_ob_coexist": bool(trial_context.get("ict_ob_coexist", False)),
+        "original_alert_type": original_alert_type,
+        "trial_score": trial_assessment.get("score"),
+        "trial_opposite_score": trial_assessment.get("opposite_score"),
+        "trial_direction_advantage": trial_assessment.get("direction_advantage"),
+        "trial_quality_blocks": trial_assessment.get("hard_blocks", []),
+        "trial_zone_chase_atr": trial_assessment.get("zone_chase_atr"),
+        "trial_risk_atr": trial_assessment.get("risk_atr"),
+        "trial_reward_risk": trial_assessment.get("reward_risk"),
+        "trial_recent_extension_atr": trial_assessment.get("recent_extension_atr"),
+        "trial_directional_catalyst": bool(trial_assessment.get("directional_catalyst", False)),
+        "trial_evidence": trial_assessment.get("reasons", []),
         "observation_update": update,
     }
     return attach_range_lock_fields(attach_vp_fields(decision, vp, vp_reasons), range_lock)

@@ -834,8 +834,9 @@ class KeyZoneObservationTests(unittest.TestCase):
         klines += [
             self._bar(10100, 10200, 10080, 10150, atr=100.0),
             self._bar(10150, 10180, 10050, 10120, atr=100.0),
-            # Touches the upper zone but closes below it with a fast selloff.
-            self._bar(10120, 10140, 9750, 9800, atr=100.0),
+            # Touches the upper zone and rejects while price is still close
+            # enough to the risk area to be actionable.
+            self._bar(10080, 10140, 9950, 9990, atr=100.0),
         ]
         liq = {
             "prev_low": 9600,
@@ -866,7 +867,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             liq,
             msb,
             {},
-            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 过冷", "price": 9800},
+            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 中性", "price": 9990, "rar_slope": -1.0},
             observation_state={"inside_zone": False},
         )
 
@@ -887,10 +888,10 @@ class KeyZoneObservationTests(unittest.TestCase):
 
         klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
         klines += [
-            self._bar(9900, 9950, 9800, 9850, atr=100.0),
-            self._bar(9850, 9900, 9750, 9820, atr=100.0),
+            self._bar(9900, 9970, 9900, 9950, atr=100.0),
+            self._bar(9850, 9970, 9900, 9950, atr=100.0),
             # Sweeps/touches the lower zone and closes back above it.
-            self._bar(9820, 10180, 9750, 10140, atr=100.0),
+            self._bar(9990, 10090, 9940, 10045, atr=100.0),
         ]
         liq = {
             "prev_low": 9700,
@@ -908,7 +909,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             "structure_zone": (9850, 10050),
             "order_block_zone": (9850, 10050),
             "mid_observe_zone": (9850, 10050),
-            "active_fvg_zone": (9850, 10050),
+            "active_fvg_zone": (9950, 10020),
             "active_fvg_direction": "bull",
             "active_fvg_age": 1,
             "metrics": {},
@@ -939,9 +940,9 @@ class KeyZoneObservationTests(unittest.TestCase):
 
         klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
         klines += [
-            self._bar(9900, 9950, 9800, 9850, atr=100.0),
-            self._bar(9850, 9900, 9750, 9880, atr=100.0),
-            self._bar(9880, 10180, 9750, 10140, atr=100.0),
+            self._bar(9900, 9970, 9900, 9950, atr=100.0),
+            self._bar(9850, 9970, 9900, 9950, atr=100.0),
+            self._bar(9990, 10090, 9940, 10045, atr=100.0),
         ]
         liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
         msb = {
@@ -952,7 +953,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             "structure_zone": (9850, 10050),
             "order_block_zone": (9850, 10050),
             "mid_observe_zone": (9850, 10050),
-            "active_fvg_zone": (9850, 10050),
+            "active_fvg_zone": (9950, 10020),
             "active_fvg_direction": "bull",
             "active_fvg_age": 1,
             "metrics": {},
@@ -980,9 +981,9 @@ class KeyZoneObservationTests(unittest.TestCase):
 
         klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
         klines += [
-            self._bar(9900, 9950, 9800, 9850, atr=100.0),
-            self._bar(9850, 9900, 9750, 9820, atr=100.0),
-            self._bar(9820, 10180, 9750, 10140, atr=100.0),
+            self._bar(9900, 9970, 9900, 9950, atr=100.0),
+            self._bar(9850, 9970, 9900, 9950, atr=100.0),
+            self._bar(9990, 10090, 9940, 10045, atr=100.0),
         ]
         liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
         msb = {
@@ -993,7 +994,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             "structure_zone": (9850, 10050),
             "order_block_zone": (9850, 10050),
             "mid_observe_zone": (9850, 10050),
-            "active_fvg_zone": (9850, 10050),
+            "active_fvg_zone": (9950, 10020),
             "active_fvg_direction": "bull",
             "active_fvg_age": 1,
             "metrics": {},
@@ -1014,8 +1015,6 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertEqual(first_line, "📈 BTC 1H 试多观察 📈")
 
     def test_range_lock_suppresses_same_box_passive_noise(self):
-        from engine.key_zones import decide_key_zone_observation
-
         decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
         current_bar = len(klines)
         decision = decide(
@@ -1039,14 +1038,14 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertEqual(decision["suppress_reason"], "range_lock_same_box_cooldown")
         self.assertTrue(decision["range_lock_active"])
 
-    def test_range_lock_downgrades_reclaim_without_strong_sweep_exception(self):
+    def test_range_box_allows_weighted_long_without_breakout(self):
         from engine.key_zones import decide_key_zone_observation
 
         klines = [self._bar(10000, 10050, 9950, 10000) for _ in range(25)]
         klines += [
-            self._bar(9900, 9950, 9800, 9850, atr=100.0),
-            self._bar(9850, 9900, 9750, 9880, atr=100.0),
-            self._bar(9880, 10180, 9750, 10140, atr=100.0),
+            self._bar(10000, 10040, 9950, 10020, atr=100.0),
+            self._bar(10020, 10030, 9850, 9900, atr=100.0),
+            self._bar(9800, 9860, 9720, 9820, atr=100.0),
         ]
         liq = {"prev_low": 9700, "prev_high": 10300, "sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False}
         msb = {
@@ -1057,10 +1056,21 @@ class KeyZoneObservationTests(unittest.TestCase):
             "structure_zone": (9850, 10050),
             "order_block_zone": (9850, 10050),
             "mid_observe_zone": (9850, 10050),
-            "active_fvg_zone": (9850, 10050),
-            "active_fvg_direction": "bull",
-            "active_fvg_age": 1,
+            "active_fvg_zone": None,
+            "active_fvg_direction": "none",
+            "active_fvg_age": None,
             "metrics": {},
+        }
+        ict = {
+            "source": "explicit_feed",
+            "is_exact": True,
+            "bullish_active": True,
+            "bearish_active": True,
+            "coexist": True,
+            "bullish_nearest": (9700.0, 9850.0),
+            "bearish_nearest": (10100.0, 10200.0),
+            "bullish_distance_atr": 0.0,
+            "bearish_distance_atr": 2.8,
         }
         decision = decide_key_zone_observation(
             "BTCUSDT",
@@ -1070,20 +1080,29 @@ class KeyZoneObservationTests(unittest.TestCase):
             liq,
             msb,
             {},
-            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140, "volume_ratio": 1.0},
+            {
+                "momentum_desc": "短线动能修复",
+                "temperature_desc": "热度 中性",
+                "price": 9820,
+                "rar_slope": 2.0,
+                "inertia_slope": 2.0,
+                "inertia_turn_up": True,
+                "rar_above_trigger": True,
+                "volume_ratio": 1.0,
+            },
             observation_state={"inside_zone": False},
             range_lock={"active": True, "cluster": "box-b", "box_low": 9700.0, "box_high": 10200.0},
+            ict=ict,
         )
 
         self.assertTrue(decision["should_alert"])
-        self.assertEqual(decision["alert_type"], "LOWER_KEY_ZONE_TEST")
-        self.assertFalse(decision["observation_update"].get("pending_confirm"))
+        self.assertIn(decision["alert_type"], {"EARLY_LONG_TRIAL", "LOWER_KEY_ZONE_RECLAIM"})
+        self.assertTrue(decision["observation_update"].get("pending_confirm"))
+        self.assertEqual(decision["market_phase"], "range_bullish")
         self.assertTrue(decision["range_lock_active"])
 
 
     def test_pending_confirmation_silences_middle_and_alerts_confirmation(self):
-        from engine.key_zones import decide_key_zone_observation
-
         decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
         first = decide(
             "BTCUSDT",
@@ -1463,3 +1482,386 @@ class PrealertCadenceTests(unittest.TestCase):
 
         self.assertFalse(is_high_quality_new_information(decision, cfg))
         self.assertEqual(cooldown_bars_for_decision(decision, cfg), 16)
+
+
+class V139LayeredDecisionTests(unittest.TestCase):
+    @staticmethod
+    def _bar(open_: float, high: float, low: float, close: float, atr: float = 100.0, open_time: int | None = None) -> dict:
+        bar = {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1000.0,
+            "atr": atr,
+            "ema10": close,
+            "ema20": close,
+            "rar_value": 50.0,
+            "rar_trigger": 50.0,
+            "inertia": 50.0,
+        }
+        if open_time is not None:
+            bar["open_time"] = open_time
+        return bar
+
+    @staticmethod
+    def _neutral_liq() -> dict:
+        return {
+            "prev_low": 9700.0,
+            "prev_high": 10300.0,
+            "sweep_type": "none",
+            "reclaim_or_reject": "none",
+            "sweep_level": None,
+            "recent_sweep_valid": False,
+        }
+
+    @staticmethod
+    def _bull_fvg_msb() -> dict:
+        return {
+            "direction": "neutral",
+            "leg_type": "SHORT",
+            "quality": 10,
+            "has_order_block_context": False,
+            "structure_zone": (9950.0, 10020.0),
+            "order_block_zone": (9950.0, 10020.0),
+            "mid_observe_zone": (9950.0, 10020.0),
+            "active_fvg_zone": (9950.0, 10020.0),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
+            "metrics": {},
+        }
+
+    def test_exact_ict_plus_minus_fields_are_separate_and_can_coexist(self):
+        from engine.ict_ob import build_ict_ob_context
+
+        bars = [self._bar(10000, 10050, 9950, 10000) for _ in range(20)]
+        bars[-1].update(
+            {
+                "ict_plus_ob_low": 9750.0,
+                "ict_plus_ob_high": 9900.0,
+                "ict_minus_ob_low": 10100.0,
+                "ict_minus_ob_high": 10250.0,
+            }
+        )
+        context = build_ict_ob_context(bars)
+
+        self.assertTrue(context["is_exact"])
+        self.assertEqual(context["source"], "explicit_feed")
+        self.assertTrue(context["bullish_active"])
+        self.assertTrue(context["bearish_active"])
+        self.assertTrue(context["coexist"])
+        self.assertEqual(context["bullish_nearest"], (9750.0, 9900.0))
+        self.assertEqual(context["bearish_nearest"], (10100.0, 10250.0))
+
+    def test_ict_coexistence_creates_box_state_without_msb_aliasing(self):
+        from engine.range_lock import build_range_lock_context
+
+        bars = [self._bar(10000, 10500, 9500, 10000) for _ in range(18)]
+        context = build_range_lock_context(
+            bars,
+            {"text": "4H 偏多", "relation": "aligned"},
+            self._neutral_liq(),
+            {"direction": "bull", "leg_type": "LONG", "quality": 90},
+            {"matrix_direction": "bull"},
+            {},
+            {"inside_value_area": False},
+            ict={"coexist": True, "source": "explicit_feed"},
+        )
+
+        self.assertTrue(context["active"])
+        self.assertTrue(context["ict_ob_conflict"])
+        self.assertEqual(context["accepted_breakout"], "none")
+
+    def test_short_into_active_plus_ob_is_blocked(self):
+        from engine.trial_decision import assess_trial_candidate, build_trial_context
+
+        bars = [self._bar(10000, 10060, 9940, 10000) for _ in range(24)]
+        latest = self._bar(10020, 10080, 9950, 9980)
+        bars.append(latest)
+        msb = self._bull_fvg_msb()
+        msb["active_fvg_direction"] = "bear"
+        context = build_trial_context(
+            bars,
+            {"text": "4H 震荡", "relation": "neutral"},
+            self._neutral_liq(),
+            msb,
+            {"matrix_direction": "bear"},
+            {"momentum_desc": "短线动能转弱", "rar_slope": -2.0, "inertia_slope": -2.0},
+            range_lock={"active": False, "box_low": 9700.0, "box_high": 10300.0},
+            ict={
+                "source": "explicit_feed",
+                "is_exact": True,
+                "bullish_active": True,
+                "bearish_active": False,
+                "coexist": False,
+                "bullish_distance_atr": 0.0,
+                "bearish_distance_atr": None,
+            },
+        )
+        assessment = assess_trial_candidate(
+            "short",
+            "UPPER_KEY_ZONE_REJECTION",
+            (10020.0, 10080.0),
+            10080.0,
+            latest,
+            10000.0,
+            "fvg_zone",
+            "rejected_below",
+            context,
+        )
+
+        self.assertFalse(assessment["allow_formal"])
+        self.assertIn("short_into_active_ict_plus_ob", assessment["hard_blocks"])
+
+    def test_late_long_at_reference_box_upper_edge_is_blocked(self):
+        from engine.trial_decision import assess_trial_candidate, build_trial_context
+
+        bars = [self._bar(10000, 10050, 9950, 10000) for _ in range(24)]
+        latest = self._bar(10150, 10210, 10120, 10180)
+        bars.append(latest)
+        context = build_trial_context(
+            bars,
+            {"text": "4H 偏多", "h4_direction": "bull", "relation": "aligned"},
+            self._neutral_liq(),
+            self._bull_fvg_msb(),
+            {"matrix_direction": "bull"},
+            {"momentum_desc": "短线动能偏强", "rar_slope": 1.0, "inertia_slope": 1.0},
+            range_lock={"active": False, "box_low": 9700.0, "box_high": 10200.0, "accepted_breakout": "none"},
+            ict={"bullish_active": True, "bearish_active": False, "bullish_distance_atr": 1.5},
+        )
+        assessment = assess_trial_candidate(
+            "long",
+            "LOWER_KEY_ZONE_RECLAIM",
+            (10000.0, 10150.0),
+            9950.0,
+            latest,
+            10000.0,
+            "fvg_zone",
+            "reclaimed_above",
+            context,
+        )
+
+        self.assertFalse(assessment["allow_formal"])
+        self.assertIn("wrong_range_edge", assessment["hard_blocks"])
+
+    def test_same_box_opposite_trial_needs_new_structure_information(self):
+        from engine.trial_decision import assess_trial_candidate, build_trial_context
+
+        bars = [self._bar(10000, 10180, 9820, 10000) for _ in range(24)]
+        latest = self._bar(10180, 10210, 10120, 10150)
+        bars.append(latest)
+        context = build_trial_context(
+            bars,
+            {"text": "4H 震荡", "relation": "neutral"},
+            self._neutral_liq(),
+            {**self._bull_fvg_msb(), "active_fvg_direction": "bear"},
+            {"matrix_direction": "bear"},
+            {
+                "momentum_desc": "短线动能转弱",
+                "rar_slope": -2.0,
+                "inertia_slope": -2.0,
+                "inertia_turn_down": True,
+                "rar_above_trigger": False,
+            },
+            range_lock={"active": True, "cluster": "box-current", "box_low": 9700.0, "box_high": 10200.0},
+            ict={
+                "bullish_active": True,
+                "bearish_active": True,
+                "coexist": True,
+                "bullish_distance_atr": 4.0,
+                "bearish_distance_atr": 0.0,
+            },
+        )
+        assessment = assess_trial_candidate(
+            "short",
+            "UPPER_KEY_ZONE_REJECTION",
+            (10100.0, 10200.0),
+            10220.0,
+            latest,
+            10000.0,
+            "ict_minus_ob",
+            "rejected_below",
+            context,
+            observation_state={
+                "last_formal_side": "lower",
+                "last_formal_open_time": 100,
+                "last_formal_box_low": 9720.0,
+                "last_formal_box_high": 10220.0,
+            },
+            current_bar=104,
+        )
+
+        self.assertFalse(assessment["allow_formal"])
+        self.assertIn("same_box_opposite_flip_without_new_information", assessment["hard_blocks"])
+
+    def test_secondary_confirmation_requires_a_real_push(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        bars = [self._bar(10000, 10050, 9950, 10000, open_time=i) for i in range(28)]
+        bars.append(self._bar(10045, 10065, 10020, 10050, open_time=28))
+        state = {
+            "pending_confirm": True,
+            "pending_side": "lower",
+            "pending_zone_low": 9950.0,
+            "pending_zone_high": 10020.0,
+            "pending_invalid_level": 9940.0,
+            "pending_created_open_time": 27,
+            "pending_source_alert_type": "LOWER_KEY_ZONE_RECLAIM",
+            "pending_phase": "lower_reclaim",
+            "pending_zone_cluster": "lower|structural|50",
+            "pending_source_price": 10045.0,
+            "pending_source_score": 9.0,
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            bars,
+            {"text": "4H 震荡", "relation": "neutral"},
+            self._neutral_liq(),
+            self._bull_fvg_msb(),
+            {"matrix_direction": "bull"},
+            {"momentum_desc": "短线动能偏强", "rar_slope": 1.0, "inertia_slope": 1.0},
+            observation_state=state,
+        )
+
+        self.assertFalse(decision["should_alert"])
+        self.assertEqual(decision["suppress_reason"], "secondary_no_valid_push")
+        self.assertTrue(decision["observation_update"]["pending_confirm"])
+
+    def test_secondary_confirmation_revalidates_and_can_pass(self):
+        from engine.key_zones import decide_key_zone_observation
+
+        bars = [self._bar(10000, 10050, 9950, 10000, open_time=i) for i in range(28)]
+        bars.append(self._bar(10050, 10095, 10030, 10080, open_time=28))
+        state = {
+            "pending_confirm": True,
+            "pending_side": "lower",
+            "pending_zone_low": 9950.0,
+            "pending_zone_high": 10020.0,
+            "pending_invalid_level": 9940.0,
+            "pending_created_open_time": 27,
+            "pending_source_alert_type": "LOWER_KEY_ZONE_RECLAIM",
+            "pending_phase": "lower_reclaim",
+            "pending_zone_cluster": "lower|structural|50",
+            "pending_source_price": 10045.0,
+            "pending_source_score": 9.0,
+        }
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            bars,
+            {"text": "4H 偏多", "h4_direction": "bull", "relation": "aligned"},
+            self._neutral_liq(),
+            self._bull_fvg_msb(),
+            {"matrix_direction": "bull"},
+            {
+                "momentum_desc": "短线动能偏强",
+                "rar_slope": 1.0,
+                "inertia_slope": 1.0,
+                "rar_above_trigger": True,
+            },
+            observation_state=state,
+        )
+
+        self.assertTrue(decision["should_alert"])
+        self.assertEqual(decision["alert_type"], "SECONDARY_CONFIRM_LOWER")
+        self.assertGreaterEqual(decision["secondary_progress_atr"], 0.22)
+        self.assertFalse(decision["observation_update"]["pending_confirm"])
+
+    def test_inertial_pine_reimplementation_is_present_and_explicit_values_are_preserved(self):
+        from engine.indicators import enrich_klines
+
+        bars = []
+        for i, close in enumerate([100, 99, 98, 97, 96, 95, 96, 98, 101, 104, 106, 108, 109, 110, 111, 112, 113, 114, 115, 116]):
+            bars.append({"open": close - 0.5, "high": close + 1, "low": close - 1, "close": close, "volume": 1000 + i})
+        enriched = enrich_klines(bars)
+        self.assertEqual(enriched[-1]["inertia_source"], "luxalgo_pine_reimplementation")
+        self.assertTrue(any(bar["inertia_turn_up"] for bar in enriched))
+
+        bars[-1].update({"inertia": 12.0, "inertia_signal": 15.0, "inertia_turn_up": True})
+        explicit = enrich_klines(bars)
+        self.assertEqual(explicit[-1]["inertia_source"], "explicit_feed")
+        self.assertEqual(explicit[-1]["inertia"], 12.0)
+        self.assertTrue(explicit[-1]["inertia_turn_up"])
+
+    def test_trend_message_removes_duplicate_major_sections(self):
+        from engine.trend_messages import _dedupe_major_sections, format_trend_message
+
+        malformed = "标题\n\n⚠️ 风险位：\nA\n\n✅ 结论：\nB\n\n⚠️ 风险位：\nA\n\n✅ 结论：\nB"
+        fixed = _dedupe_major_sections(malformed)
+        self.assertEqual(fixed.count("⚠️ 风险位："), 1)
+        self.assertEqual(fixed.count("✅ 结论："), 1)
+
+        message = format_trend_message(
+            {
+                "direction": "long",
+                "alert_type": "EARLY_LONG_TRIAL",
+                "zone": (9950.0, 10020.0),
+                "htf_context": "4H 震荡",
+                "momentum_desc": "短线动能修复",
+                "temperature_desc": "热度 中性",
+                "invalid_level": 9940.0,
+            }
+        )
+        self.assertEqual(message.count("⚠️ 风险位："), 1)
+        self.assertEqual(message.count("✅ 结论："), 1)
+
+    def test_failed_observation_delivery_does_not_open_pending_state(self):
+        from engine.scanner import SMCTScanner
+        from services.telegram import TelegramSendError
+
+        bars = [self._bar(10000, 10050, 9950, 10000) for _ in range(30)]
+        observation = {
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "alert_type": "EARLY_LONG_TRIAL",
+            "direction": "long",
+            "price": 10000.0,
+            "score": 60,
+            "should_alert": True,
+            "state_version": "EARLY_LONG_TRIAL_R1",
+            "zone": (9950.0, 10020.0),
+            "invalid_level": 9940.0,
+            "htf_context": "4H 震荡",
+            "momentum_desc": "短线动能修复",
+            "temperature_desc": "热度 中性",
+            "observation_update": {"pending_confirm": True, "pending_side": "lower"},
+        }
+        no_trend = {
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "alert_type": "NO_TRADE_RANGE",
+            "direction": "neutral",
+            "price": 10000.0,
+            "score": 0,
+            "should_alert": False,
+            "zone": (10000.0, 10000.0),
+            "invalid_level": 10000.0,
+        }
+
+        with patch.object(SMCTScanner, "_fetch_enriched", return_value=bars), \
+             patch("engine.scanner.get_logger", return_value=Mock()), \
+             patch("engine.scanner.build_liquidity_context", return_value=self._neutral_liq()), \
+             patch("engine.scanner.build_msb_ob_context", return_value=self._bull_fvg_msb()), \
+             patch("engine.scanner.build_ict_ob_context", return_value={}), \
+             patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "neutral"}), \
+             patch("engine.scanner.build_volume_profile_context", return_value={}), \
+             patch("engine.scanner.build_aux_filters_proxy", return_value={"price": 10000.0}), \
+             patch("engine.scanner.build_range_lock_context", return_value={"active": False}), \
+             patch("engine.scanner.load_trend_state", return_value={}), \
+             patch("engine.scanner.load_observation_state", return_value={}), \
+             patch("engine.scanner.decide_trend_segment", return_value=no_trend), \
+             patch("engine.scanner.decide_key_zone_observation", return_value=observation), \
+             patch("engine.scanner.save_observation_state") as save_observation, \
+             patch("engine.scanner.apply_late_filter", side_effect=lambda decision, _: decision), \
+             patch("engine.scanner.format_trend_message", return_value="message"), \
+             patch("engine.scanner.send_telegram_message", side_effect=TelegramSendError("fail")):
+            scanner = SMCTScanner("BTCUSDT")
+            scanner.state_store = Mock()
+            scanner.state_store.should_send.return_value = True
+            scanner.runtime_state = Mock()
+            result = scanner.run_once()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["sent"], 0)
+        save_observation.assert_not_called()

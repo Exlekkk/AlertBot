@@ -36,6 +36,7 @@ def build_range_lock_context(
     matrix: dict[str, Any],
     aux: dict[str, Any],
     vp: dict[str, Any] | None = None,
+    ict: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Detect sideways / accumulation conditions for 1H alert throttling.
 
@@ -77,14 +78,22 @@ def build_range_lock_context(
     matrix_dir = str(matrix.get("matrix_direction", "neutral"))
 
     directional_breakout = False
+    accepted_breakout = "none"
     if len(closes) >= 3:
         prev_high = max(highs[:-1])
         prev_low = min(lows[:-1])
         breakout_pad = atr * float(cfg.get("breakout_accept_atr_mult", 0.35))
-        directional_breakout = closes[-1] > prev_high + breakout_pad or closes[-1] < prev_low - breakout_pad
+        if closes[-1] > prev_high + breakout_pad:
+            directional_breakout = True
+            accepted_breakout = "up"
+        elif closes[-1] < prev_low - breakout_pad:
+            directional_breakout = True
+            accepted_breakout = "down"
 
     vp = vp or {}
+    ict = ict or {}
     value_acceptance = bool(vp.get("inside_value_area")) or bool(vp.get("near_hvn_or_poc")) or bool(vp.get("current_bin_is_hvn"))
+    ict_ob_conflict = bool(ict.get("coexist", False))
 
     htf_text = str(htf_ctx.get("text", ""))
     htf_range_or_mixed = "震荡" in htf_text or str(htf_ctx.get("relation", "neutral")) == "neutral"
@@ -97,13 +106,23 @@ def build_range_lock_context(
 
     # Active when the market is rotating in the same box / accepted value area
     # without a real 1H expansion.  In a strong trend, this stays inactive.
-    active = bool(
+    statistical_range = bool(
         tight_enough
         and enough_edges
-        and not directional_breakout
         and (value_acceptance or htf_range_or_mixed or short_structure)
         and (short_structure or no_matrix_trend)
     )
+    # ICT +OB/-OB coexistence is its own conflict state.  It is deliberately
+    # separate from MSB-OB and keeps the market in a box/undetermined regime
+    # until price is accepted beyond one side.  It does not forbid an early
+    # edge trial; the weighted trial layer decides that later.
+    active = bool(not directional_breakout and (statistical_range or ict_ob_conflict))
+
+    if box_width <= 0:
+        box_position = "unknown"
+    else:
+        box_ratio = (close - box_low) / box_width
+        box_position = "lower" if box_ratio <= 0.38 else "upper" if box_ratio >= 0.62 else "middle"
 
     return {
         "active": active,
@@ -118,7 +137,11 @@ def build_range_lock_context(
         "edge_touches": edge_touches,
         "cluster": _cluster_key(box_low, box_high, atr, close),
         "directional_breakout": directional_breakout,
+        "accepted_breakout": accepted_breakout,
+        "box_position": box_position,
         "value_acceptance": value_acceptance,
+        "ict_ob_conflict": ict_ob_conflict,
+        "ict_ob_source": ict.get("source", "none"),
         "latest_volume_ratio": (volumes[-1] / max(_avg(volumes[:-1]), 1e-9)) if len(volumes) >= 3 else 1.0,
     }
 

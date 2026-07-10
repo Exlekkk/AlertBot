@@ -66,7 +66,7 @@ def _latest_active_fvg(klines_1h: list[dict[str, Any]], lookback: int = 12) -> d
     return latest
 
 
-def build_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[str, Any]) -> dict[str, Any]:
+def _build_legacy_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[str, Any]) -> dict[str, Any]:
     zcfg = TREND_ENGINE_CONFIG["zone"]
     latest, prev = klines_1h[-1], klines_1h[-2]
 
@@ -116,6 +116,213 @@ def build_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[st
             round(max(float(prev["high"]), zone_high), 2),
         ),
         "mid_observe_zone": (round(mid - pad, 2), round(mid + pad, 2)),
+        "active_fvg_zone": fvg["zone"],
+        "active_fvg_direction": fvg["direction"],
+        "active_fvg_age": fvg["age"],
+        "metrics": {
+            "atr_move": atr_move,
+            "range_ratio": range_ratio,
+            "body_quality": body_quality,
+            "position_score": position_score,
+        },
+    }
+
+
+def _last_candle(
+    klines: list[dict[str, Any]],
+    start: int,
+    end: int,
+    bullish: bool,
+) -> int | None:
+    low = max(0, min(int(start), int(end)))
+    high = min(len(klines) - 1, max(int(start), int(end)))
+    matches = [
+        index
+        for index in range(low, high + 1)
+        if (float(klines[index]["close"]) > float(klines[index]["open"])) == bullish
+        and float(klines[index]["close"]) != float(klines[index]["open"])
+    ]
+    return matches[-1] if matches else None
+
+
+def _zone_from_candle(klines: list[dict[str, Any]], index: int | None) -> tuple[float, float] | None:
+    if index is None:
+        return None
+    bar = klines[index]
+    return (round(float(bar["low"]), 2), round(float(bar["high"]), 2))
+
+
+def _pine_msb_state(klines: list[dict[str, Any]]) -> dict[str, Any]:
+    """Translate the supplied MSB-OB Pine state machine to closed candles."""
+
+    cfg = TREND_ENGINE_CONFIG["chart_framework"]["msb_ob"]
+    zigzag_length = int(cfg["zigzag_length"])
+    fib_factor = float(cfg["fib_factor"])
+    trend = 1
+    market = 1
+    segment_high = float(klines[0]["high"])
+    segment_high_index = 0
+    segment_low = float(klines[0]["low"])
+    segment_low_index = 0
+    high_points: list[tuple[float, int]] = []
+    low_points: list[tuple[float, int]] = []
+    zones: list[dict[str, Any]] = []
+    structure_events: list[dict[str, Any]] = []
+    last_market_signature: tuple[float, float, float, float] | None = None
+
+    for index, bar in enumerate(klines):
+        high = float(bar["high"])
+        low = float(bar["low"])
+        if trend == 1 and high >= segment_high:
+            segment_high, segment_high_index = high, index
+        if trend == -1 and low <= segment_low:
+            segment_low, segment_low_index = low, index
+
+        if index + 1 < zigzag_length:
+            continue
+        window = klines[index - zigzag_length + 1 : index + 1]
+        to_up = high >= max(float(item["high"]) for item in window)
+        to_down = low <= min(float(item["low"]) for item in window)
+        previous_trend = trend
+        if trend == 1 and to_down:
+            trend = -1
+        elif trend == -1 and to_up:
+            trend = 1
+
+        if trend != previous_trend:
+            if trend == -1:
+                high_points.append((segment_high, segment_high_index))
+                high_points = high_points[-8:]
+                segment_low, segment_low_index = low, index
+            else:
+                low_points.append((segment_low, segment_low_index))
+                low_points = low_points[-8:]
+                segment_high, segment_high_index = high, index
+
+        if len(high_points) >= 2 and len(low_points) >= 2:
+            h0, h1 = high_points[-1], high_points[-2]
+            l0, l1 = low_points[-1], low_points[-2]
+            signature = (h0[0], h1[0], l0[0], l1[0])
+            previous_market = market
+            if signature != last_market_signature:
+                if market == 1 and l0[0] < l1[0] - abs(h0[0] - l1[0]) * fib_factor:
+                    market = -1
+                elif market == -1 and h0[0] > h1[0] + abs(h1[0] - l0[0]) * fib_factor:
+                    market = 1
+                last_market_signature = signature
+
+            if market != previous_market:
+                if market == 1:
+                    ob_index = _last_candle(klines, h1[1], l0[1], bullish=False)
+                    bb_index = _last_candle(klines, l1[1] - zigzag_length, h1[1], bullish=True)
+                    for kind, candle_index in (
+                        ("bu_ob", ob_index),
+                        ("bu_bb" if l0[0] < l1[0] else "bu_mb", bb_index),
+                    ):
+                        zone = _zone_from_candle(klines, candle_index)
+                        if zone:
+                            zones.insert(0, {"kind": kind, "side": "bull", "zone": zone, "origin_index": candle_index, "created_index": index})
+                    structure_events.append({"event": "bullish_msb", "direction": "bull", "index": index, "level": h1[0]})
+                else:
+                    ob_index = _last_candle(klines, l1[1], h0[1], bullish=True)
+                    bb_index = _last_candle(klines, h1[1] - zigzag_length, l1[1], bullish=False)
+                    for kind, candle_index in (
+                        ("be_ob", ob_index),
+                        ("be_bb" if h0[0] > h1[0] else "be_mb", bb_index),
+                    ):
+                        zone = _zone_from_candle(klines, candle_index)
+                        if zone:
+                            zones.insert(0, {"kind": kind, "side": "bear", "zone": zone, "origin_index": candle_index, "created_index": index})
+                    structure_events.append({"event": "bearish_msb", "direction": "bear", "index": index, "level": l1[0]})
+                zones = zones[:10]
+
+        close = float(bar["close"])
+        survivors: list[dict[str, Any]] = []
+        for zone_item in zones:
+            bottom, top = zone_item["zone"]
+            invalid = close < bottom if zone_item["side"] == "bull" else close > top
+            if not invalid:
+                zone_item["in_zone"] = bottom < close < top
+                survivors.append(zone_item)
+        zones = survivors
+
+    latest_event = structure_events[-1] if structure_events else {}
+    return {
+        "market": market,
+        "trend": trend,
+        "direction": "bull" if market == 1 else "bear",
+        "structure_event": latest_event.get("event", "none"),
+        "structure_event_age": len(klines) - 1 - int(latest_event["index"]) if latest_event else None,
+        "structure_level": latest_event.get("level"),
+        "zones": zones,
+        "high_points": high_points,
+        "low_points": low_points,
+    }
+
+
+def build_msb_ob_context(klines_1h: list[dict[str, Any]], liquidity_ctx: dict[str, Any]) -> dict[str, Any]:
+    """Build MSB/OB/BB/MB context from the supplied Pine algorithm.
+
+    The legacy one-candle breakout classifier is retained only as a sparse-data
+    fallback.  With normal scanner history, structure direction and zones come
+    from the 9 / 0.33 MSB-OB state machine shown on the user's chart.
+    """
+
+    if len(klines_1h) < 40:
+        fallback = _build_legacy_msb_ob_context(klines_1h, liquidity_ctx)
+        fallback["source"] = "legacy_sparse_history_fallback"
+        return fallback
+
+    state = _pine_msb_state(klines_1h)
+    latest = klines_1h[-1]
+    previous = klines_1h[-2]
+    close = float(latest["close"])
+    open_ = float(latest["open"])
+    high = float(latest["high"])
+    low = float(latest["low"])
+    atr = max(float(latest.get("atr", close * 0.004) or close * 0.004), 1e-9)
+    recent = klines_1h[-25:]
+    recent_high = max(float(bar["high"]) for bar in recent[:-1])
+    recent_low = min(float(bar["low"]) for bar in recent[:-1])
+    structure_range = max(recent_high - recent_low, atr)
+    atr_move = abs(close - float(previous["close"])) / atr
+    range_ratio = abs(close - float(previous["close"])) / structure_range
+    body_quality = abs(close - open_) / max(high - low, 1e-9)
+    position_score = (close - recent_low) / structure_range if state["direction"] == "bull" else (recent_high - close) / structure_range
+    position_score = max(0.0, min(1.4, position_score))
+    leg_type = classify_msb_leg(atr_move, range_ratio, body_quality, position_score)
+
+    side_zones = [item for item in state["zones"] if item["side"] == state["direction"]]
+    ob_zones = [item for item in side_zones if item["kind"].endswith("_ob")]
+    bb_zones = [item for item in side_zones if item["kind"].endswith("_bb") or item["kind"].endswith("_mb")]
+    nearest = min(side_zones, key=lambda item: 0.0 if item["zone"][0] <= close <= item["zone"][1] else min(abs(close - item["zone"][0]), abs(close - item["zone"][1]))) if side_zones else None
+    order_block = ob_zones[0]["zone"] if ob_zones else nearest["zone"] if nearest else None
+    continuation = bb_zones[0]["zone"] if bb_zones else order_block
+    if nearest:
+        structure_zone = nearest["zone"]
+    else:
+        pad = atr * 0.35
+        structure_zone = (close - pad, close + pad)
+    if order_block is None:
+        order_block = structure_zone
+    if continuation is None:
+        continuation = order_block
+
+    fvg = _latest_active_fvg(klines_1h, lookback=30)
+    quality = min(100, int((min(atr_move, 2.0) * 0.25 + min(range_ratio, 1.0) * 0.2 + body_quality * 0.2 + min(position_score, 1.0) * 0.2 + (0.15 if state["structure_event_age"] is not None and state["structure_event_age"] <= 6 else 0.0)) * 100))
+    return {
+        "source": "msb_ob_pine_reimplementation",
+        "direction": state["direction"],
+        "leg_type": leg_type,
+        "has_order_block_context": bool(side_zones),
+        "quality": quality,
+        "structure_event": state["structure_event"],
+        "structure_event_age": state["structure_event_age"],
+        "structure_level": state["structure_level"],
+        "structure_zone": tuple(round(value, 2) for value in structure_zone),
+        "order_block_zone": tuple(round(value, 2) for value in order_block),
+        "mid_observe_zone": tuple(round(value, 2) for value in continuation),
+        "active_zones": state["zones"],
         "active_fvg_zone": fvg["zone"],
         "active_fvg_direction": fvg["direction"],
         "active_fvg_age": fvg["age"],

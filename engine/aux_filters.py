@@ -3,9 +3,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from engine.trend_config import TREND_ENGINE_CONFIG
 
-TAI_LEN_FORM = 20
-TAI_LEN_HIST = 252
+
+_TAI_CONFIG = TREND_ENGINE_CONFIG["chart_framework"]["tai"]
+TAI_LEN_FORM = int(_TAI_CONFIG["formation_length"])
+TAI_LEN_HIST = int(_TAI_CONFIG["history_length"])
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -231,19 +234,17 @@ def build_aux_filters_proxy(
 ) -> dict[str, Any]:
     """Build auxiliary context without MACD.
 
-    The current strategy stack removed MACD_SSS_EQ because of lag.  Momentum is
-    therefore based on RAR, Inertial Stochastic, recent price displacement, and
-    volume expansion.  Market heat follows the Trading Activity Index formula:
-    log(SMA(close * volume, 20)) compared against rolling P20/P40/P60/P80 bands.
+    RAR, Inertial Stochastic and TAI are auxiliary filters from the supplied
+    chart, never standalone triggers.  Order-flow language is limited to
+    closed-candle volume proxies because no trade-delta/footprint feed exists.
     """
 
     k1 = klines_1h[-1]
-    k4 = klines_4h[-1]
 
     rar_proxy = _safe_float(k1.get("rar_value"), 50.0)
+    rar_trigger = _safe_float(k1.get("rar_trigger"), 50.0)
     inertia = _safe_float(k1.get("inertia"), 50.0)
 
-    ema_bias = "bull" if _safe_float(k1.get("ema10"), 0.0) > _safe_float(k1.get("ema20"), 0.0) else "bear"
     heat, tai = _temperature_from_tai(klines_1h)
     momentum, rar_slope, inertia_slope, price_impulse, volume_ratio = _momentum_from_rar_inertial_volume(
         klines_1h,
@@ -253,7 +254,14 @@ def build_aux_filters_proxy(
 
     return {
         "rar_proxy": rar_proxy,
+        "rar_trigger": rar_trigger,
+        "rar_above_trigger": rar_proxy >= rar_trigger,
         "inertia": inertia,
+        "inertia_signal": _safe_float(k1.get("inertia_signal"), inertia),
+        "inertia_green": bool(k1.get("inertia_green", False)),
+        "inertia_turn_up": bool(k1.get("inertia_turn_up", False)),
+        "inertia_turn_down": bool(k1.get("inertia_turn_down", False)),
+        "inertia_source": str(k1.get("inertia_source", "unknown")),
         "rar_slope": rar_slope,
         "inertia_slope": inertia_slope,
         "price_impulse": price_impulse,
@@ -264,9 +272,7 @@ def build_aux_filters_proxy(
         "tai_p60": tai["p60"],
         "tai_p80": tai["p80"],
         "tai_percentile": tai["rank01"],
-        "ema_bias": ema_bias,
         "price": _safe_float(k1.get("close"), 0.0),
-        "h4_bias": "bull" if _safe_float(k4.get("ema10"), 0.0) > _safe_float(k4.get("ema20"), 0.0) else "bear",
         "momentum_desc": momentum,
         "temperature_desc": f"热度 {heat}",
     }

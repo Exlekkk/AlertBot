@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from engine.chart_indicators import build_fvg_volume_profile_context, build_high_volume_pivot_context
 
 def _f(value: Any, default: float = 0.0) -> float:
     try:
@@ -40,7 +41,7 @@ def _bar_price(k: dict[str, Any]) -> float:
     return close
 
 
-def build_volume_profile_context(
+def _build_legacy_volume_profile_context(
     klines_1h: list[dict[str, Any]],
     lookback: int = 120,
     bins: int = 30,
@@ -209,6 +210,80 @@ def build_volume_profile_context(
         "accepted_above_value": accepted_above_value,
         "volume_gap_pressure": (current_idx in lvn_indices or current_rel_vol <= 0.35) and position != "inside_value",
         "profile_note": "proxy_from_1h_candles",
+    }
+
+
+def build_volume_profile_context(
+    klines_1h: list[dict[str, Any]],
+    lower_klines: list[dict[str, Any]] | None = None,
+    **_: Any,
+) -> dict[str, Any]:
+    """Compatibility context from the supplied FVG VP and volume-pivot scripts.
+
+    The previous generic fixed-range VP approximation has been removed from the
+    live decision path.  These legacy-shaped fields now describe the nearest
+    active ChartPrime FVG profile and BigBeluga high-volume pivot zones so older
+    alert/copy code can remain stable while the strategy inputs match the chart.
+    """
+
+    if not klines_1h:
+        return {"available": False, "source": "chart_volume_context", "position": "unknown"}
+    fvg = build_fvg_volume_profile_context(klines_1h, lower_klines)
+    pivots = build_high_volume_pivot_context(klines_1h)
+    close = _f(klines_1h[-1].get("close"))
+    previous_close = _f(klines_1h[-2].get("close"), close) if len(klines_1h) >= 2 else close
+    nearest = fvg.get("nearest") if isinstance(fvg.get("nearest"), dict) else None
+
+    if nearest:
+        zone_low, zone_high = nearest["zone"]
+        poc = nearest.get("poc")
+        if close < zone_low:
+            position = "below_value"
+        elif close > zone_high:
+            position = "above_value"
+        else:
+            position = "inside_value"
+        reclaimed = previous_close < zone_low <= close
+        rejected = previous_close > zone_high >= close
+        accepted_below = close < zone_low and previous_close < zone_low
+        accepted_above = close > zone_high and previous_close > zone_high
+    else:
+        zone_low = zone_high = poc = close
+        position = "unknown"
+        reclaimed = rejected = accepted_below = accepted_above = False
+
+    support = pivots.get("support") if isinstance(pivots.get("support"), dict) else None
+    resistance = pivots.get("resistance") if isinstance(pivots.get("resistance"), dict) else None
+    near_pivot = False
+    for item in (support, resistance):
+        if not item:
+            continue
+        low, high = item["zone"]
+        distance = 0.0 if low <= close <= high else min(abs(close - low), abs(close - high))
+        near_pivot = near_pivot or distance / max(abs(close), 1e-9) <= 0.0025
+
+    return {
+        "available": bool(nearest or support or resistance),
+        "source": "fvg_volume_profile_and_high_volume_pivots",
+        "price": round(close, 2),
+        "poc": round(float(poc), 2) if poc is not None else round(close, 2),
+        "vah": round(float(zone_high), 2),
+        "val": round(float(zone_low), 2),
+        "position": position,
+        "below_value_area": position == "below_value",
+        "above_value_area": position == "above_value",
+        "inside_value_area": position == "inside_value",
+        "current_bin_is_lvn": False,
+        "current_bin_is_hvn": bool(nearest and nearest.get("poc") is not None),
+        "near_hvn_or_poc": near_pivot or position == "inside_value",
+        "reclaimed_val": reclaimed,
+        "rejected_vah": rejected,
+        "accepted_below_value": accepted_below,
+        "accepted_above_value": accepted_above,
+        "volume_gap_pressure": False,
+        "fvg_profile": fvg,
+        "high_volume_pivots": pivots,
+        "profile_note": "chartprime_fvg_profile_with_closed_candle_volume_proxy",
     }
 
 

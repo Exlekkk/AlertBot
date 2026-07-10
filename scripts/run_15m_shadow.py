@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from config import KLINE_LIMIT, KLINE_LIMIT_15M
 from engine.indicators import enrich_klines
 from engine.market_data import BinanceMarketDataClient
 from engine.prealert_15m import (
@@ -69,9 +70,9 @@ def main() -> int:
 
     while True:
         try:
-            raw_15m = client.get_klines(args.symbol, "15m", limit=300)
-            raw_1h = client.get_klines(args.symbol, "1h", limit=300)
-            raw_4h = client.get_klines(args.symbol, "4h", limit=180)
+            raw_15m = client.get_klines(args.symbol, "15m", limit=KLINE_LIMIT_15M)
+            raw_1h = client.get_klines(args.symbol, "1h", limit=KLINE_LIMIT)
+            raw_4h = client.get_klines(args.symbol, "4h", limit=KLINE_LIMIT)
 
             # Drop active candle so the shadow test only reads closed candles.
             k15 = enrich_klines(raw_15m[:-1])

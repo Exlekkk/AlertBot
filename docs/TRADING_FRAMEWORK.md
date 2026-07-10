@@ -1,93 +1,148 @@
-# TradingDexCat Crypto Trading Framework for AlertBot
+# TradingDexCat BTC Framework for AlertBot
 
-## Scope
+## Scope and hierarchy
 
-AlertBot currently focuses on BTC only.  
-No stock scanning is required.
+AlertBot is BTC-only. Stock/equity scanning is out of scope.
 
-## Timeframe hierarchy
+- 4H: determine higher-timeframe direction and major location.
+- 1H: determine structure and own all official Telegram decisions.
+- 15m: find possible entry locations in shadow/log mode only.
 
-- 4H: background, major liquidity, large supply/demand context.
-- 1H: main structure and official alert body.
-- 15m: entry-location reminder only.
+15m never changes a 1H direction, title, score, cooldown, pending confirmation or Telegram message.
 
-15m does not decide the market direction.  
-15m does not rewrite 1H conclusions.
+## Core framework
 
-## Main trading idea
+SMC / ICT is the strategy core:
 
-BTC trading is driven by liquidity and structure conversion.
+- liquidity pools, sweeps and reclaim/reject;
+- MSS / CHoCH and BOS;
+- Fair Value Gap;
+- Order Block;
+- Breaker Block and polarity change;
+- mitigation;
+- Premium / Discount and equilibrium;
+- PD Array;
+- HTF bias;
+- OTE;
+- Killzones.
 
-Primary signal sources:
-- MSB-OB
-- OB / MB / BB
-- FVG
-- liquidity sweep and reclaim/reject
-- key round levels
-- 1H close behavior
+No single item above is a standalone trade trigger. Structure, location and a directional catalyst must agree before a formal 1H trial can pass.
 
-Auxiliary filters:
-- RAR
-- Inertial Stochastic
-- TAI
-- MA Ribbon
-- MS Trend Matrix
+## Supplied chart sources and settings
 
-Removed / deprecated:
-- MACDSSSEQ
-- ABS / EXH / DIV / REJ
+The bot translates decision-relevant calculations from the supplied Pine files. Plotting objects are not copied.
 
-## Long logic
+- ICT Concepts [LuxAlgo]
+  - Historical mode;
+  - market-structure length 6;
+  - MSS displayed, BOS hidden;
+  - OB swing lookback 14;
+  - one visible bullish and bearish OB;
+  - full candle wick, not candle body;
+  - liquidity margin 5 and two visible boxes;
+  - FVG mode with two visible gaps;
+  - VI, BPR, NWOG/NDOG, ICT Fibonacci drawings and Killzone shading disabled on the chart.
+- MSB-OB: ZigZag 9, breakout factor 0.33.
+- Smart Money Fibonacci OTE Engine: pivot 10, OTE 0.618–0.786.
+- FVG Volume Profile: custom input 13, 20 bins, gap filter 0.6.
+- High Volume Pivot zones: 40 / 40 pivots, volume SMA 20, multiplier 1.2.
+- Dual Log Regression Channels: macro 300 / 2.0 and short 50 / 1.5.
+- RAR: 15 / 1.0 / close.
+- Inertial Stochastic: 10 / 40 / 3 / 3.
+- TAI: formation 30, history 350.
 
-Long setups are preferred when:
-- price sweeps downside liquidity and quickly reclaims;
-- 1H reclaims a key level such as round number / previous low / FVG upper edge;
-- pullback holds BU-OB / BU-MB / FVG overlap;
-- RAR repairs, Inertial turns up, and TAI does not show obvious participation failure.
+BOS and Killzone context may still be calculated internally because they are part of the stated framework. Their disabled TradingView toggles are treated as visual settings, not permission to replace them with unrelated indicators.
 
-Avoid long when:
-- price breaks a key level and stays below it;
-- bounce into 80k / 80.5k / 80.8k style key levels gets rejected;
-- waterfall volume is large and rebound has no participation;
-- macro/risk backdrop is still worsening.
+## 4H bias
 
-## Short logic
+Official 4H bias is weighted from:
 
-Short setups are preferred when:
-- price sweeps upside liquidity and fails to hold;
-- price falls back into range or loses BE-MB / BE-OB lower edge;
-- 1H has volume-backed key-level loss;
-- 15m reacts at a key retest with rejection;
-- RAR turns down, Inertial rolls over, and TAI is active while price cannot rise.
+- ICT structure direction and recent MSS/BOS;
+- MSB-OB structure;
+- liquidity sweep/reclaim/reject;
+- Fibonacci swing direction and Premium/Discount location;
+- Dual Log Regression alignment;
+- Dow higher-high/higher-low or lower-high/lower-low structure;
+- market-cycle phase.
 
-Avoid chasing short when:
-- the first waterfall already hit sell-side liquidity;
-- price is sitting at previous low / PDL / major round number;
-- 15m rapidly reclaims after downside sweep;
-- price is at a 4H demand area without confirmation.
+EMA crosses are not used by the official 4H bias.
 
-## 15m shadow design
+## 1H structure and formal trials
 
-15m only answers this question:
+The 1H layer uses:
 
-"Is there a possible long/short entry location here that deserves attention?"
+1. market phase;
+2. structure and box location;
+3. directional evidence;
+4. entry quality, invalidation distance and chase checks.
 
-It must not answer:
+Formal trials require a directional catalyst in addition to a zone reaction. A valid catalyst can be:
 
-"Is BTC officially bullish/bearish?"
+- a matching liquidity sweep and reclaim/reject;
+- a fresh MSS/BOS or accepted breakout;
+- a candle-volume stop-run/acceptance event;
+- RAR and Inertial reversal evidence aligned with structure;
+- a near ICT OB with aligned structure plus at least one genuine auxiliary turn.
 
-15m allowed titles:
-- `📍 BTC 15m 做空预警`
+When `+OB` and `-OB` coexist, the market is unresolved. A broad OB is context, not a repeated trigger: the bot watches its first mitigation boundary and keeps the far edge only as invalidation. Same-side formal trials share a 12-bar box cooldown unless genuinely new information appears. Opposite trials require fresh directional information.
+
+Secondary confirmation is a new decision. It must show real progress outside the parent zone and revalidate current structure, risk and chase distance. That verified post-trial push is fresh directional information; a failed parent revalidation cannot immediately create a replacement formal trial on the same candle.
+
+## Fibonacci
+
+The active swing supplies:
+
+- 0.5 equilibrium;
+- 0.618, 0.705, 0.786 and 0.79 retracements;
+- OTE zone;
+- 1.272 and 1.618 continuation targets.
+
+OTE is location evidence, never a standalone entry.
+
+## Volume and order-flow limitation
+
+No footprint, trade-delta or order-book feed was supplied. Therefore:
+
+- `close >= open` volume and `close < open` volume form a candle-direction CVD proxy;
+- absorption, fake breakout, stop-run acceptance and continuation are labelled proxies;
+- the bot never describes these values as true order flow;
+- FVG volume distribution uses available closed 15m candles in shadow mode, or a parent-candle fallback in the official 1H scanner.
+
+The TradingView custom lower-timeframe input is 13 minutes, which Binance does not provide natively. Any 15m substitution remains explicitly labelled.
+
+## Auxiliary filters
+
+RAR, Inertial Stochastic and TAI remain in the framework. They improve timing and confidence but cannot create a trade by themselves.
+
+Inactive legacy decision inputs:
+
+- MACDSSSEQ;
+- EMA Ribbon;
+- the former EMA-based MS Trend Matrix;
+- the former generic fixed-range Volume Profile approximation;
+- ABS / EXH / DIV / REJ trigger families.
+
+Legacy modules may remain importable for compatibility, but the BTC scanner does not use them for official decisions.
+
+## 15m shadow layer
+
+15m asks only:
+
+> Is there a possible entry location inside a valid 1H/4H context?
+
+It may log:
+
 - `📍 BTC 15m 做多预警`
+- `📍 BTC 15m 做空预警`
 
-15m must require:
-- 1H/4H structure context
-- nearby POI / key level / liquidity area
-- actual 15m reaction
-- no direct conflict from RAR / Inertial / TAI
+It requires a 1H POI, actual 15m reaction and no hard conflict with 4H/1H structure. Duplicate and rapid opposite reminders share adaptive cooldowns. There is no hard daily quota.
 
-Invalid standalone triggers:
-- FVG alone
-- TAI hot/cold alone
-- zone touch alone
-- single 15m wick without 1H context
+Invalid standalone 15m triggers:
+
+- one FVG;
+- one wick;
+- one TAI hot/cold value;
+- one OTE touch;
+- one OB or high-volume-zone touch.
+
+Until the user explicitly changes the rule, 15m is shadow-only: no Telegram, no orders and no effect on 1H.

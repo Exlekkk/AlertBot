@@ -1,4 +1,15 @@
-import requests
+try:
+    import requests
+except ModuleNotFoundError:  # Keep message formatting and mocked tests importable offline.
+    class _RequestsUnavailable:
+        class RequestException(RuntimeError):
+            pass
+
+        @staticmethod
+        def post(*args, **kwargs):
+            raise _RequestsUnavailable.RequestException("requests dependency is required for Telegram delivery")
+
+    requests = _RequestsUnavailable()  # type: ignore[assignment]
 
 
 class TelegramSendError(RuntimeError):

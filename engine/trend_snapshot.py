@@ -57,9 +57,9 @@ def load_observation_state(symbol: str, timeframe: str = "1h") -> dict[str, Any]
 def save_observation_state(symbol: str, timeframe: str, state: dict[str, Any]) -> None:
     """Persist key-zone observation state.
 
-    The scanner writes this every loop, not only after a Telegram send.  That
-    lets the observation layer re-arm after price leaves a zone and later
-    re-enters it, while still avoiding repeated messages inside the same zone.
+    Non-alert location updates are written every loop. Alert/pending updates
+    are written only after Telegram confirms delivery, so a failed or deduped
+    parent alert cannot create a phantom secondary confirmation.
     """
     data: dict[str, Any] = {}
     try:
@@ -75,4 +75,3 @@ def save_observation_state(symbol: str, timeframe: str, state: dict[str, Any]) -
     tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(STATE_FILE)
-

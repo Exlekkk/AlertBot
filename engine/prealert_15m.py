@@ -5,6 +5,9 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from engine.chart_indicators import build_chart_context
+from engine.framework import build_htf_bias_context
+from engine.ict_ob import build_ict_ob_context
 from engine.indicators import enrich_klines
 from engine.liquidity import build_liquidity_context
 from engine.msb_ob import build_msb_ob_context
@@ -155,15 +158,7 @@ def _momentum_bucket(k15: list[dict[str, Any]], side: str) -> str:
 
 
 def _htf_context_text(klines_4h: list[dict[str, Any]]) -> str:
-    latest = klines_4h[-1]
-    ema10 = _f(latest.get("ema10"))
-    ema20 = _f(latest.get("ema20"))
-    close = _f(latest.get("close"))
-    atr = max(_f(latest.get("atr")), abs(close) * 0.002, 1.0)
-    strength = abs(ema10 - ema20) / atr
-    if strength <= 0.45:
-        return "4H 震荡"
-    return "4H 偏多" if ema10 > ema20 else "4H 偏空"
+    return str(build_htf_bias_context(klines_4h).get("text", "4H 震荡"))
 
 
 def _context_text_1h(msb: dict[str, Any], liq: dict[str, Any]) -> str:
@@ -186,10 +181,87 @@ def _context_text_1h(msb: dict[str, Any], liq: dict[str, Any]) -> str:
     return "1H 震荡结构语境"
 
 
-def _candidate_zones(klines_1h: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+def _candidate_zones(
+    klines_1h: list[dict[str, Any]],
+    lower_klines: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     liq = build_liquidity_context(klines_1h)
     msb = build_msb_ob_context(klines_1h, liq)
+    ict = build_ict_ob_context(klines_1h)
+    chart = build_chart_context(klines_1h, lower_klines=lower_klines)
     zones: list[dict[str, Any]] = []
+
+    for zone in ict.get("bullish_zones", [])[:1]:
+        zones.append(
+            {
+                "zone": _ordered_zone(zone),
+                "source": "ict_plus_ob",
+                "direction": "bull",
+                "sides": ["long"],
+                "role": "support",
+                "priority": 6,
+                "structural": True,
+            }
+        )
+    for zone in ict.get("bearish_zones", [])[:1]:
+        zones.append(
+            {
+                "zone": _ordered_zone(zone),
+                "source": "ict_minus_ob",
+                "direction": "bear",
+                "sides": ["short"],
+                "role": "resistance",
+                "priority": 6,
+                "structural": True,
+            }
+        )
+
+    fib = chart.get("fibonacci", {})
+    ote_zone = fib.get("ote_zone")
+    if ote_zone and fib.get("trend") in {"bull", "bear"}:
+        is_bull = fib.get("trend") == "bull"
+        zones.append(
+            {
+                "zone": _ordered_zone(ote_zone),
+                "source": "fibonacci_ote",
+                "direction": fib.get("trend"),
+                "sides": ["long" if is_bull else "short"],
+                "role": "support" if is_bull else "resistance",
+                "priority": 5,
+                "structural": True,
+            }
+        )
+
+    volume_pivots = chart.get("high_volume_pivots", {})
+    for key, side, role in (("support", "long", "support"), ("resistance", "short", "resistance")):
+        item = volume_pivots.get(key)
+        if isinstance(item, dict) and item.get("zone"):
+            zones.append(
+                {
+                    "zone": _ordered_zone(item["zone"]),
+                    "source": f"high_volume_{key}",
+                    "direction": "bull" if side == "long" else "bear",
+                    "sides": [side],
+                    "role": role,
+                    "priority": 4,
+                    "structural": True,
+                }
+            )
+
+    fvg_profile = chart.get("fvg_volume_profile", {})
+    for item in list(fvg_profile.get("bullish", []))[:1] + list(fvg_profile.get("bearish", []))[:1]:
+        is_bull = item.get("direction") == "bull"
+        zones.append(
+            {
+                "zone": _ordered_zone(item["zone"]),
+                "source": "fvg_volume_profile",
+                "direction": item.get("direction", "none"),
+                "sides": ["long" if is_bull else "short"],
+                "role": "support" if is_bull else "resistance",
+                "priority": 4,
+                "structural": True,
+            }
+        )
 
     fvg_zone = msb.get("active_fvg_zone")
     if fvg_zone:
@@ -567,9 +639,18 @@ def _score_setup(
     score += 2
     reasons.append(context_1h)
 
-    if source in {"order_block_zone", "mid_observe_zone"}:
+    if source in {"ict_plus_ob", "ict_minus_ob", "order_block_zone", "mid_observe_zone"}:
         score += 2
         reasons.append("1H OB/MB POI")
+    elif source == "fibonacci_ote":
+        score += 2
+        reasons.append("1H OTE/PD Array")
+    elif source in {"high_volume_support", "high_volume_resistance"}:
+        score += 1
+        reasons.append("1H 高成交量枢轴")
+    elif source == "fvg_volume_profile":
+        score += 1
+        reasons.append("1H FVG 成交量分布")
     elif source == "structure_zone":
         score += 1
         reasons.append("1H 结构区")
@@ -842,7 +923,7 @@ def evaluate_15m_prealert(
             "lead_to_1h_close_min": lead_to_close,
         }
 
-    candidate_result = _candidate_zones(klines_1h)
+    candidate_result = _candidate_zones(klines_1h, klines_15m)
     if (
         isinstance(candidate_result, tuple)
         and len(candidate_result) == 3

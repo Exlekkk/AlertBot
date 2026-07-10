@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from typing import Any
+
+from engine.chart_indicators import build_chart_context
+from engine.ict_ob import build_ict_ob_context
+from engine.liquidity import build_liquidity_context
+from engine.msb_ob import build_msb_ob_context
+
+
+def _vote(scores: dict[str, float], side: str, weight: float) -> None:
+    if side in scores:
+        scores[side] += float(weight)
+
+
+def build_htf_bias_context(
+    klines_4h: list[dict[str, Any]],
+    direction_1h: str = "neutral",
+    *,
+    liquidity: dict[str, Any] | None = None,
+    msb: dict[str, Any] | None = None,
+    ict: dict[str, Any] | None = None,
+    chart: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """4H bias from structure, liquidity and classical trend context.
+
+    EMA crosses are deliberately absent.  The result is a background vote, not
+    a 4H entry signal, and 15m data is never accepted here.
+    """
+
+    if not klines_4h:
+        return {"h4_direction": "range", "relation": "neutral", "text": "4H 震荡", "h4_strength": 0.0}
+    liquidity = liquidity or build_liquidity_context(klines_4h)
+    msb = msb or build_msb_ob_context(klines_4h, liquidity)
+    ict = ict or build_ict_ob_context(klines_4h)
+    chart = chart or build_chart_context(klines_4h)
+
+    scores = {"bull": 0.0, "bear": 0.0}
+    evidence: list[str] = []
+    ict_direction = str(ict.get("structure_direction", "neutral"))
+    if ict_direction in scores:
+        _vote(scores, ict_direction, 3.0)
+        evidence.append(f"ict_structure_{ict_direction}")
+    msb_direction = str(msb.get("direction", "neutral"))
+    if msb_direction in scores:
+        _vote(scores, msb_direction, 2.0)
+        evidence.append(f"msb_{msb_direction}")
+
+    fibonacci = chart.get("fibonacci", {})
+    fib_direction = str(fibonacci.get("trend", "neutral"))
+    if fib_direction in scores:
+        _vote(scores, fib_direction, 1.5)
+        evidence.append(f"fibonacci_{fib_direction}")
+
+    regression = chart.get("dual_log_regression", {})
+    regression_direction = str(regression.get("alignment", "neutral"))
+    if regression_direction in scores:
+        _vote(scores, regression_direction, 1.25)
+        evidence.append(f"log_channel_{regression_direction}")
+
+    classic = chart.get("classic_market", {})
+    dow_direction = str(classic.get("dow_direction", "neutral"))
+    if dow_direction in scores:
+        _vote(scores, dow_direction, 1.75)
+        evidence.append(f"dow_{dow_direction}")
+
+    if liquidity.get("recent_sweep_valid"):
+        if liquidity.get("sweep_type") == "sellside" and liquidity.get("reclaim_or_reject") == "reclaim":
+            _vote(scores, "bull", 1.5)
+            evidence.append("sellside_sweep_reclaim")
+        elif liquidity.get("sweep_type") == "buyside" and liquidity.get("reclaim_or_reject") == "reject":
+            _vote(scores, "bear", 1.5)
+            evidence.append("buyside_sweep_reject")
+
+    difference = scores["bull"] - scores["bear"]
+    if difference >= 2.0:
+        h4 = "bull"
+    elif difference <= -2.0:
+        h4 = "bear"
+    else:
+        h4 = "range"
+    strength = min(1.0, abs(difference) / 7.5)
+    if direction_1h == "neutral" or h4 == "range":
+        relation = "neutral"
+    else:
+        aligned = (h4 == "bull" and direction_1h == "long") or (h4 == "bear" and direction_1h == "short")
+        relation = "aligned" if aligned else "strong_counter" if strength >= 0.75 else "counter"
+    return {
+        "h4_direction": h4,
+        "h4_raw_direction": "bull" if difference > 0 else "bear" if difference < 0 else "neutral",
+        "relation": relation,
+        "text": "4H 震荡" if h4 == "range" else "4H 偏多" if h4 == "bull" else "4H 偏空",
+        "h4_strength": strength,
+        "bias_scores": scores,
+        "bias_evidence": evidence,
+        "premium_discount": fibonacci.get("premium_discount", "unknown"),
+        "market_cycle": classic.get("cycle", "unknown"),
+        "source": "smc_ict_dow_log_regression",
+    }

@@ -1,5 +1,105 @@
 # TradingDexCat AlertBot Changelog
 
+## v1.4.0-btc-smc-ict-chart-alignment
+
+Status: BTC Pine-framework alignment and decision-path replacement.
+Deployment safety: 1H remains the only production Telegram layer; 15m remains shadow-only.
+
+### Scope and source
+
+The user supplied the Pine sources used on the BTC 15m/1H layout plus screenshots of the custom ICT settings. US-stock analysis is not part of AlertBot. The fixed hierarchy is 4H direction, 1H structure and official alert, 15m entry-location shadow.
+
+### Main changes
+
+1. SMC/ICT core
+   - translated ICT zigzag structure with MSS/BOS selection matching the Pine array logic;
+   - translated custom order-block swing logic with full-wick zones, breaker polarity and mitigation state;
+   - added ICT FVG, clustered liquidity, Premium/Discount and PD Array context;
+   - kept ICT `+OB` / `-OB` separate from MSB-OB;
+   - applied chart settings `6 / 14 / 5`, one visible bullish/bearish OB and two visible FVGs.
+
+2. Fibonacci and classical context
+   - translated Smart Money Fibonacci OTE with pivot 10 and 0.618-0.786 OTE;
+   - added 0.5, 0.705, 0.79, 1.272 and 1.618 decision fields;
+   - translated Dual Log Regression Channels (`300 / 2.0`, `50 / 1.5`);
+   - added Dow swing structure, volume-price confirmation and market-cycle phase to 4H/1H context.
+
+3. Volume and order-flow boundary
+   - translated High Volume Pivot Support/Resistance (`40 / 40 / 20 / 1.2`);
+   - translated FVG Volume Profile (`13 / 20 / 0.6` chart values);
+   - a native 13-minute Binance interval does not exist, so closed 15m data is used only as a labelled shadow proxy when available; the official 1H path uses a labelled parent-candle fallback;
+   - candle-direction CVD, stop-run, acceptance and absorption are labelled proxies with `is_true_orderflow=false`.
+
+4. Auxiliary filters
+   - restored RAR `15 / 1`;
+   - restored the supplied Inertial Stochastic search/smoothing algorithm `10 / 40 / 3 / 3`;
+   - restored TAI with the user's `30 / 350` percentile settings;
+   - all three remain timing/confidence evidence, never standalone triggers.
+
+5. Decision safety
+   - formal trials require fresh sweep/structure/volume evidence or a qualified OB + auxiliary reversal;
+   - zone touch alone cannot produce a formal trial;
+   - wrong edge, stale/chased entries, excessive invalidation distance and opposing structure are hard blocks;
+   - same-box duplicate trials use a 12-bar cooldown unless genuinely new information appears;
+   - secondary confirmation requires progress outside the parent zone and complete current-context revalidation;
+   - no EMA fallback remains in official 4H bias.
+
+6. Isolation and diagnostics
+   - scanner fetches only 4H and 1H;
+   - 15m scripts remain shadow/log/backtest only and contain no Telegram send path;
+   - replay diagnostics now include ICT source/event age, Premium/Discount, Fibonacci, classical cycle, volume source and directional-catalyst fields.
+
+### Review result
+
+The Binance Vision replay includes 96 hourly closes from 2026-06-09 00:59 through 2026-06-12 23:59 Asia/Singapore. It emits 12 public alerts: 7 formal trials, 2 structure shifts and 3 passive observations. The issue-summary examples of late shorts, wrong low-area shorts, late longs, same-box flips and mechanical secondary confirmation do not recur at their reported timestamps.
+
+This is a decision replay, not a PnL backtest. The bot still has no native footprint/order-book data, and no real 15m historical performance claim is made by this review.
+
+
+## v1.3.9-layered-trial-decision
+
+Status: 1H formal-trial decision-layer rebuild.
+Deployment safety: 15m remains shadow-only and Telegram 15m is not enabled.
+
+### Reason for this version
+
+v1.3.8 reduced repeated range messages but retained the wrong core model: a selected key-zone interaction became a formal trial unless separate gates downgraded it. Live incidents on 6/9-6/12 showed late shorts after selloffs, shorts into lower support/+OB context, late longs after the useful repair window, mechanical second confirmations, and repeated direction changes inside unresolved boxes.
+
+### Main changes
+
+1. Separate ICT order-block context
+   - `ICT Concepts [LuxAlgo]` `+OB` / `-OB` no longer share the MSB-OB object.
+   - Exact adapter fields and Binance candle proxies carry different source labels.
+   - `+OB` and `-OB` coexistence creates unresolved box context until a side is accepted.
+
+2. Layered formal-trial decision
+   - market phase;
+   - structure and location state;
+   - weighted SMC/ICT, Volume Profile, RAR, Inertial and TAI evidence;
+   - chase, invalidation distance, box location and reward/risk checks.
+
+3. Range behavior corrected
+   - breakout is not the only formal-trial switch;
+   - full indicator confluence is not mandatory;
+   - a weighted early edge trial can pass inside a box;
+   - an opposite formal trial inside the same practical box needs fresh structure information.
+
+4. Secondary confirmation rebuilt
+   - parent trial must have been delivered successfully;
+   - price must make a real post-trial push;
+   - current direction, location, chase distance and risk are revalidated;
+   - stale parent trials are cleared instead of being mechanically confirmed.
+
+5. Diagnostics and replay
+   - added `scripts/replay_1h_decisions.py`;
+   - added `reports/v1.3.9_replay_2026-06-09_12.csv`;
+   - added `docs/V1_3_9_REPLAY_REVIEW.md`.
+
+### Review result
+
+In the 2026-06-09 through 2026-06-12 Binance Vision replay, formal trial/secondary alerts fell from 8 to 4. The listed late/wrong examples were blocked while earlier long candidates remained available. Native LuxAlgo objects were not present in Binance data, so that replay uses the explicitly labelled price proxy; exact-field behavior is covered by tests.
+
+
 ## v1.3.8-range-lock-noise-control
 
 Status: 1H range/noise-control update.  

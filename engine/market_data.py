@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:  # Allows offline diagnostics/import checks.
+    requests = None  # type: ignore[assignment]
 
 from config import (
     BINANCE_FUTURES_KLINES_URL,
@@ -18,6 +21,8 @@ class BinanceMarketDataClient:
         self.base_url = BINANCE_FUTURES_KLINES_URL if source == "binance_futures" else BINANCE_SPOT_KLINES_URL
 
     def get_klines(self, symbol: str, interval: str, limit: int = KLINE_LIMIT) -> list[dict]:
+        if requests is None:
+            raise RuntimeError("requests dependency is required for live Binance data")
         params = {"symbol": symbol, "interval": interval, "limit": limit}
         response = requests.get(self.base_url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
