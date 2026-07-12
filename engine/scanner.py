@@ -102,9 +102,12 @@ class SMCTScanner:
             msb_4h = build_msb_ob_context(klines_4h, liq_4h)
             ict_4h = build_ict_ob_context(klines_4h)
             chart_4h = build_chart_context(klines_4h)
+            direction_1h_source = str(ict.get("structure_direction", "neutral"))
+            if direction_1h_source not in {"bull", "bear"}:
+                direction_1h_source = str(msb.get("direction", "neutral"))
             htf = self._htf_context(
                 klines_4h,
-                "long" if msb["direction"] == "bull" else "short" if msb["direction"] == "bear" else "neutral",
+                "long" if direction_1h_source == "bull" else "short" if direction_1h_source == "bear" else "neutral",
                 liquidity=liq_4h,
                 msb=msb_4h,
                 ict=ict_4h,

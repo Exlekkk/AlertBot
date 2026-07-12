@@ -24,6 +24,19 @@ def _wave_bars(count: int = 520, interval_ms: int = 3_600_000) -> list[dict]:
 
 
 class SuppliedChartConfigTests(unittest.TestCase):
+    def test_htf_relation_is_recomputed_for_actual_candidate_direction(self):
+        from engine.framework import relation_to_htf
+
+        htf = {
+            "h4_direction": "bull",
+            "h4_strength": 0.9,
+            "text": "4H 偏多",
+            "relation": "strong_counter",
+        }
+        self.assertEqual(relation_to_htf(htf, "long"), "aligned")
+        self.assertEqual(relation_to_htf(htf, "short"), "strong_counter")
+        self.assertEqual(relation_to_htf(htf, "neutral"), "neutral")
+
     def test_replay_end_boundary_includes_binance_close_millisecond(self):
         from zoneinfo import ZoneInfo
 

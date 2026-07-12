@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from engine.framework import relation_to_htf
 from engine.trend_config import TREND_ENGINE_CONFIG
 from engine.volume_profile import attach_vp_fields, block_formal_long, block_formal_short
 
@@ -94,7 +95,8 @@ def decide_trend_segment(
     aux_score = 4 if (("偏强" in momentum_desc and direction == "long") or ("偏弱" in momentum_desc and direction == "short")) else 0
 
     base_score = liq_score + int(msb_score * 0.75) + matrix_score + ict_score + aux_score
-    htf_relation = str(htf_ctx.get("relation", "neutral"))
+    htf_relation = relation_to_htf(htf_ctx, direction)
+    candidate_htf = {**htf_ctx, "relation": htf_relation}
     score, htf_delta, htf_filtered = apply_higher_timeframe_bias(base_score, htf_relation)
 
     suppress_reason = ""
@@ -114,9 +116,9 @@ def decide_trend_segment(
     vp_reasons: list[str] = []
     if alert_type != "NO_TRADE_RANGE" and suppress_reason == "":
         if direction == "long":
-            vp_reasons = block_formal_long(htf_ctx, msb, matrix, aux, vp)
+            vp_reasons = block_formal_long(candidate_htf, msb, matrix, aux, vp)
         elif direction == "short":
-            vp_reasons = block_formal_short(htf_ctx, msb, matrix, aux, vp)
+            vp_reasons = block_formal_short(candidate_htf, msb, matrix, aux, vp)
 
         # Volume Profile is a filter, not a standalone signal.  A high-quality
         # confirmed structure can still pass, but medium trial/continuation

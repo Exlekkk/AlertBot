@@ -13,6 +13,29 @@ def _vote(scores: dict[str, float], side: str, weight: float) -> None:
         scores[side] += float(weight)
 
 
+def relation_to_htf(htf_ctx: dict[str, Any], direction_1h: str) -> str:
+    """Return the 4H relation for the direction actually being evaluated."""
+
+    if direction_1h not in {"long", "short"}:
+        return "neutral"
+    h4 = str(htf_ctx.get("h4_direction", ""))
+    text = str(htf_ctx.get("text", ""))
+    if h4 not in {"bull", "bear", "range"}:
+        h4 = "bull" if "偏多" in text else "bear" if "偏空" in text else "range"
+    if h4 == "range":
+        return "neutral"
+    aligned = (h4 == "bull" and direction_1h == "long") or (h4 == "bear" and direction_1h == "short")
+    if aligned:
+        return "aligned"
+    try:
+        strength = float(htf_ctx.get("h4_strength", 0.0))
+    except (TypeError, ValueError):
+        strength = 0.0
+    if "h4_strength" not in htf_ctx and htf_ctx.get("relation") == "strong_counter":
+        strength = 1.0
+    return "strong_counter" if strength >= 0.75 else "counter"
+
+
 def build_htf_bias_context(
     klines_4h: list[dict[str, Any]],
     direction_1h: str = "neutral",
@@ -80,15 +103,9 @@ def build_htf_bias_context(
     else:
         h4 = "range"
     strength = min(1.0, abs(difference) / 7.5)
-    if direction_1h == "neutral" or h4 == "range":
-        relation = "neutral"
-    else:
-        aligned = (h4 == "bull" and direction_1h == "long") or (h4 == "bear" and direction_1h == "short")
-        relation = "aligned" if aligned else "strong_counter" if strength >= 0.75 else "counter"
-    return {
+    context = {
         "h4_direction": h4,
         "h4_raw_direction": "bull" if difference > 0 else "bear" if difference < 0 else "neutral",
-        "relation": relation,
         "text": "4H 震荡" if h4 == "range" else "4H 偏多" if h4 == "bull" else "4H 偏空",
         "h4_strength": strength,
         "bias_scores": scores,
@@ -97,3 +114,5 @@ def build_htf_bias_context(
         "market_cycle": classic.get("cycle", "unknown"),
         "source": "smc_ict_dow_log_regression",
     }
+    context["relation"] = relation_to_htf(context, direction_1h)
+    return context
