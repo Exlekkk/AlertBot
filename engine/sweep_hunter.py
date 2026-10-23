@@ -1,8 +1,6 @@
-"""Liquidity Sweep Hunter — K 线近似（契约 §3）。
+"""Liquidity sweep proxy — closed-candle approximation.
 
-对照：Liquidity Sweep Hunter [BigBeluga]。
-参数取用户截图：Length=10，Filter=1，calcBars≈700。
-不复制受许可 Pine；翻译 pivot + volume filter + sweep/reclaim 语义。
+Pivot + volume-filter heuristic. Engineering feature only; not a solo entry.
 """
 from __future__ import annotations
 
@@ -50,7 +48,7 @@ def _is_pivot_high(highs: list[float], i: int, length: int) -> bool:
 
 
 def build_sweep_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
-    """契约 sweep 字段；附旧 liquidity 兼容映射。不单独入场。"""
+    """Sweep context plus legacy liquidity field mapping. Not a solo entry."""
     cfg = TREND_ENGINE_CONFIG.get("sweep_hunter", {})
     length = int(cfg.get("length", 10))
     vol_filter = float(cfg.get("filter", 1.0))

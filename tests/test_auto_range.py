@@ -118,16 +118,15 @@ class AutoRangeDeviationStateMachineTests(unittest.TestCase):
             bars.append(b)
         return bars
 
-    def test_same_bar_break_is_pending_breakout_not_deviation(self):
-        # 最后一根收盘上破，无后续收回 bar → breakout（pending），绝非 deviation
+    def test_same_bar_break_is_pending_not_accepted_breakout(self):
+        # Close beyond box → pending only; last_event must not be breakout_* yet
         bars = self._boxed_then([
-            _bar(10150, 10350, 10140, 10320, atr=40.0),  # close > top+buffer
+            _bar(10150, 10350, 10140, 10320, atr=40.0),
         ])
         ctx = build_auto_range_context(bars)
-        self.assertNotIn(ctx.get("last_event"), {"deviation_up", "deviation_down"})
-        if ctx.get("last_event") is not None:
-            self.assertEqual(ctx["last_event"], "breakout_up")
-            self.assertEqual(ctx["state"], "broken")
+        self.assertNotIn(ctx.get("last_event"), {"deviation_up", "deviation_down", "breakout_up", "breakout_down"})
+        self.assertEqual(ctx.get("pending_break"), "up")
+        self.assertIn(ctx["state"], {"live", "provisional"})
 
     def test_deviation_requires_cross_bar_reclaim(self):
         # bar0 上破，bar1..bar3 仍在外，bar4 收回箱内 → deviation_up
@@ -143,14 +142,38 @@ class AutoRangeDeviationStateMachineTests(unittest.TestCase):
         self.assertEqual(ctx.get("last_event"), "deviation_up")
         self.assertIn(ctx["state"], {"live", "provisional"})
 
-    def test_no_reclaim_within_window_stays_breakout_not_deviation(self):
-        # 破箱后若干根仍在外、未收回 → 只能是 breakout（或箱体已拆→none），绝非 deviation
-        extras = [_bar(10150, 10350, 10140, 10320, atr=40.0)]  # break
+    def test_no_reclaim_within_window_stays_pending_not_deviation(self):
+        # Still outside inside the reclaim window → pending, not deviation, not confirmed breakout
+        extras = [_bar(10150, 10350, 10140, 10320, atr=40.0)]
         for _ in range(3):
             extras.append(_bar(10320, 10360, 10290, 10330, atr=40.0))
         bars = self._boxed_then(extras)
         ctx = build_auto_range_context(bars)
         self.assertNotIn(ctx.get("last_event"), {"deviation_up", "deviation_down"})
         if ctx["state"] != "none":
-            self.assertEqual(ctx.get("last_event"), "breakout_up")
-            self.assertEqual(ctx["state"], "broken")
+            self.assertEqual(ctx.get("pending_break"), "up")
+            self.assertIsNone(ctx.get("last_event"))
+            self.assertIn(ctx["state"], {"live", "provisional"})
+
+    def test_pending_does_not_set_accepted_breakout_on_range_lock(self):
+        from engine.range_lock import build_range_lock_context
+        extras = [_bar(10150, 10350, 10140, 10320, atr=40.0)]
+        for _ in range(2):
+            extras.append(_bar(10320, 10360, 10290, 10330, atr=40.0))
+        bars = self._boxed_then(extras)
+        ctx = build_range_lock_context(
+            bars,
+            {"text": "neutral", "relation": "neutral"},
+            {},
+            {"direction": "neutral", "leg_type": "SHORT", "quality": 0},
+            {"matrix_direction": "neutral"},
+            {},
+            vp={},
+            ict={"coexist": False},
+        )
+        ar = ctx.get("auto_range") or {}
+        if ar.get("pending_break"):
+            self.assertEqual(ctx.get("accepted_breakout"), "none")
+            self.assertFalse(ctx.get("directional_breakout"))
+            # balance gate should stay engaged while pending
+            self.assertTrue(ctx.get("active"))

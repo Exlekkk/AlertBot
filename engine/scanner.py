@@ -116,13 +116,14 @@ class SMCTScanner:
                 ict=ict_4h,
                 chart=chart_4h,
             )
-            # AMST evidence：Sweep / 3D Delta / IFVG（K 线近似）；merge 进旧 liq/vp 字段
+            # Evidence helpers (candle approx); merge into legacy liq/vp fields
             sweep = build_sweep_context(klines_1h)
             liq = merge_sweep_into_liquidity(liq, sweep)
             delta_profile = build_delta_profile_context(klines_1h)
             vp = merge_delta_into_vp(vp, delta_profile)
             ifvg = build_ifvg_context(klines_1h, timeframe="1h")
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
+            range_lock["imbalance"] = ifvg
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp, ict=ict)
 

@@ -144,7 +144,7 @@ TREND_ENGINE_CONFIG = {
         "strong_reversal_atr": 1.35,
         "strong_reversal_volume_ratio": 1.15,
     },
-    # --- AMST 证据源参数（用户截图，非 Pine 默认）；见 docs/AMST_EVIDENCE_CONTRACTS_v1.md ---
+    # --- evidence feature knobs (candle approx); see docs/ARCHITECTURE.md ---
     "auto_range": {
         "scan_scales": [1, 2, 3],  # Base + 2x + 3x
         "base_length": 20,

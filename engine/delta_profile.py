@@ -1,7 +1,6 @@
-"""3D Delta Profile + POC — K 线近似（契约 §4）。
+"""Volume-profile / signed-volume approx from closed candles.
 
-对照：LuxAlgo 3D Delta Profile；**非真实 footprint / trade-delta**。
-label 固定为 candle_delta_proxy。参数：Length=200 / Buckets=35 / VA%=70。
+Not a footprint or trade-delta feed. `label` stays `candle_delta_proxy`.
 """
 from __future__ import annotations
 
@@ -166,7 +165,7 @@ def build_delta_profile_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def merge_delta_into_vp(vp: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
-    """3D Delta 叠加到旧 VP；不删旧 POC。"""
+    """Merge profile approx into legacy VP fields without dropping old POC."""
     out = dict(vp or {})
     out["delta_profile"] = delta
     if not delta or delta.get("poc") is None:

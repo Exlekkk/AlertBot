@@ -1,9 +1,8 @@
-"""Range / Balance 门控。
+"""Range / balance gate.
 
-BTC 正式路径：Auto Range Detector（K 线近似）替换旧 lookback 箱体 / Z-Score 意图。
-本文件保留 `build_range_lock_context` 签名，把 Auto Range 映射为下游仍在读的
-旧字段（active / box_* / accepted_breakout / cluster），并附带完整 `auto_range`
-契约对象。Deviation = Failed Acceptance，不是机械反向信号。
+Maps the candle-approx range detector onto legacy box fields
+(`active` / `box_*` / `accepted_breakout` / `cluster`) plus an `auto_range`
+payload. Pending breaks are not accepted_breakout.
 """
 from __future__ import annotations
 
@@ -52,8 +51,7 @@ def build_range_lock_context(
 ) -> dict[str, Any]:
     """Balance / 同箱噪音门控。
 
-    检测逻辑走 Auto Range（approx）；ICT +OB/-OB 并存仍视为冲突箱体状态
-    （与旧行为兼容，IFVG 栈落地后可收敛）。
+    Range detection is candle-approx; legacy ICT coexist still forces an active box.
     """
     _ = (htf_ctx, liq, msb, matrix, aux, vp)  # 旧签名保留；权重改由 trial 层读新证据
     ict = ict or {}
@@ -69,18 +67,20 @@ def build_range_lock_context(
     has_box = state in {"provisional", "live", "broken"} and box_low == box_low and box_high == box_high
 
     if not has_box and klines_1h:
-        # 无合格 Auto Range 时仍给下游一个退化箱，避免 NaN；active 由冲突态决定
+        # Fallback box when no qualifying range; active still driven by conflict/state
         lookback = max(8, int(TREND_ENGINE_CONFIG["range_lock"].get("lookback_bars", 14)))
         window = klines_1h[-lookback:]
         box_low = min(_f(k.get("low"), close) for k in window)
         box_high = max(_f(k.get("high"), close) for k in window)
 
     last_event = auto_range.get("last_event")
-    # Breakout = 真正离开；Deviation = Failed Acceptance → 不算 accepted_breakout
-    if last_event == "breakout_up":
+    pending_break = auto_range.get("pending_break")
+    # Only confirmed breakout_* sets accepted_breakout.
+    # pending / deviation keep accepted_breakout=none so the same-box gate stays closed.
+    if last_event == "breakout_up" and not pending_break:
         directional_breakout = True
         accepted_breakout = "up"
-    elif last_event == "breakout_down":
+    elif last_event == "breakout_down" and not pending_break:
         directional_breakout = True
         accepted_breakout = "down"
     else:
@@ -88,9 +88,9 @@ def build_range_lock_context(
         accepted_breakout = "none"
 
     ict_ob_conflict = bool(ict.get("coexist", False))
-    # live/provisional = Balance 噪音门控；broken 的真正突破则放开
-    balance_active = state in {"provisional", "live"}
-    # Deviation 收回后仍是 live → 继续抑制同箱刷屏，但事件留给加权层
+    # live/provisional (incl. pending break) keep the balance gate; confirmed broken opens it
+    balance_active = state in {"provisional", "live"} or bool(pending_break)
+    # After reclaim, state stays live → keep same-box suppression; event is for weighting
     active = bool((balance_active and not directional_breakout) or ict_ob_conflict)
 
     box_width = max(box_high - box_low, 0.0)
@@ -123,9 +123,10 @@ def build_range_lock_context(
         "ict_ob_conflict": ict_ob_conflict,
         "ict_ob_source": ict.get("source", "none"),
         "latest_volume_ratio": (volumes[-1] / max(_avg(volumes[:-1]), 1e-9)) if len(volumes) >= 3 else 1.0,
-        # 契约对象：新消费者读这里
+        # full range payload for newer consumers
         "auto_range": auto_range,
         "last_event": last_event,
+        "pending_break": pending_break,
         "approx": True,
     }
 
@@ -178,7 +179,7 @@ def attach_range_lock_fields(decision: dict[str, Any], range_lock: dict[str, Any
         out["range_lock_box_low"] = range_lock.get("box_low")
         out["range_lock_box_high"] = range_lock.get("box_high")
         out["range_lock_width_atr"] = range_lock.get("box_width_atr")
-    # 透传 Auto Range 事件供文案/加权（不单独触发）
+    # pass through range events for copy/weighting (not a solo trigger)
     auto_range = range_lock.get("auto_range") or {}
     if auto_range:
         out["auto_range_state"] = auto_range.get("state")

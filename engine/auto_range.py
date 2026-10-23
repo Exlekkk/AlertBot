@@ -1,8 +1,7 @@
-"""Auto Range Detector — K 线近似（非原版 Pine）。
+"""Range detector — closed-candle approximation.
 
-对照：Auto Range Detector [QuantAlgo]，参数取用户截图（非 Pine 默认）。
-本模块是 candle-proxy / approx，不复制受 CC BY-NC-SA 许可的 Pine 源码。
-语义见 docs/AMST_EVIDENCE_CONTRACTS_v1.md §2。
+Candle-proxy / approx only. Neutral engineering feature for balance vs break
+state. See docs/ARCHITECTURE.md for runtime placement.
 """
 from __future__ import annotations
 
@@ -65,6 +64,9 @@ def _empty_auto_range(reason: str = "insufficient_history") -> dict[str, Any]:
         "height_pct": 0.0,
         "last_event": None,
         "event_bar_ts": None,
+        "pending_break": None,
+        "pending_age": None,
+        "pending_bars_left": None,
         "approx": True,
         "reason": reason,
         "scan_window": 0,
@@ -231,10 +233,11 @@ def _extend_anchor(
 
 
 def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
-    """构建 Auto Range context（契约 §2）。
+    """Build range context from closed candles.
 
-    仅使用已收盘 K 线（调用方应传入 enrich 后的闭盘序列）。
-    Breakout = Close beyond + ATR buffer；Deviation = Failed Acceptance（收回箱内）。
+    Confirmed breakout only after the reclaim window expires without reclaim.
+    While pending, last_event stays None and pending_break is set so callers
+    do not treat it as accepted_breakout.
     """
     cfg = TREND_ENGINE_CONFIG.get("auto_range", {})
     base = int(cfg.get("base_length", 20))
@@ -275,7 +278,7 @@ def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
         # 无合格 range → 仍检测是否刚发生 breakout 残留；第一刀简化为 none
         return _empty_auto_range("no_qualifying_range")
 
-    # 最长合格窗优先（与 Pine「最长窗口通过全部过滤」一致）
+    # 最长合格窗优先（prefer longest window that passes all filters）
     best = max(candidates, key=lambda c: c["window"])
     left = _extend_anchor(
         highs, lows, closes, best["start"], best["end"], best["top"], best["bot"], atr_now, cfg
@@ -317,13 +320,13 @@ def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
             return True
         return False
 
-    # ---- 跨 bar 状态机（Merge Deviations）----
+    # ---- cross-bar pending / reclaim state machine ----
     # pending_break: None | "up" | "down"；记录首次破箱 bar，后续 dev_win 内收回才记 deviation
     last_event = None
     event_bar_ts = None
     pending_break = None  # type: str | None
     pending_bar = None  # type: int | None
-    scan_from = max(left, n - max(dev_win * 3, 24))  # 限制回放窗口
+    scan_from = max(left, n - max(dev_win * 3, 24))  # limit replay window
 
     for i in range(scan_from, n):
         if _absorb(i):
@@ -334,22 +337,22 @@ def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
         if pending_break is not None and pending_bar is not None:
             age = i - pending_bar
             if merge_dev and age >= 1 and age <= dev_win and _inside(i):
-                # 破箱后的后续 bar 收回 → Failed Acceptance / Deviation
+                # reclaim inside window → failed break (deviation_*)
                 last_event = "deviation_up" if pending_break == "up" else "deviation_down"
                 event_bar_ts = klines[i].get("open_time")
                 pending_break = None
                 pending_bar = None
                 continue
             if age > dev_win:
-                # 窗口耗尽仍未收回 → 确认 breakout（落在破箱 bar 语义上）
+                # window exhausted without reclaim → confirm breakout_*
                 last_event = "breakout_up" if pending_break == "up" else "breakout_down"
                 event_bar_ts = klines[pending_bar].get("open_time")
                 pending_break = None
                 pending_bar = None
-                # 若本 bar 又破另一侧，下面继续处理
+                # if this bar breaks the other side, fall through
 
         if pending_break is None and (broke_up or broke_dn):
-            # 同 bar 不可能既破又收回；只登记 pending，等后续 bar
+            # same bar cannot break and reclaim; register pending only
             pending_break = "up" if broke_up else "down"
             pending_bar = i
             if not merge_dev:
@@ -358,13 +361,18 @@ def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
                 pending_break = None
                 pending_bar = None
 
-    # 收盘态：仍 pending → broken（等待中）；已 deviation → live；已 breakout → broken
-    if pending_break is not None:
-        state = "broken"
-        if last_event is None:
-            # 尚未超时：对外仍报 breakout 方向为「进行中的离开」，但不与 deviation 同 bar
-            last_event = "breakout_up" if pending_break == "up" else "breakout_down"
-            event_bar_ts = klines[pending_bar].get("open_time") if pending_bar is not None else event_bar_ts
+    # Close state: pending keeps live/provisional (gate closed); window expiry confirms breakout_*; reclaim → deviation
+    pending_age = None
+    pending_bars_left = None
+    pending_side = None
+    if pending_break is not None and pending_bar is not None:
+        pending_age = n - 1 - pending_bar
+        pending_bars_left = max(0, dev_win - pending_age)
+        pending_side = pending_break
+        # pending is not accepted; keep balance-like state
+        state = "live" if bars_held >= min_bars else "provisional"
+        last_event = None  # unconfirmed — do not impersonate breakout_*
+        event_bar_ts = klines[pending_bar].get("open_time")
     elif last_event in {"deviation_up", "deviation_down"}:
         state = "live" if bars_held >= min_bars else "provisional"
     elif last_event in {"breakout_up", "breakout_down"}:
@@ -386,6 +394,9 @@ def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
         "height_pct": round(height_pct, 5),
         "last_event": last_event,
         "event_bar_ts": event_bar_ts,
+        "pending_break": pending_side,
+        "pending_age": pending_age,
+        "pending_bars_left": pending_bars_left,
         "approx": True,
         "reason": "auto_range_approx",
         "scan_window": int(best["window"]),

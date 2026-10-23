@@ -1,7 +1,7 @@
-"""Inversion FVG — K 线近似（契约 §5）。
+"""Imbalance-zone approx — closed candles.
 
-对照：Inversion FVG [ChartPrime]；1H minSize=0.2 / 15m=0.15。
-三烛 FVG → 被反向收盘穿越后 inverted=True 升权；不单独定方向。
+Detects three-candle gaps, optional inversion after opposing close-through,
+and nearest active zone for weighting. Not a solo direction or trigger.
 """
 from __future__ import annotations
 
@@ -57,12 +57,10 @@ def build_ifvg_context(
     lows = [_f(k.get("low")) for k in window]
     closes = [_f(k.get("close")) for k in window]
     n = len(window)
-    # min_size 是价格百分比：gap / mid * 100 >= min_size
     min_frac = min_size / 100.0
 
     raw: list[dict[str, Any]] = []
     for i in range(2, n):
-        # Bullish FVG：低点高于前两根高点
         gap_up = lows[i] - highs[i - 2]
         mid_up = (lows[i] + highs[i - 2]) / 2.0 or 1.0
         if gap_up > 0 and (gap_up / abs(mid_up)) >= min_frac:
@@ -71,12 +69,12 @@ def build_ifvg_context(
                 "bottom": highs[i - 2],
                 "direction": 1,
                 "inverted": False,
-                "mitigated": False,
+                "mitigated": False,  # classic gap fill only (pre-invert)
+                "invalidated": False,
                 "start_bar": i,
                 "invert_bar": None,
             })
             continue
-        # Bearish FVG：高点低于前两根低点
         gap_dn = lows[i - 2] - highs[i]
         mid_dn = (lows[i - 2] + highs[i]) / 2.0 or 1.0
         if gap_dn > 0 and (gap_dn / abs(mid_dn)) >= min_frac:
@@ -86,6 +84,7 @@ def build_ifvg_context(
                 "direction": -1,
                 "inverted": False,
                 "mitigated": False,
+                "invalidated": False,
                 "start_bar": i,
                 "invert_bar": None,
             })
@@ -98,22 +97,35 @@ def build_ifvg_context(
             if age <= 0:
                 continue
             if age > longevity:
-                z["mitigated"] = True
+                z["invalidated"] = True
                 continue
             top, bot = z["top"], z["bottom"]
-            # 触及 → mitigated
-            if not z["mitigated"] and h >= bot and l <= top:
-                z["mitigated"] = True
-            # 收盘完全穿越对侧 → inverted（IFVG）
+
+            # Invert: opposing close fully through the gap
             if not z["inverted"]:
                 if z["direction"] == 1 and c < bot:
                     z["inverted"] = True
                     z["invert_bar"] = i
+                    # inversion supersedes classic fill semantics
+                    z["mitigated"] = False
                 elif z["direction"] == -1 and c > top:
                     z["inverted"] = True
                     z["invert_bar"] = i
+                    z["mitigated"] = False
 
-    # Display Mode：Both 保留全部；Inversion 仅 inverted
+            if z["inverted"]:
+                # After invert: zone stays a reaction area. Touch ≠ classic mitigate.
+                # Invalidate only if price closes back through the far side (cancel).
+                if z["direction"] == 1 and c > top:
+                    # original bullish gap inverted to resistance; reclaim above cancels
+                    z["invalidated"] = True
+                elif z["direction"] == -1 and c < bot:
+                    z["invalidated"] = True
+            else:
+                # Classic gap: wick/close into zone = filled/mitigated
+                if not z["mitigated"] and h >= bot and l <= top:
+                    z["mitigated"] = True
+
     if display_mode.lower().startswith("inv"):
         visible = [z for z in raw if z["inverted"]]
     else:
@@ -127,15 +139,18 @@ def build_ifvg_context(
             "direction": int(z["direction"]),
             "inverted": bool(z["inverted"]),
             "mitigated": bool(z["mitigated"]),
+            "invalidated": bool(z["invalidated"]),
             "start_bar": int(z["start_bar"]),
         })
 
-    # nearest_active：优先未 mitigated 的 inverted；否则最近未 mitigated
+    # nearest_active priority:
+    # 1) active inverted (not invalidated) — touch/mitigated ignored
+    # 2) classic unfilled gaps (not mitigated, not inverted)
     nearest = None
     close = closes[-1]
-    candidates = [z for z in visible if z["inverted"] and not z["mitigated"]]
+    candidates = [z for z in visible if z["inverted"] and not z["invalidated"]]
     if not candidates:
-        candidates = [z for z in visible if not z["mitigated"]]
+        candidates = [z for z in visible if (not z["inverted"]) and (not z["mitigated"]) and (not z["invalidated"])]
     if candidates:
         def _dist(z: dict[str, Any]) -> float:
             mid = (z["top"] + z["bottom"]) / 2.0
@@ -148,6 +163,7 @@ def build_ifvg_context(
             "direction": int(best["direction"]),
             "inverted": bool(best["inverted"]),
             "mitigated": bool(best["mitigated"]),
+            "invalidated": bool(best["invalidated"]),
             "start_bar": int(best["start_bar"]),
         }
 
@@ -156,7 +172,7 @@ def build_ifvg_context(
         "nearest_active": nearest,
         "approx": True,
         "candle_proxy": True,
-        "reason": "ifvg_approx" if zones else "no_fvg",
+        "reason": "imbalance_approx" if zones else "no_gap",
         "timeframe": timeframe,
         "min_size_pct": min_size,
         "params": empty["params"],

@@ -115,5 +115,33 @@ class IFVGTests(unittest.TestCase):
                 self.assertIn(key, z)
 
 
+
+class IFVGInvertedActiveTests(unittest.TestCase):
+    def test_inverted_zone_stays_nearest_after_touch(self):
+        """Touch after invert must not drop the zone from nearest_active."""
+        bars = []
+        base = 10000.0
+        for i in range(40):
+            bars.append(_bar(base, base + 10, base - 10, base, vol=100, ts=i * 3600000))
+        # bullish gap
+        bars.append(_bar(10000, 10020, 9990, 10010, ts=40 * 3600000))
+        bars.append(_bar(10010, 10030, 10000, 10020, ts=41 * 3600000))
+        bars.append(_bar(10100, 10140, 10090, 10120, ts=42 * 3600000))  # gap
+        # invert through underside
+        bars.append(_bar(10050, 10060, 10000, 10010, ts=43 * 3600000))
+        bars.append(_bar(10010, 10020, 9950, 9980, ts=44 * 3600000))
+        # touch the inverted zone (reaction) without cancelling
+        bars.append(_bar(10040, 10100, 10030, 10070, ts=45 * 3600000))
+
+        ctx = build_ifvg_context(bars, timeframe="1h")
+        nearest = ctx.get("nearest_active")
+        self.assertIsNotNone(nearest)
+        self.assertTrue(nearest.get("inverted"))
+        self.assertFalse(nearest.get("invalidated", False))
+        # classic mitigated may be true/false; must not exclude inverted nearest
+        inverted = [z for z in ctx["zones"] if z.get("inverted") and not z.get("invalidated")]
+        self.assertTrue(inverted)
+
+
 if __name__ == "__main__":
     unittest.main()

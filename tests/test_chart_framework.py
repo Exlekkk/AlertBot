@@ -207,7 +207,7 @@ class LayeredDecisionSafetyTests(unittest.TestCase):
         self.assertFalse(result["allow_formal"])
         self.assertIn("formal_without_directional_catalyst", result["hard_blocks"])
 
-    def test_near_ict_ob_with_rar_and_inertial_can_be_early_catalyst(self):
+    def test_near_ict_ob_with_rar_can_be_early_catalyst(self):
         from engine.trial_decision import assess_trial_candidate
 
         result = assess_trial_candidate(
@@ -219,7 +219,7 @@ class LayeredDecisionSafetyTests(unittest.TestCase):
             99.0,
             "ict_plus_ob",
             "reclaimed_above",
-            self._trial_context(["rar_turn_up:+1.00", "inertial_turn_up:+1.00"]),
+            self._trial_context(["rar_turn_up:+1.00"]),
             current_bar=20,
         )
         self.assertTrue(result["directional_catalyst"])
