@@ -683,6 +683,7 @@ def decide_key_zone_observation(
     vp: dict[str, Any] | None = None,
     range_lock: dict[str, Any] | None = None,
     ict: dict[str, Any] | None = None,
+    evidence_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Detect key-area observation alerts.
 
@@ -718,6 +719,7 @@ def decide_key_zone_observation(
         vp=vp,
         range_lock=range_lock,
         ict=ict,
+        evidence_bundle=evidence_bundle,
     )
 
     pending_decision, observation_state = _evaluate_pending_confirmation(

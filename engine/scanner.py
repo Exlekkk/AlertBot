@@ -16,6 +16,9 @@ from engine.market_data import BinanceMarketDataClient
 from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.range_lock import build_range_lock_context
+from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
+from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
+from engine.ifvg import build_ifvg_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message
@@ -113,7 +116,20 @@ class SMCTScanner:
                 ict=ict_4h,
                 chart=chart_4h,
             )
+            # Evidence helpers (candle approx); merge into legacy liq/vp fields
+            sweep = build_sweep_context(klines_1h)
+            liq = merge_sweep_into_liquidity(liq, sweep)
+            delta_profile = build_delta_profile_context(klines_1h)
+            vp = merge_delta_into_vp(vp, delta_profile)
+            ifvg = build_ifvg_context(klines_1h, timeframe="1h")
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
+            range_lock["imbalance"] = ifvg  # legacy side-channel; trial prefers evidence.ifvg
+            evidence_bundle = {
+                "auto_range": range_lock.get("auto_range"),
+                "sweep": sweep,
+                "delta_profile": delta_profile,
+                "ifvg": ifvg,
+            }
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp, ict=ict)
 
@@ -134,6 +150,7 @@ class SMCTScanner:
                         vp=vp,
                         range_lock=range_lock,
                         ict=ict,
+                        evidence_bundle=evidence_bundle,
                     )
                     if observation.get("observation_update") is not None and not observation.get("should_alert"):
                         save_observation_state(self.symbol, "1h", observation["observation_update"])
@@ -153,6 +170,7 @@ class SMCTScanner:
                 # A late/invalid secondary confirmation is terminal.  Clear its
                 # pending state even though no Telegram message is sent.
                 save_observation_state(self.symbol, "1h", decision["observation_update"])
+            decision["evidence"] = evidence_bundle
             decision["signature"] = make_snapshot_key(decision)
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 
