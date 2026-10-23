@@ -16,6 +16,9 @@ from engine.market_data import BinanceMarketDataClient
 from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.range_lock import build_range_lock_context
+from engine.sweep_hunter import build_sweep_context
+from engine.delta_profile import build_delta_profile_context
+from engine.ifvg import build_ifvg_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message
@@ -114,6 +117,9 @@ class SMCTScanner:
                 chart=chart_4h,
             )
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
+            sweep = build_sweep_context(klines_1h)
+            delta_profile = build_delta_profile_context(klines_1h)
+            ifvg = build_ifvg_context(klines_1h, timeframe="1h")
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp, ict=ict)
 
@@ -153,6 +159,12 @@ class SMCTScanner:
                 # A late/invalid secondary confirmation is terminal.  Clear its
                 # pending state even though no Telegram message is sent.
                 save_observation_state(self.symbol, "1h", decision["observation_update"])
+            decision["evidence"] = {
+                "auto_range": range_lock.get("auto_range"),
+                "sweep": sweep,
+                "delta_profile": delta_profile,
+                "ifvg": ifvg,
+            }
             decision["signature"] = make_snapshot_key(decision)
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 
