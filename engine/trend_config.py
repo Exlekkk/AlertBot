@@ -218,13 +218,14 @@ TREND_ENGINE_CONFIG = {
         "dashboard": False,
         "timeframes": ["1h", "4h"],
     },
-    # Legacy aliases (read-only compatibility for older callers).
+    # Legacy aliases for older callers (prefer primary keys above).
+    # tai → formation_shadow; rsi_heatmap → core_levels_filter.
     "tai": {
         "formation": 30,
         "history": 350,
         "timeframes": ["15m"],
     },
-    "rsi_heatmap": {
+    "rsi_heatmap": {  # legacy alias of core_levels_filter; do not use in new code
         "max_levels": 5,
         "rsi_length": 14,
         "signal_length": 14,

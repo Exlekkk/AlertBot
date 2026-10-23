@@ -45,6 +45,7 @@ def build_core_levels_filter(
     an inert payload so callers cannot accidentally promote this to a trigger.
     """
 
+    # Primary config key is core_levels_filter; rsi_heatmap is a legacy alias only.
     cfg = TREND_ENGINE_CONFIG.get("core_levels_filter") or TREND_ENGINE_CONFIG.get("rsi_heatmap") or {}
     allowed = {str(t).lower() for t in cfg.get("timeframes", ["1h", "4h"])}
     tf = str(timeframe).lower()

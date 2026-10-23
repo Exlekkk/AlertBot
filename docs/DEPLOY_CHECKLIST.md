@@ -17,7 +17,7 @@
 | `engine/trial_decision.py` / `engine/key_zones.py` | Trial reads `evidence.ifvg` |
 | `engine/core_levels_filter.py` | 1H+ soft filter only |
 | `engine/formation_shadow.py` | 15m shadow / participation only |
-| `engine/trend_config.py` | Feature knobs |
+| `engine/trend_config.py` | Feature knobs (`core_levels_filter`, `formation_shadow`; legacy aliases kept) |
 | `legacy_quarantine/` | Old one-shot refactor script quarantined |
 | `tests/test_auto_range.py` / `tests/test_evidence_proxies.py` | Smoke tests |
 
@@ -35,5 +35,5 @@
 - Trial inverted-imbalance weight reads `evidence.ifvg` (legacy `range_lock.imbalance` fallback remains)
 - Broader trial migration onto remaining evidence fields still open
 - Legacy liq / vp / ict adapters still parallel
-- Heatmap / 15m participation filter wiring
+- Deeper `core_levels_filter` / `formation_shadow` participation wiring
 - Minimal CI + replay harness

@@ -24,6 +24,13 @@ Neutral overview of how this bot runs. No strategy playbook.
 
 Decision payloads may attach an `evidence` object with approximate, candle-based helpers (`approx` / `candle_proxy` flags). These are engineering features for weighting — not a claim of footprint / order-book feeds.
 
+Auxiliary filters on this path:
+
+| Name | Role |
+|------|------|
+| `core_levels_filter` | 1H+ soft filter only; never a solo alert |
+| `formation_shadow` | 15m participation / shadow only; not a formal 1H trigger |
+
 Legacy liquidity / volume-profile / ICT adapters remain in parallel while trial weighting is migrated.
 
 ## Deploy
