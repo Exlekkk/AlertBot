@@ -76,10 +76,6 @@ def build_htf_bias_context(
         _vote(scores, fib_direction, 1.5)
         evidence.append(f"fibonacci_{fib_direction}")
 
-    # dual_log / classic-swing votes peeled from HTF bias scoring
-    _ = chart.get("dual_log_regression", {})
-    _ = chart.get("classic_market", {})
-
     if liquidity.get("recent_sweep_valid"):
         if liquidity.get("sweep_type") == "sellside" and liquidity.get("reclaim_or_reject") == "reclaim":
             _vote(scores, "bull", 1.5)

@@ -175,10 +175,8 @@ def build_trial_context(
 
     matrix_direction = str(matrix.get("matrix_direction", "neutral"))
     matrix_source = str(matrix.get("source", "legacy"))
-    # Dual-log / classic-swing channel weights peeled (weight 0); keep labels off the score path.
+    # Dual-log / classic-swing channel weights peeled (weight 0).
     _ = (matrix_direction, matrix_source)
-    classic = matrix.get("classic_market", {}) if isinstance(matrix.get("classic_market"), dict) else {}
-    _ = classic
 
     fibonacci = msb.get("fibonacci", {}) if isinstance(msb.get("fibonacci"), dict) else {}
     fib_direction = str(fibonacci.get("trend", "neutral"))

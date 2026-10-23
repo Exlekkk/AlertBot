@@ -1779,7 +1779,7 @@ class V139LayeredDecisionTests(unittest.TestCase):
         for i, close in enumerate([100, 99, 98, 97, 96, 95, 96, 98, 101, 104, 106, 108, 109, 110, 111, 112, 113, 114, 115, 116]):
             bars.append({"open": close - 0.5, "high": close + 1, "low": close - 1, "close": close, "volume": 1000 + i})
         enriched = enrich_klines(bars)
-        self.assertEqual(enriched[-1]["inertia_source"], "luxalgo_pine_reimplementation")
+        self.assertEqual(enriched[-1]["inertia_source"], "legacy_inertial")
         self.assertTrue(any(bar["inertia_turn_up"] for bar in enriched))
 
         bars[-1].update({"inertia": 12.0, "inertia_signal": 15.0, "inertia_turn_up": True})

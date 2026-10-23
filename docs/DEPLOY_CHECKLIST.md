@@ -19,6 +19,7 @@
 | `engine/formation_shadow.py` | 15m shadow / participation only |
 | `engine/trend_config.py` | Feature knobs (`core_levels_filter`, `formation_shadow`; legacy aliases kept) |
 | `legacy_quarantine/` | Old one-shot refactor script quarantined |
+| `engine/legacy_quarantine/` | Peeled dual-log / classic-swing / inertial builders |
 | `tests/test_auto_range.py` / `tests/test_evidence_proxies.py` | Smoke tests |
 
 ## Before any production cutover

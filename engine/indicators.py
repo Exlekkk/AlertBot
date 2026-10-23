@@ -292,90 +292,16 @@ def rar_components(values: list[float], length: int = 15, power: float = 1.0):
     }
 
 
-def inertial_stochastic_components(
-    klines: list[dict],
-    min_length: int = 10,
-    max_length: int = 40,
-    smooth_k: int = 3,
-    smooth_d: int = 3,
-) -> dict[str, list]:
-    """Reimplement LuxAlgo Inertial Stochastic from the supplied Pine source.
-
-    For each closed bar the script tests every length between ``min_length`` and
-    ``max_length`` and keeps the stochastic value closest to the prior selected
-    value.  K and D are then SMA-smoothed, matching the Pine algorithm rather
-    than the old fixed-length Stochastic fallback.
-    """
-
-    if not klines:
-        return {
-            "value": [],
-            "signal": [],
-            "green": [],
-            "red": [],
-            "turn_up": [],
-            "turn_down": [],
-        }
-
-    min_length = max(2, int(min_length))
-    max_length = max(min_length, int(max_length))
-    selected: list[float] = []
-    previous_selected = 50.0
-    for i, bar in enumerate(klines):
-        best = 50.0
-        minimum_difference = float("inf")
-        close = float(bar["close"])
-        for length in range(min_length, max_length + 1):
-            if i + 1 < length:
-                continue
-            window = klines[i - length + 1 : i + 1]
-            low = min(float(item["low"]) for item in window)
-            high = max(float(item["high"]) for item in window)
-            candidate = 50.0 if high <= low else 100.0 * (close - low) / (high - low)
-            difference = abs(candidate - previous_selected)
-            if difference < minimum_difference:
-                minimum_difference = difference
-                best = candidate
-        if minimum_difference == float("inf"):
-            best = previous_selected
-        best = max(0.0, min(100.0, best))
-        selected.append(best)
-        previous_selected = best
-
-    value = sma(selected, max(1, int(smooth_k)))
-    signal = sma(value, max(1, int(smooth_d)))
-    # Pine colors K by the 50 midline.  K/D cross information is kept separately
-    # because it is useful as auxiliary evidence but is not the plotted color.
-    green = [v > 50.0 for v in value]
-    red = [not item for item in green]
-    turn_up = [False] + [value[i] > 50.0 and value[i - 1] <= 50.0 for i in range(1, len(value))]
-    turn_down = [False] + [value[i] < 50.0 and value[i - 1] >= 50.0 for i in range(1, len(value))]
-    return {
-        "raw": selected,
-        "value": value,
-        "signal": signal,
-        "green": green,
-        "red": red,
-        "turn_up": turn_up,
-        "turn_down": turn_down,
-    }
+def inertial_stochastic_components(*args, **kwargs):
+    """Compatibility shim → engine.legacy_quarantine.inertial."""
+    from engine.legacy_quarantine.inertial import inertial_stochastic_components as _impl
+    return _impl(*args, **kwargs)
 
 
-def inertial_stochastic_proxy_components(
-    klines: list[dict],
-    length: int = 14,
-    smooth_k: int = 3,
-    smooth_signal: int = 3,
-) -> dict[str, list]:
-    """Compatibility alias for callers from pre-Pine-source versions."""
-
-    return inertial_stochastic_components(
-        klines,
-        min_length=max(2, min(int(length), 10)),
-        max_length=max(40, int(length)),
-        smooth_k=smooth_k,
-        smooth_d=smooth_signal,
-    )
+def inertial_stochastic_proxy_components(*args, **kwargs):
+    """Compatibility shim → engine.legacy_quarantine.inertial."""
+    from engine.legacy_quarantine.inertial import inertial_stochastic_proxy_components as _impl
+    return _impl(*args, **kwargs)
 
 
 def tai_components(klines: list[dict], len_form: int = 30, len_hist: int = 350):
@@ -443,6 +369,7 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
     inertial_cfg = chart_cfg["inertial"]
     tai_cfg = chart_cfg["tai"]
     rar = rar_components(closes, length=int(rar_cfg["length"]), power=float(rar_cfg["power"]))
+    # Enrich-compat only: inertial is quarantined and not scored on decision paths.
     inertial = inertial_stochastic_components(
         klines,
         min_length=int(inertial_cfg["min_length"]),
@@ -512,7 +439,7 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "inertia_red": not inertia_green,
                 "inertia_turn_up": inertia_turn_up,
                 "inertia_turn_down": inertia_turn_down,
-                "inertia_source": "explicit_feed" if use_explicit_inertia else "luxalgo_pine_reimplementation",
+                "inertia_source": "explicit_feed" if use_explicit_inertia else "legacy_inertial",
 
                 "tai_value": tai["tai_value"][i],
                 "tai_p20": tai["tai_p20"][i],

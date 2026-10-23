@@ -93,7 +93,7 @@ class SuppliedPineTranslationTests(unittest.TestCase):
         self.assertEqual(events[0]["index"], 7)
 
     def test_inertial_selects_length_closest_to_prior_value(self):
-        from engine.indicators import inertial_stochastic_components
+        from engine.legacy_quarantine.inertial import inertial_stochastic_components
 
         closes = [100, 99, 98, 97, 96, 95, 96, 98, 101, 104, 106, 108]
         bars = [
