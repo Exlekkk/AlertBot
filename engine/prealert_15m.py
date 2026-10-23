@@ -111,10 +111,7 @@ def _momentum_state(k15: list[dict[str, Any]]) -> dict[str, Any]:
     rar_trigger = _f(latest.get("rar_trigger"), 50.0)
     rar_slope = rar_now - rar_prev3
 
-    inertia_now = _f(latest.get("inertia"), 50.0)
-    inertia_prev = _f(prev3.get("inertia"), inertia_now)
-    inertia_slope = inertia_now - inertia_prev
-
+    # Inertial peeled from 15m momentum turns; RAR + price only.
     close = _f(latest.get("close"))
     prev_close = _f(prev.get("close"), close)
     open_ = _f(latest.get("open"))
@@ -125,14 +122,14 @@ def _momentum_state(k15: list[dict[str, Any]]) -> dict[str, Any]:
     vol_sma20 = _f(latest.get("vol_sma20"), 0.0)
     volume_ratio = vol / max(vol_sma20, 1e-9) if vol_sma20 > 0 else 1.0
 
-    turn_down = rar_now < rar_trigger or rar_now < rar_prev or rar_slope < -0.35 or inertia_slope < -0.35
-    turn_up = rar_now > rar_trigger or rar_now > rar_prev or rar_slope > 0.35 or inertia_slope > 0.35
+    turn_down = rar_now < rar_trigger or rar_now < rar_prev or rar_slope < -0.35
+    turn_up = rar_now > rar_trigger or rar_now > rar_prev or rar_slope > 0.35
 
     return {
         "rar_now": rar_now,
         "rar_trigger": rar_trigger,
         "rar_slope": rar_slope,
-        "inertia_slope": inertia_slope,
+        "inertia_slope": 0.0,
         "price_impulse": price_impulse,
         "volume_ratio": volume_ratio,
         "turn_down": bool(turn_down),
@@ -566,7 +563,10 @@ def _risk_ok(side: str, entry: float, zone: tuple[float, float], latest: dict[st
 
 
 def _tai_filter(side: str, temperature: str, latest: dict[str, Any], momentum: dict[str, Any]) -> tuple[str, int, str]:
-    """Return (filter_text, score_delta, hard_reject_reason)."""
+    """15m formation-shadow participation filter (legacy name kept).
+
+    Returns (filter_text, score_delta, hard_reject_reason). Never a formal trigger.
+    """
 
     close = _f(latest.get("close"))
     open_ = _f(latest.get("open"))
@@ -575,16 +575,16 @@ def _tai_filter(side: str, temperature: str, latest: dict[str, Any], momentum: d
 
     if side == "short":
         if temperature in {"偏热", "过热"} and price_down:
-            return "TAI活跃但价格承压", 1, ""
+            return "formation active with price pressure", 1, ""
         if temperature in {"偏冷", "过冷"} and not price_down:
-            return "TAI偏冷，做空降权", -1, "tai_cold_without_short_reaction"
-        return f"TAI {temperature}", 0, ""
+            return "formation cold without short reaction", -1, "formation_cold_without_short_reaction"
+        return f"formation {temperature}", 0, ""
 
     if temperature in {"偏冷", "过冷"} and price_up:
-        return "TAI低位修复", 1, ""
+        return "formation cold reclaim", 1, ""
     if temperature in {"偏热", "过热"} and not price_up:
-        return "TAI偏热，做多降权", -1, "tai_hot_without_long_reclaim"
-    return f"TAI {temperature}", 0, ""
+        return "formation warm without long reclaim", -1, "formation_warm_without_long_reclaim"
+    return f"formation {temperature}", 0, ""
 
 
 def _score_setup(
@@ -618,7 +618,23 @@ def _score_setup(
 
     local_liq = _local_sweep_event(klines_15m, cfg)
     momentum = _momentum_state(klines_15m)
-    temperature = _temperature_bucket(latest)
+    # Prefer dedicated formation-shadow builder; fall back to bar fields.
+    try:
+        from engine.formation_shadow import build_formation_shadow
+        shadow = build_formation_shadow(klines_15m, timeframe="15m")
+    except Exception:
+        shadow = {"reason": "unavailable"}
+    if shadow.get("reason") == "ok":
+        regime = str(shadow.get("regime", "neutral"))
+        temperature = {
+            "very_cold": "过冷",
+            "cold": "偏冷",
+            "neutral": "中性",
+            "warm": "偏热",
+            "very_warm": "过热",
+        }.get(regime, "中性")
+    else:
+        temperature = _temperature_bucket(latest)
     tai_text, tai_score, tai_reject = _tai_filter(side, temperature, latest, momentum)
     key = _nearest_key_level(entry)
     key_reaction = _key_level_reaction(side, latest, key, pad)
@@ -677,7 +693,7 @@ def _score_setup(
             reasons.append("15m 收线偏弱")
         if momentum["turn_down"]:
             score += 1
-            reasons.append("RAR/Inertial 转弱")
+            reasons.append("RAR 转弱")
         if key_reaction == "key_reject":
             score += 1
             reasons.append(f"{key['kind']}被拒")
@@ -701,7 +717,7 @@ def _score_setup(
             reasons.append("15m 收线修复")
         if momentum["turn_up"]:
             score += 1
-            reasons.append("RAR/Inertial 修复")
+            reasons.append("RAR 修复")
         if key_reaction == "key_reclaim":
             score += 1
             reasons.append(f"{key['kind']}收回")
@@ -758,9 +774,9 @@ def _score_setup(
     # a true 15m sweep-low reclaim, and do not short cold BTC without a true
     # 15m sweep-high rejection.
     if side == "long" and temperature == "过热" and not has_liquidity:
-        return {"ok": False, "reject_reason": "tai_overheated_long_without_sweep_reclaim", "score": score}
+        return {"ok": False, "reject_reason": "formation_overheated_long_without_sweep_reclaim", "score": score}
     if side == "short" and temperature == "过冷" and not has_liquidity:
-        return {"ok": False, "reject_reason": "tai_cold_short_without_sweep_reject", "score": score}
+        return {"ok": False, "reject_reason": "formation_cold_short_without_sweep_reject", "score": score}
 
     risk_ok, invalid, risk_pct, room_pct = _risk_ok(side, entry, zone, latest, cfg)
     if not risk_ok:

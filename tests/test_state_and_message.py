@@ -1186,22 +1186,20 @@ class AuxFilterCalibrationTests(unittest.TestCase):
             "atr": atr,
         }
 
-    def test_tai_uses_visible_p20_p40_p60_p80_bands(self):
+    def test_1h_aux_peels_formation_temperature_and_exposes_core_levels(self):
         from engine.aux_filters import build_aux_filters_proxy
 
         klines = [self._bar(10000 + i, rar=45 + (i % 5), tai=19.8) for i in range(71)]
-
-        # 19.86 is between P40=19.7 and P60=19.9, so it is neutral,
-        # not cold/over-cold.  Below P20 is the only over-cold region.
         klines.append(self._bar(10080, rar=48, tai=19.86))
         aux = build_aux_filters_proxy(klines, klines[-4:])
 
+        # Formation/participation shadow is 15m-only; 1H aux stays neutral heat.
         self.assertEqual(aux["temperature_desc"], "热度 中性")
-        self.assertEqual(aux["tai_percentile"], 0.50)
-
-        klines[-1] = self._bar(10080, rar=48, tai=19.49)
-        aux_cold = build_aux_filters_proxy(klines, klines[-4:])
-        self.assertEqual(aux_cold["temperature_desc"], "热度 过冷")
+        self.assertIsNone(aux["tai_percentile"])
+        self.assertFalse(aux.get("formation_shadow_1h"))
+        self.assertIn("core_levels_filter", aux)
+        self.assertTrue(aux["core_levels_filter"].get("filter_only"))
+        self.assertFalse(aux["core_levels_filter"].get("should_alert"))
 
     def test_momentum_detects_sell_pressure_release_from_price_and_rar_slope(self):
         from engine.aux_filters import build_aux_filters_proxy
@@ -1244,18 +1242,24 @@ class NoMacdAndTrueTaiTests(unittest.TestCase):
         aux = build_aux_filters_proxy(klines, klines[-4:])
 
         self.assertNotIn("macd", aux)
-        self.assertIn("tai_value", aux)
-        self.assertIn("tai_p20", aux)
-        self.assertEqual(aux["temperature_desc"], "热度 过热")
+        self.assertEqual(aux["temperature_desc"], "热度 中性")
+        self.assertEqual(aux["inertia_source"], "peeled")
 
-    def test_tai_uses_dollar_volume_percentile_bands_when_tv_fields_absent(self):
-        from engine.aux_filters import build_aux_filters_proxy
+    def test_formation_shadow_uses_dollar_volume_percentile_bands_on_15m(self):
+        from engine.formation_shadow import build_formation_shadow
 
         klines = [self._tai_bar(10000.0, 1000.0 + i * 10.0) for i in range(300)]
-        aux = build_aux_filters_proxy(klines, klines[-4:])
+        shadow = build_formation_shadow(klines, timeframe="15m")
 
-        self.assertGreater(aux["tai_value"], aux["tai_p80"])
-        self.assertEqual(aux["temperature_desc"], "热度 过热")
+        self.assertEqual(shadow["reason"], "ok")
+        self.assertTrue(shadow["shadow_only"])
+        self.assertFalse(shadow["should_alert"])
+        self.assertGreater(shadow["value"], shadow["p80"])
+        self.assertEqual(shadow["regime"], "very_warm")
+
+        blocked = build_formation_shadow(klines, timeframe="1h")
+        self.assertFalse(blocked["allowed"])
+        self.assertEqual(blocked["reason"], "timeframe_not_allowed")
 
     def test_sweep_alone_without_fvg_or_structure_context_does_not_observe_range_edge(self):
         from engine.key_zones import decide_key_zone_observation

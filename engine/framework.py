@@ -45,10 +45,11 @@ def build_htf_bias_context(
     ict: dict[str, Any] | None = None,
     chart: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """4H bias from structure, liquidity and classical trend context.
+    """4H bias from structure, liquidity and fibonacci context.
 
-    EMA crosses are deliberately absent.  The result is a background vote, not
-    a 4H entry signal, and 15m data is never accepted here.
+    EMA crosses are deliberately absent. Dual-log channel and classic swing
+    votes are peeled from this path. The result is a background vote, not a
+    4H entry signal, and 15m data is never accepted here.
     """
 
     if not klines_4h:
@@ -75,17 +76,9 @@ def build_htf_bias_context(
         _vote(scores, fib_direction, 1.5)
         evidence.append(f"fibonacci_{fib_direction}")
 
-    regression = chart.get("dual_log_regression", {})
-    regression_direction = str(regression.get("alignment", "neutral"))
-    if regression_direction in scores:
-        _vote(scores, regression_direction, 1.25)
-        evidence.append(f"log_channel_{regression_direction}")
-
-    classic = chart.get("classic_market", {})
-    dow_direction = str(classic.get("dow_direction", "neutral"))
-    if dow_direction in scores:
-        _vote(scores, dow_direction, 1.75)
-        evidence.append(f"dow_{dow_direction}")
+    # dual_log / classic-swing votes peeled from HTF bias scoring
+    _ = chart.get("dual_log_regression", {})
+    _ = chart.get("classic_market", {})
 
     if liquidity.get("recent_sweep_valid"):
         if liquidity.get("sweep_type") == "sellside" and liquidity.get("reclaim_or_reject") == "reclaim":
@@ -111,8 +104,8 @@ def build_htf_bias_context(
         "bias_scores": scores,
         "bias_evidence": evidence,
         "premium_discount": fibonacci.get("premium_discount", "unknown"),
-        "market_cycle": classic.get("cycle", "unknown"),
-        "source": "smc_ict_dow_log_regression",
+        "market_cycle": "unknown",
+        "source": "smc_ict_structure",
     }
     context["relation"] = relation_to_htf(context, direction_1h)
     return context

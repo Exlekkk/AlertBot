@@ -88,7 +88,9 @@ def decide_trend_segment(
     liq_score = 12 if has_sweep else 2
     msb_score = int(msb.get("quality", 0))
     expected_matrix_direction = "bull" if direction == "long" else "bear" if direction == "short" else "neutral"
-    matrix_score = 6 if direction != "neutral" and matrix.get("matrix_direction") == expected_matrix_direction else 0
+    # Dual-log matrix peeled: never add channel alignment points on this path.
+    _ = matrix
+    matrix_score = 0
     ict_score = 8 if fresh_ict_structure and ict_direction == expected_matrix_direction else 3 if ict_direction == expected_matrix_direction else 0
     momentum_desc = str(aux.get("momentum_desc", "动能 一般"))
     temperature_desc = str(aux.get("temperature_desc", "热度 中性"))

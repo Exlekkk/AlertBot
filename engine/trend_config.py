@@ -203,6 +203,22 @@ TREND_ENGINE_CONFIG = {
         "power": 1,
         "source": "close",
     },
+    # 15m participation shadow only (not a formal 1H trigger).
+    "formation_shadow": {
+        "formation": 30,
+        "history": 350,
+        "timeframes": ["15m"],
+    },
+    # 1H+ oscillator core-levels filter only (never solo alert).
+    "core_levels_filter": {
+        "max_levels": 5,
+        "rsi_length": 14,
+        "signal_length": 14,
+        "midline_squeeze": True,
+        "dashboard": False,
+        "timeframes": ["1h", "4h"],
+    },
+    # Legacy aliases (read-only compatibility for older callers).
     "tai": {
         "formation": 30,
         "history": 350,
@@ -214,7 +230,7 @@ TREND_ENGINE_CONFIG = {
         "signal_length": 14,
         "midline_squeeze": True,
         "dashboard": False,
-        "timeframes": ["1h", "4h"],  # 1H+ filter only; no solo alert
+        "timeframes": ["1h", "4h"],
     },
     "trial_decision": {
         # Formal 1H trial alerts use weighted evidence.  No individual

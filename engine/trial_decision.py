@@ -223,29 +223,34 @@ def build_trial_context(
         _append_score(scores, evidence, side, 1.25, "flipped_volume_resistance" if resistance.get("broken") else "high_volume_resistance")
 
     rar_slope = _f(aux.get("rar_slope"))
-    inertia_slope = _f(aux.get("inertia_slope"))
+    # Inertial fully peeled from trial scoring and phase detection.
+    _ = aux.get("inertia_slope")
     if rar_slope >= 0.35:
         _append_score(scores, evidence, "long", 1.0, "rar_turn_up")
     elif rar_slope <= -0.35:
         _append_score(scores, evidence, "short", 1.0, "rar_turn_down")
-    # Inertial weights peeled from formal trial scoring (filter code may still compute slopes).
-    _ = inertia_slope
     if aux.get("rar_above_trigger") and rar_slope >= 0:
         _append_score(scores, evidence, "long", 0.5, "rar_above_trigger")
     elif not aux.get("rar_above_trigger", True) and rar_slope <= 0:
         _append_score(scores, evidence, "short", 0.5, "rar_below_trigger")
 
     momentum = str(aux.get("momentum_desc", ""))
-    if "偏强" in momentum or "买盘" in momentum or ("修复" in momentum and rar_slope + inertia_slope > 0):
+    if "偏强" in momentum or "买盘" in momentum or ("修复" in momentum and rar_slope > 0):
         _append_score(scores, evidence, "long", 1.5, "momentum_supports_long")
     if "偏弱" in momentum or "卖压" in momentum or "转弱" in momentum:
         _append_score(scores, evidence, "short", 1.5, "momentum_supports_short")
 
-    temperature = str(aux.get("temperature_desc", ""))
-    if "过热" in temperature:
-        _append_score(scores, evidence, "long", -0.5, "overheated")
-    elif "过冷" in temperature:
-        _append_score(scores, evidence, "short", -0.5, "overcold")
+    # 1H formation/TAI temperature peeled; core-levels filter is soft lean only.
+    core = aux.get("core_levels_filter") if isinstance(aux.get("core_levels_filter"), dict) else {}
+    if core.get("allowed") and core.get("filter_only", True):
+        if core.get("midline_event") == "reclaim_above_50":
+            _append_score(scores, evidence, "long", 0.5, "core_levels_reclaim_50")
+        elif core.get("midline_event") == "loss_below_50":
+            _append_score(scores, evidence, "short", 0.5, "core_levels_loss_50")
+        elif core.get("lean") == "bull" and not core.get("squeeze"):
+            _append_score(scores, evidence, "long", 0.25, "core_levels_bull_lean")
+        elif core.get("lean") == "bear" and not core.get("squeeze"):
+            _append_score(scores, evidence, "short", 0.25, "core_levels_bear_lean")
 
     volume_flow = aux.get("volume_orderflow", {}) if isinstance(aux.get("volume_orderflow"), dict) else {}
     if volume_flow.get("downside_stop_run"):
@@ -328,9 +333,9 @@ def build_trial_context(
     if range_active:
         delta = scores["long"] - scores["short"]
         phase = "range_bullish" if delta >= 2.0 else "range_bearish" if delta <= -2.0 else "range_neutral"
-    elif price_impulse <= -0.75 and rar_slope + inertia_slope > 0:
+    elif price_impulse <= -0.75 and rar_slope > 0:
         phase = "selloff_repair"
-    elif price_impulse >= 0.75 and rar_slope + inertia_slope < 0:
+    elif price_impulse >= 0.75 and rar_slope < 0:
         phase = "rebound_pressure"
     elif scores["long"] > scores["short"]:
         phase = "trend_up"
@@ -526,7 +531,7 @@ def assess_trial_candidate(
         and any(token in reason_text for token in ("fresh_bearish_mss", "fresh_bearish_bos"))
     )
     rar_aligned = (side == "long" and "rar_turn_up" in reason_text) or (side == "short" and "rar_turn_down" in reason_text)
-    # Inertial peeled; use new evidence tokens as optional aux alignment
+    # Inertial / dual-log peeled; evidence helpers + core-levels are optional aux alignment.
     evidence_aux_aligned = any(
         token in reason_text
         for token in (
@@ -534,9 +539,9 @@ def assess_trial_candidate(
             "range_reclaim_after_break_down" if side == "long" else "range_reclaim_after_break_up",
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
+            "core_levels_reclaim_50" if side == "long" else "core_levels_loss_50",
         )
     )
-    inertial_aligned = evidence_aux_aligned  # name kept for downstream bool composition
     matching_distance = bull_dist if side == "long" else bear_dist
     near_matching_ict_ob = matching_distance is not None and _f(matching_distance, 99.0) <= 0.35
     structure_aligned = any(
@@ -545,7 +550,6 @@ def assess_trial_candidate(
             "msb_bull" if side == "long" else "msb_bear",
             "ict_structure_bull" if side == "long" else "ict_structure_bear",
             "fibonacci_bull_swing" if side == "long" else "fibonacci_bear_swing",
-            "log_regression_bull" if side == "long" else "log_regression_bear",
         )
     )
     volume_catalyst = any(
@@ -556,13 +560,13 @@ def assess_trial_candidate(
             "sell_absorption_proxy" if side == "long" else "buy_absorption_proxy",
         )
     )
-    # Inertial peeled: ICT proximity + RAR is enough; new evidence tokens also qualify.
+    # Inertial peeled: ICT proximity + RAR is enough; evidence / core-levels also qualify.
     auxiliary_reversal = (
         near_matching_ict_ob and rar_aligned
     ) or (
-        structure_aligned and (rar_aligned or inertial_aligned)
+        structure_aligned and (rar_aligned or evidence_aux_aligned)
     ) or (
-        near_matching_ict_ob and inertial_aligned
+        near_matching_ict_ob and evidence_aux_aligned
     )
     directional_catalyst = bool(matching_fresh_event or fresh_structure_matches or volume_catalyst or auxiliary_reversal)
     # The pending-confirmation engine separately requires a real post-trial

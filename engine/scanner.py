@@ -93,7 +93,7 @@ class SMCTScanner:
             ict = build_ict_ob_context(klines_1h)
             chart_1h = build_chart_context(klines_1h)
             msb["fibonacci"] = chart_1h.get("fibonacci", {})
-            msb["classic_market"] = chart_1h.get("classic_market", {})
+            # classic_market / Dow peeled from decision path
             ict["killzone"] = chart_1h.get("killzone", {})
             matrix = build_trend_matrix_proxy(klines_1h)
             vp = build_volume_profile_context(klines_1h)
@@ -129,6 +129,7 @@ class SMCTScanner:
                 "sweep": sweep,
                 "delta_profile": delta_profile,
                 "ifvg": ifvg,
+                "core_levels_filter": aux.get("core_levels_filter"),
             }
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp, ict=ict)

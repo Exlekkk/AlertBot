@@ -188,3 +188,24 @@ class TrialEvidenceIfvgTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoreLevelsFilterTests(unittest.TestCase):
+    def test_1h_filter_only_never_alerts(self):
+        from engine.core_levels_filter import build_core_levels_filter
+
+        bars = [_bar(10000 + (i % 7 - 3) * 20, 10040, 9960, 10000 + (i % 5 - 2) * 15, ts=i * 3600000) for i in range(80)]
+        ctx = build_core_levels_filter(bars, timeframe="1h")
+        self.assertTrue(ctx["allowed"])
+        self.assertTrue(ctx["filter_only"])
+        self.assertFalse(ctx["should_alert"])
+        self.assertIn(ctx["lean"], {"bull", "bear", "neutral"})
+        self.assertIsNotNone(ctx["rsi"])
+
+    def test_15m_not_allowed(self):
+        from engine.core_levels_filter import build_core_levels_filter
+
+        bars = [_bar(10000, 10010, 9990, 10000, ts=i * 900000) for i in range(40)]
+        ctx = build_core_levels_filter(bars, timeframe="15m")
+        self.assertFalse(ctx["allowed"])
+        self.assertEqual(ctx["reason"], "timeframe_not_allowed")

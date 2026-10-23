@@ -15,6 +15,8 @@
 | `engine/range_lock.py` | Maps range detector → legacy box fields |
 | `engine/scanner.py` | Builds `evidence` early; passes to trial |
 | `engine/trial_decision.py` / `engine/key_zones.py` | Trial reads `evidence.ifvg` |
+| `engine/core_levels_filter.py` | 1H+ soft filter only |
+| `engine/formation_shadow.py` | 15m shadow / participation only |
 | `engine/trend_config.py` | Feature knobs |
 | `legacy_quarantine/` | Old one-shot refactor script quarantined |
 | `tests/test_auto_range.py` / `tests/test_evidence_proxies.py` | Smoke tests |
@@ -29,6 +31,7 @@
 
 ## Still open
 
+- Dual-log / classic-swing / inertial peeled from live decision weights (builders may remain for tests)
 - Trial inverted-imbalance weight reads `evidence.ifvg` (legacy `range_lock.imbalance` fallback remains)
 - Broader trial migration onto remaining evidence fields still open
 - Legacy liq / vp / ict adapters still parallel

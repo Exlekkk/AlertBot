@@ -162,7 +162,7 @@ class SuppliedPineTranslationTests(unittest.TestCase):
             bar["ema10"] = 0.0
             bar["ema20"] = 1_000_000.0
         context = build_htf_bias_context(bars)
-        self.assertEqual(context["source"], "smc_ict_dow_log_regression")
+        self.assertEqual(context["source"], "smc_ict_structure")
         self.assertFalse(any("ema" in reason for reason in context["bias_evidence"]))
 
 
