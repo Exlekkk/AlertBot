@@ -99,3 +99,58 @@ class AutoRangeContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoRangeDeviationStateMachineTests(unittest.TestCase):
+    """L 反馈：同 bar 破箱不可能同时收回；Deviation 必须跨 bar。"""
+
+    def _boxed_then(self, extra_bars):
+        bars = _range_series(n=80, low=9800.0, high=10200.0)
+        # 抬高 atr，buffer=0.25*atr 可控
+        for b in bars:
+            b["atr"] = 40.0
+        base_ts = bars[-1]["open_time"]
+        for j, b in enumerate(extra_bars):
+            b = dict(b)
+            b["open_time"] = base_ts + (j + 1) * 3_600_000
+            b.setdefault("atr", 40.0)
+            b.setdefault("volume", 100.0)
+            bars.append(b)
+        return bars
+
+    def test_same_bar_break_is_pending_breakout_not_deviation(self):
+        # 最后一根收盘上破，无后续收回 bar → breakout（pending），绝非 deviation
+        bars = self._boxed_then([
+            _bar(10150, 10350, 10140, 10320, atr=40.0),  # close > top+buffer
+        ])
+        ctx = build_auto_range_context(bars)
+        self.assertNotIn(ctx.get("last_event"), {"deviation_up", "deviation_down"})
+        if ctx.get("last_event") is not None:
+            self.assertEqual(ctx["last_event"], "breakout_up")
+            self.assertEqual(ctx["state"], "broken")
+
+    def test_deviation_requires_cross_bar_reclaim(self):
+        # bar0 上破，bar1..bar3 仍在外，bar4 收回箱内 → deviation_up
+        top, bot = 10200.0, 9800.0
+        mid = 10000.0
+        extras = [
+            _bar(10150, 10350, 10140, 10320, atr=40.0),  # break up
+            _bar(10320, 10380, 10250, 10300, atr=40.0),  # still out
+            _bar(10300, 10340, 10100, 10050, atr=40.0),  # reclaim close inside
+        ]
+        bars = self._boxed_then(extras)
+        ctx = build_auto_range_context(bars)
+        self.assertEqual(ctx.get("last_event"), "deviation_up")
+        self.assertIn(ctx["state"], {"live", "provisional"})
+
+    def test_no_reclaim_within_window_stays_breakout_not_deviation(self):
+        # 破箱后若干根仍在外、未收回 → 只能是 breakout（或箱体已拆→none），绝非 deviation
+        extras = [_bar(10150, 10350, 10140, 10320, atr=40.0)]  # break
+        for _ in range(3):
+            extras.append(_bar(10320, 10360, 10290, 10330, atr=40.0))
+        bars = self._boxed_then(extras)
+        ctx = build_auto_range_context(bars)
+        self.assertNotIn(ctx.get("last_event"), {"deviation_up", "deviation_down"})
+        if ctx["state"] != "none":
+            self.assertEqual(ctx.get("last_event"), "breakout_up")
+            self.assertEqual(ctx["state"], "broken")

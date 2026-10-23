@@ -290,53 +290,85 @@ def build_auto_range_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
     absorb_on = bool(cfg.get("absorb_overshoot", True))
     overshoot = atr_now * float(cfg.get("overshoot_tol_atr", 0.25))
     break_confirm = str(cfg.get("break_confirm", "close"))
+    merge_dev = bool(cfg.get("merge_deviations", True))
+    dev_win = int(cfg.get("deviation_window", 6))
 
+    def _is_break_up(i: int) -> bool:
+        if break_confirm == "wick":
+            return highs[i] > top + buffer
+        return closes[i] > top + buffer
+
+    def _is_break_down(i: int) -> bool:
+        if break_confirm == "wick":
+            return lows[i] < bot - buffer
+        return closes[i] < bot - buffer
+
+    def _inside(i: int) -> bool:
+        return bot <= closes[i] <= top
+
+    def _absorb(i: int) -> bool:
+        """收盘未破、仅 wick 越界且在 overshoot 内 → 吸收，不算破箱。"""
+        if not absorb_on or break_confirm != "close":
+            return False
+        c = closes[i]
+        if highs[i] > top and c <= top + buffer and (highs[i] - top) <= overshoot and not _is_break_up(i):
+            return True
+        if lows[i] < bot and c >= bot - buffer and (bot - lows[i]) <= overshoot and not _is_break_down(i):
+            return True
+        return False
+
+    # ---- 跨 bar 状态机（Merge Deviations）----
+    # pending_break: None | "up" | "down"；记录首次破箱 bar，后续 dev_win 内收回才记 deviation
     last_event = None
     event_bar_ts = None
-    broken = False
+    pending_break = None  # type: str | None
+    pending_bar = None  # type: int | None
+    scan_from = max(left, n - max(dev_win * 3, 24))  # 限制回放窗口
 
-    # Close beyond + buffer
-    break_up = close > top + buffer
-    break_down = close < bot - buffer
-    if break_confirm == "wick":
-        break_up = highs[-1] > top + buffer
-        break_down = lows[-1] < bot - buffer
+    for i in range(scan_from, n):
+        if _absorb(i):
+            continue
+        broke_up = _is_break_up(i)
+        broke_dn = _is_break_down(i)
 
-    if break_up or break_down:
-        # Absorb overshoot：仅对 wick 越界、收盘仍在箱内时吸收
-        wick_poke_up = highs[-1] > top and close <= top + buffer
-        wick_poke_down = lows[-1] < bot and close >= bot - buffer
-        if absorb_on and break_confirm == "close" and (
-            (wick_poke_up and highs[-1] - top <= overshoot and not break_up)
-            or (wick_poke_down and bot - lows[-1] <= overshoot and not break_down)
-        ):
-            pass
-        elif break_up or break_down:
-            broken = True
-            state = "broken"
-            last_event = "breakout_up" if break_up else "breakout_down"
-            event_bar_ts = klines[-1].get("open_time")
+        if pending_break is not None and pending_bar is not None:
+            age = i - pending_bar
+            if merge_dev and age >= 1 and age <= dev_win and _inside(i):
+                # 破箱后的后续 bar 收回 → Failed Acceptance / Deviation
+                last_event = "deviation_up" if pending_break == "up" else "deviation_down"
+                event_bar_ts = klines[i].get("open_time")
+                pending_break = None
+                pending_bar = None
+                continue
+            if age > dev_win:
+                # 窗口耗尽仍未收回 → 确认 breakout（落在破箱 bar 语义上）
+                last_event = "breakout_up" if pending_break == "up" else "breakout_down"
+                event_bar_ts = klines[pending_bar].get("open_time")
+                pending_break = None
+                pending_bar = None
+                # 若本 bar 又破另一侧，下面继续处理
 
-    # Deviation / Failed Acceptance：在最近 deviation_window 内曾破、现收回
-    if broken and bool(cfg.get("merge_deviations", True)):
-        dev_win = int(cfg.get("deviation_window", 6))
-        # 简化：当前收盘已破；若前几根也曾触及边界外但本根收回，则记 deviation
-        # 更完整的状态机需跨 bar 缓存；第一刀用窗口内极值代理
-        look = klines[max(0, n - dev_win - 1) : n]
-        if look and bot <= close <= top:
-            # 已收回 → Failed Acceptance
-            had_up = any(_f(k.get("close")) > top + buffer or _f(k.get("high")) > top + buffer for k in look[:-1])
-            had_down = any(_f(k.get("close")) < bot - buffer or _f(k.get("low")) < bot - buffer for k in look[:-1])
-            if had_up:
-                last_event = "deviation_up"  # 上破失败 → bearish failed acceptance
-                state = "live"
-                broken = False
-                event_bar_ts = klines[-1].get("open_time")
-            elif had_down:
-                last_event = "deviation_down"  # 下破失败 → bullish failed acceptance
-                state = "live"
-                broken = False
-                event_bar_ts = klines[-1].get("open_time")
+        if pending_break is None and (broke_up or broke_dn):
+            # 同 bar 不可能既破又收回；只登记 pending，等后续 bar
+            pending_break = "up" if broke_up else "down"
+            pending_bar = i
+            if not merge_dev:
+                last_event = "breakout_up" if broke_up else "breakout_down"
+                event_bar_ts = klines[i].get("open_time")
+                pending_break = None
+                pending_bar = None
+
+    # 收盘态：仍 pending → broken（等待中）；已 deviation → live；已 breakout → broken
+    if pending_break is not None:
+        state = "broken"
+        if last_event is None:
+            # 尚未超时：对外仍报 breakout 方向为「进行中的离开」，但不与 deviation 同 bar
+            last_event = "breakout_up" if pending_break == "up" else "breakout_down"
+            event_bar_ts = klines[pending_bar].get("open_time") if pending_bar is not None else event_bar_ts
+    elif last_event in {"deviation_up", "deviation_down"}:
+        state = "live" if bars_held >= min_bars else "provisional"
+    elif last_event in {"breakout_up", "breakout_down"}:
+        state = "broken"
 
     mid = (top + bot) / 2.0
     q25 = bot + (top - bot) * 0.25

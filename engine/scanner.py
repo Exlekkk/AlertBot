@@ -16,8 +16,8 @@ from engine.market_data import BinanceMarketDataClient
 from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.range_lock import build_range_lock_context
-from engine.sweep_hunter import build_sweep_context
-from engine.delta_profile import build_delta_profile_context
+from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
+from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
 from engine.ifvg import build_ifvg_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
@@ -116,10 +116,13 @@ class SMCTScanner:
                 ict=ict_4h,
                 chart=chart_4h,
             )
-            range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
+            # AMST evidence：Sweep / 3D Delta / IFVG（K 线近似）；merge 进旧 liq/vp 字段
             sweep = build_sweep_context(klines_1h)
+            liq = merge_sweep_into_liquidity(liq, sweep)
             delta_profile = build_delta_profile_context(klines_1h)
+            vp = merge_delta_into_vp(vp, delta_profile)
             ifvg = build_ifvg_context(klines_1h, timeframe="1h")
+            range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp, ict=ict)
 
