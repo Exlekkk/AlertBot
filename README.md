@@ -1,237 +1,152 @@
 # AlertBot
 
-AlertBot is a BTCUSDT market-structure alert system. It is designed for TradingDexCat's crypto framework, where BTC is the core risk switch and the main analysis flow is:
+AlertBot is a BTCUSDT closed-candle alert engine. It watches higher-timeframe bias, emits selective formal alerts on the primary structure timeframe, and keeps a lower-timeframe path in shadow for diagnostics. Stocks and multi-asset scanning are out of scope.
 
-**4H background → 1H structure → 15m entry location**
+## How it works
 
-The project is currently BTC-only. Stock scanning is out of scope.
+### Timeframe roles
 
-## Current status
+| Layer | Role |
+|-------|------|
+| **4H** | Background bias only. Sets directional context; does not emit formal trade alerts by itself. |
+| **1H** | Formal alert layer. Structure, evidence weighting, and delivery decisions run here. |
+| **15m** | Shadow only. Records possible entry-location timing for review; does not change 1H conclusions, cooldowns, or live delivery. |
 
-Current package version: **v1.4.0-btc-smc-ict-chart-alignment**
+Flow in one line: **4H bias → 1H formal alerts → 15m shadow**.
 
-- Main production alert layer: **1H**
-- 15m layer: **shadow backtest only**
-- Telegram 15m prealerts: **disabled**
-- Main decision inputs: **the supplied BTC TradingView Pine framework**
-- MACD / ABCX / EMA Ribbon legacy framework: **not used by the scanner decision path**
-- 15m cadence: **adaptive by duplicate/new-information quality, never hard-capped per day**
-- 1H formal trials use market phase → structure state → weighted evidence → entry-quality validation
-- ICT Concepts uses the supplied Pine logic and the user's custom `6 / 14 / 5` settings; `+OB` / `-OB` remain separate from MSB-OB
-- RAR, Inertial Stochastic and TAI use the supplied source, including custom TAI `30 / 350`
-- Order-flow language is explicitly a closed-candle volume/CVD proxy; it is never labelled true footprint/order-book flow
-- Horizontal / accumulation range state suppresses duplicate noise but does not blanket-block a valid early edge trial
-- Secondary confirmation revalidates progress, direction, chase distance, risk and current structure instead of trusting the parent alert mechanically
+### Selective alerts over spam
 
-The 15m layer must never change 1H logic, 1H titles, 1H conclusions, cooldowns, or Telegram copy. It remains server-side shadow only in this version.
+The engine prefers fewer, higher-quality alerts over frequent noise:
 
-## Strategy model
+- Cooldown and dedupe suppress repeated families in the same practical area.
+- Range / accumulation context reduces duplicate observations without blanket-blocking a valid early trial when evidence is asymmetric.
+- Opposite formal trials in the same box need fresh structure information.
+- 15m cadence follows new-information quality, not a hard daily cap.
 
-AlertBot prioritizes liquidity and structure over standalone indicators.
+### Evidence gating (pending vs accepted)
 
-Primary context:
-- liquidity sweep and reclaim/reject
-- MSS / CHoCH / BOS
-- ICT Order Block, Breaker Block and Mitigation state
-- MSB-OB `9 / 0.33` OB / MB / BB zones
-- ICT FVG and ChartPrime FVG Volume Profile
-- Premium / Discount, PD Array and Killzone context
-- 1H close behavior around important zones
+Decisions use candle-based evidence bundles with approximate / proxy flags. Neutral rules:
 
-Fibonacci and classical context:
-- Smart Money Fibonacci OTE anchors and 0.5 equilibrium
-- 0.618 / 0.705 / 0.786 / 0.79 retracements
-- 1.272 / 1.618 continuation extensions
-- Dual Log Regression Channels (`300 / 2.0`, `50 / 1.5`)
-- Dow swing structure, volume-price confirmation and market-cycle phase
+- **Pending** evidence can inform weighting; it is not the same as an accepted structural event.
+- **Accepted** means the engine treated the event as confirmed enough to act on (for example after a successful closed-candle validation).
+- Delivery state for a pending confirmation is written only after a successful send on the configured notification channel.
+- Auxiliary filters add timing or confidence; they are never standalone triggers.
 
-Volume / order-flow proxy:
-- native Binance closed-candle volume
-- High Volume Pivot Support & Resistance Zones (`40 / 40 / 20 / 1.2`)
-- FVG Volume Profile (`13 / 20 / 0.6` chart settings; available 15m candles are a labelled lower-timeframe proxy)
-- candle-direction CVD proxy, stop-run acceptance, fake breakout and absorption proxy
+Exact indicator brands, chart-vendor scripts, and strategy jargon are intentionally omitted from this public README. Runtime modules under `engine/` implement the live path.
 
+## Runtime surfaces
 
-Range / accumulation state:
-- detects when price is rotating inside the same accepted value box
-- treats simultaneous ICT `+OB` / `-OB` as unresolved box context until one side is accepted
-- suppresses repeated lower/upper key-zone observations inside that box
-- allows an early edge trial when weighted evidence is asymmetric; no breakout or fixed indicator checklist is required
-- blocks rapid opposite formal trials in the same practical box unless fresh structure information appears
-- keeps 15m shadow-only; 15m still does not decide 1H direction
+| Surface | Role |
+|---------|------|
+| Scanner (`scripts/run_scanner.py` → `engine/scanner.py`) | Main 1H loop |
+| App / webhook process (`app.py`) | HTTP entry, ops helpers, inbound webhook |
+| Shadow / 15m path | Server-side diagnostics; not live formal delivery |
+| Notification channel | Outbound alerts; credentials via env (never commit secrets) |
+| State JSON | Runtime + signal persistence (atomic writes) |
 
-Auxiliary filters:
-- RAR
-- Inertial Stochastic (`10 / 40 / 3 / 3`)
-- Trading Activity Index (`30 / 350`) using P20/P40/P60/P80 bands
+## Install
 
-These filters add timing/confidence evidence. They are not standalone triggers.
-
-Invalid standalone triggers:
-- FVG alone
-- TAI hot/cold alone
-- zone touch alone
-- one 15m wick without 1H/4H context
-
-## Timeframes
-
-### 4H
-Higher-timeframe bias from SMC/ICT structure, liquidity, Fibonacci swing state, Dow structure and log-regression channels. EMA crosses are not used for the official 4H bias.
-
-### 1H
-The official alert body and the main structure engine. This is the primary timeframe for Telegram alerts.
-
-### 15m
-Entry-location reminder only. It answers: “Is there a possible long/short entry location worth checking now?”
-
-It does not decide market direction and does not rewrite 1H conclusions.
-
-The bot should not enforce a fixed daily maximum for 15m reminders. Quiet days may produce only a few reminders, while high-volatility days may produce more. The control point is not a daily cap; it is whether each reminder has fresh structure information and is not a duplicate or rapid long/short flip-flop in the same 1H area.
-
-
-## Alert copy families
-
-1H formal trade alerts use double emoji and full context:
-- `📈 BTC 1H 试多观察 📈`
-- `📉 BTC 1H 试空观察 📉`
-- `📈 BTC 1H 多头确认 📈`
-- `📉 BTC 1H 空头确认 📉`
-
-1H secondary confirmation is still formal, but intentionally minimal:
-- `✅ BTC 1H 二次确认：承接成立 ✅`
-- `✅ BTC 1H 二次确认：承压成立 ✅`
-
-1H non-formal observation alerts use single emoji and only three sections:
-- status
-- zone
-- risk point
-
-Allowed 1H single-emoji observation titles:
-- `📍 BTC 1H 关键区观察`
-- `📍 BTC 1H 上方关键区观察`
-- `📍 BTC 1H 下方关键区观察`
-
-Do not use standalone invalidation Telegram alerts such as bull/bear invalidated. Internal risk-state tracking may still exist, but those titles are not part of the public copy family.
-
-15m prealert copy is also single-emoji and compact, but 15m remains shadow-only until explicitly enabled.
-
-## Important files
-
-- `engine/scanner.py`  
-  Main 1H scanner pipeline.
-
-- `engine/prealert_15m.py`  
-  Isolated 15m shadow entry-location engine.
-
-- `scripts/backtest_15m_prealert.py`  
-  Runs the 15m shadow backtest and writes CSV diagnostics.
-
-- `engine/aux_filters.py`  
-  RAR, exact supplied Inertial logic, custom TAI, price displacement, and volume filters.
-
-- `engine/chart_indicators.py`
-  Supplied Pine translations for Fibonacci OTE, dual log channels, high-volume pivots, FVG Volume Profile, volume/order-flow proxy, Dow/cycle context and Killzones.
-
-- `engine/framework.py`
-  BTC 4H SMC/ICT + classical-theory bias aggregation.
-
-- `engine/ict_ob.py`
-  Dedicated ICT MSS/BOS, liquidity, `+OB` / `-OB`, breaker, mitigation, FVG, PD Array and Premium/Discount context.
-
-- `engine/trial_decision.py`
-  Market phase, weighted direction evidence, anti-chase/risk checks, and same-box flip control.
-
-- `engine/volume_profile.py`  
-  Compatibility adapter backed by FVG Volume Profile and high-volume pivot context. The former generic fixed-range VP is no longer in the live decision path.
-
-- `engine/msb_ob.py`  
-  MSB / OB / MB structure context.
-
-- `engine/liquidity.py`  
-  Liquidity sweep and reclaim/reject context.
-
-- `scripts/replay_1h_decisions.py`
-  Deterministic 1H replay from Binance Vision CSV/ZIP kline archives.
-
-- `docs/V1_4_0_REPLAY_REVIEW.md`
-  v1.4.0 BTC framework review for the 2026-06-09 through 2026-06-12 incident window.
-
-- `ALERTBOT_VERSION_CONTEXT.md`  
-  Short handoff context for future AI conversations.
-
-- `docs/TRADING_FRAMEWORK.md`  
-  Trading framework used by this bot.
-
-- `docs/CHANGELOG_TRADINGDEXCAT.md`  
-  Version history and reasoning.
-
-## Test commands
+Typical host layout uses `/opt/smct-alert` as the install root and a local venv.
 
 ```bash
-python -m unittest discover -s tests
+sudo mkdir -p /opt/smct-alert
+sudo rsync -a --exclude '.git' --exclude '.env' --exclude 'config/.env' \
+  --exclude 'venv' --exclude 'logs' --exclude 'state' \
+  ./ /opt/smct-alert/
+cd /opt/smct-alert
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+```
+
+Copy `.env.example` to the host env file (default: `/opt/smct-alert/config/.env`) and fill secrets locally. Point `SMCT_ENV_FILE` at that absolute path if it is not the default.
+
+Do not commit tokens, chat ids, webhook secrets, or production `.env` files.
+
+## Configuration
+
+Load env via `SMCT_ENV_FILE` (see `.env.example` and `docs/DEPLOY_CHECKLIST.md`).
+
+Important ops flags (names only; set values on the host):
+
+| Key | Purpose |
+|-----|---------|
+| `FREEZE_MODE_SEND_X_ONLY` | `1` / `0` delivery freeze flag |
+| `SMCT_ENV_FILE` | Absolute path to the env file |
+| `SMCT_SIGNAL_STATE_FILE` / `SMCT_RUNTIME_STATE_FILE` | State JSON paths |
+| `BINANCE_SYMBOL` | Symbol (default `BTCUSDT`) |
+| `MARKET_SOURCE` | `binance_futures` (default) or `binance_spot` |
+| `SCAN_INTERVAL_SECONDS` / `ALERT_COOLDOWN_SECONDS` | Loop and cooldown |
+
+Notification-channel credentials and webhook secrets stay in the host env file only.
+
+## systemd
+
+Production expects three units (host names may match these examples):
+
+| Unit | Role |
+|------|------|
+| `smct-scanner` | Scanner loop (`scripts/run_scanner.py`) |
+| `smct-alert` | App process (shared `app:app` with webhook on many hosts) |
+| `smct-webhook` | Webhook / HTTP surface |
+
+Example unit file in-repo: `systemd/smct-scanner.service` (WorkingDirectory `/opt/smct-alert`, venv interpreter in `ExecStart`).
+
+After install or unit edits:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart smct-alert smct-scanner smct-webhook
+sudo systemctl is-active smct-alert smct-scanner smct-webhook
+```
+
+Prefer `Restart=always`; investigate crash loops via journal before force-restarting.
+
+## Tests
+
+```bash
+./scripts/run_ci.sh
+# or
+python -m unittest discover -s tests -p 'test_*.py' -v
 python -m compileall -q engine services scripts tests
 ```
 
-Current v1.4.0 validation: **84 tests pass**.
+## Upgrade
 
-Run the deterministic 1H incident replay after placing Binance Vision 1H/4H archives in a local data directory:
+1. Backup state JSON and note the current commit/tag.
+2. Fetch and check out the reviewed commit (do **not** cut over from an unreviewed Draft PR).
+3. Sync code into `/opt/smct-alert` without overwriting `.env`, `venv`, `logs`, or `state`.
+4. `pip install -r requirements.txt` in the host venv if dependencies changed.
+5. Run `./scripts/run_ci.sh` on the host.
+6. Restart the three units; confirm they are active.
+7. Confirm `FREEZE_MODE_SEND_X_ONLY` (and other delivery flags) still match intent before enabling live send.
 
-```bash
-python scripts/replay_1h_decisions.py \
-  --data-dir /tmp/alertbot-market \
-  --start '2026-06-09T00:00:00' \
-  --end '2026-06-12T23:59:59' \
-  --timezone Asia/Singapore \
-  --output reports/v1.4.0_btc_framework_replay_2026-06-09_12.csv
-```
-
-Run 15m shadow backtest:
+A safe sync pattern (no `--delete` against a live `config/` that holds `.env`):
 
 ```bash
-mkdir -p reports logs
-
-python scripts/backtest_15m_prealert.py \
-  --symbol BTCUSDT \
-  --days 7 \
-  --out reports/15m_prealert_backtest.csv \
-  --summary reports/15m_prealert_summary.txt
-
-cat reports/15m_prealert_summary.txt
-head -50 reports/15m_prealert_backtest.csv
+sudo rsync -a \
+  --exclude '.git' --exclude '.env' --exclude 'config/.env' \
+  --exclude 'venv' --exclude '.venv' \
+  --exclude 'logs' --exclude 'state' \
+  --exclude '__pycache__' --exclude '*.pyc' \
+  /path/to/reviewed/checkout/ /opt/smct-alert/
 ```
 
-## Deployment notes
+## Rollback
 
-The production services are expected to run under systemd:
+1. Freeze or stop outbound send if alerts misfire (`FREEZE_MODE_SEND_X_ONLY=1` or stop units).
+2. Check out the previous known-good commit/tag and sync into `/opt/smct-alert` the same way.
+3. Restore state JSON from the pre-cutover backup if needed.
+4. Reinstall requirements if pins changed; restart the three units.
+5. Confirm one healthy scan cycle before re-enabling live delivery.
 
-- `smct-scanner.service`
-- `smct-alert.service`
-- `smct-webhook.service`
+## Docs
 
-The 15m shadow engine is not connected to Telegram unless explicitly enabled in a later version.
+| Path | Role |
+|------|------|
+| `docs/ARCHITECTURE.md` | Neutral runtime overview |
+| `docs/DEPLOY_CHECKLIST.md` | Ops cutover checklist |
+| `docs/ci-workflow.example.yml` | Example CI workflow |
 
-## 15m quality rule
+## License / scope
 
-A healthy 15m shadow result is not judged only by signal count. Review:
-
-- whether the reminder came before the 1H confirmation;
-- whether long and short both can appear when market structure supports them;
-- whether failed signals are explainable from CSV diagnostics;
-- whether `duplicate_skips` and `contradiction_skips` remove repeated noise;
-- whether high-volatility days are allowed to keep valid new-information reminders.
-
-The 1-4 signals/day range is only a baseline reference for normal markets, not a hard rule.
-
-## Handoff rule for future AI agents
-
-Before changing trading logic, read:
-
-1. `ALERTBOT_VERSION_CONTEXT.md`
-2. `docs/TRADING_FRAMEWORK.md`
-3. `docs/CHANGELOG_TRADINGDEXCAT.md`
-4. `engine/prealert_15m.py`
-5. `scripts/backtest_15m_prealert.py`
-
-Preserve the core rule:
-
-**1H is the official alert layer. 15m only reminds the trader of possible entry locations.**
+Public documentation describes operation and hosting only. Strategy semantics, chart-script parameters, and notification copy templates are not published here.
