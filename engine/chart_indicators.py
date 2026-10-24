@@ -196,24 +196,6 @@ def build_fibonacci_ote_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_log_regression_channel(*args, **kwargs):
-    """Compatibility shim → engine.legacy_quarantine.dual_log."""
-    from engine.legacy_quarantine.dual_log import build_log_regression_channel as _impl
-    return _impl(*args, **kwargs)
-
-
-def build_dual_log_regression_context(*args, **kwargs):
-    """Compatibility shim → engine.legacy_quarantine.dual_log."""
-    from engine.legacy_quarantine.dual_log import build_dual_log_regression_context as _impl
-    return _impl(*args, **kwargs)
-
-
-def build_classic_market_context(*args, **kwargs):
-    """Compatibility shim → engine.legacy_quarantine.classic_market."""
-    from engine.legacy_quarantine.classic_market import build_classic_market_context as _impl
-    return _impl(*args, **kwargs)
-
-
 def build_high_volume_pivot_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
     cfg = CHART_CONFIG["high_volume_pivots"]
     res_len = int(cfg["resistance_length"])
@@ -530,13 +512,10 @@ def build_chart_context(
 ) -> dict[str, Any]:
     if not klines:
         return {"available": False}
-    # dual-log / classic-swing builders are quarantined; live chart context
-    # keeps empty placeholders so callers do not reattach peeled votes.
+    # dual-log / classic-swing / ICT-MSB hard-deleted from chart context.
     return {
         "available": True,
         "fibonacci": build_fibonacci_ote_context(klines),
-        "dual_log_regression": {"source": "quarantined", "alignment": "neutral", "macro": {}, "short": {}, "quarantined": True},
-        "classic_market": {"available": False, "dow_direction": "neutral", "cycle": "unknown", "quarantined": True},
         "high_volume_pivots": build_high_volume_pivot_context(klines),
         "fvg_volume_profile": build_fvg_volume_profile_context(klines, lower_klines),
         "volume_orderflow": build_volume_orderflow_proxy(klines),

@@ -297,6 +297,162 @@ class TrialEvidenceBundlePreferenceTests(unittest.TestCase):
         self.assertIn("core_levels_reclaim_50", long_reasons)
         self.assertNotIn("evidence_confluence", long_reasons)
 
+
+class TrialFourGateFixesTests(unittest.TestCase):
+    def _bars(self):
+        bars = []
+        base = 10000.0
+        for i in range(50):
+            bars.append(_bar(base, base + 10, base - 10, base, vol=100, ts=i * 3600000))
+        return bars
+
+    def _base_ctx(self):
+        htf = {"bias": "neutral", "text": "neutral", "relation": "neutral"}
+        matrix = {"rar_slope": 0.0, "inertia_slope": 0.0, "momentum_text": "", "temperature": ""}
+        aux = {"price_impulse": 0.0}
+        return htf, matrix, aux
+
+    def test_sweep_does_not_double_count_evidence_and_legacy_liq(self):
+        from engine.trial_decision import build_trial_context
+
+        htf, matrix, aux = self._base_ctx()
+        evidence_sweep = {
+            "swept": True,
+            "recent_sweep_valid": True,
+            "side": "sell_side",
+            "reclaim_or_reject": "reclaim",
+        }
+        liq = {
+            "recent_sweep_valid": True,
+            "sweep_type": "sellside",
+            "reclaim_or_reject": "reclaim",
+            "sweep_hunter": evidence_sweep,
+        }
+        ctx = build_trial_context(
+            self._bars(),
+            htf,
+            liq,
+            {},
+            matrix,
+            aux,
+            evidence_bundle={"sweep": evidence_sweep},
+        )
+        long_reasons = " ".join(ctx["evidence"]["long"])
+        self.assertIn("sweep_sell_side_reclaim", long_reasons)
+        self.assertNotIn("sellside_sweep_reclaim", long_reasons)
+
+    def test_legacy_liq_sweep_fallback_when_evidence_absent(self):
+        from engine.trial_decision import build_trial_context
+
+        htf, matrix, aux = self._base_ctx()
+        liq = {
+            "recent_sweep_valid": True,
+            "sweep_type": "sellside",
+            "reclaim_or_reject": "reclaim",
+        }
+        ctx = build_trial_context(self._bars(), htf, liq, {}, matrix, aux, evidence_bundle={})
+        long_reasons = " ".join(ctx["evidence"]["long"])
+        self.assertIn("sellside_sweep_reclaim", long_reasons)
+
+    def test_pending_break_adds_no_direction_score(self):
+        from engine.trial_decision import build_trial_context
+
+        htf, matrix, aux = self._base_ctx()
+        ctx = build_trial_context(
+            self._bars(),
+            htf,
+            {},
+            {},
+            matrix,
+            aux,
+            evidence_bundle={"auto_range": {"pending_break": "up", "last_event": None}},
+        )
+        long_reasons = " ".join(ctx["evidence"]["long"])
+        self.assertNotIn("range_break_pending", long_reasons)
+
+    def test_core_levels_not_directional_catalyst(self):
+        from engine.trial_decision import assess_trial_candidate, build_trial_context
+
+        htf, matrix, aux = self._base_ctx()
+        aux = {
+            "price_impulse": 0.0,
+            "rar_slope": 0.0,
+            "core_levels_filter": {
+                "allowed": True,
+                "filter_only": True,
+                "midline_event": "reclaim_above_50",
+                "lean": "bull",
+                "squeeze": False,
+            },
+        }
+        trial = build_trial_context(
+            self._bars(),
+            htf,
+            {},
+            {"fibonacci": {}},
+            matrix,
+            aux,
+            evidence_bundle={"core_levels_filter": aux["core_levels_filter"]},
+        )
+        # Soft score may include core_levels, but catalyst gate must fail without evidence structure.
+        trial["chart_framework_active"] = True
+        trial["scores"] = {"long": 10.0, "short": 1.0}
+        trial["evidence"]["long"] = [r for r in trial["evidence"]["long"] if "core_levels" in r]
+        trial["evidence_bundle_keys"] = ["core_levels_filter"]
+        result = assess_trial_candidate(
+            "long",
+            "LOWER_KEY_ZONE_RECLAIM",
+            (9990.0, 10010.0),
+            9980.0,
+            {"open": 10000.0, "high": 10020.0, "low": 9990.0, "close": 10005.0, "atr": 20.0},
+            10000.0,
+            "fibonacci_ote",
+            "reclaimed_above",
+            trial,
+            current_bar=20,
+        )
+        self.assertFalse(result["directional_catalyst"])
+        self.assertIn("formal_without_directional_catalyst", result["hard_blocks"])
+
+    def test_empty_evidence_blocks_formal_without_catalyst(self):
+        from engine.trial_decision import assess_trial_candidate
+
+        trial = {
+            "scores": {"long": 10.0, "short": 2.0},
+            "evidence": {"long": ["ote_discount_location:+0.50"], "short": []},
+            "atr": 1.0,
+            "range_active": False,
+            "box_low": None,
+            "box_high": None,
+            "box_position": "unknown",
+            "accepted_breakout": "none",
+            "long_extension_atr": 0.5,
+            "short_extension_atr": 0.5,
+            "ict_bullish_active": False,
+            "ict_bearish_active": False,
+            "ict_bullish_distance_atr": None,
+            "ict_bearish_distance_atr": None,
+            "ict_ob_coexist": False,
+            "chart_framework_active": False,
+            "evidence_bundle_keys": [],
+            "liquidity_bars_since": None,
+        }
+        result = assess_trial_candidate(
+            "long",
+            "LOWER_KEY_ZONE_RECLAIM",
+            (98.5, 99.2),
+            98.0,
+            {"open": 99.0, "high": 100.0, "low": 98.7, "close": 99.5, "atr": 1.0},
+            99.0,
+            "fibonacci_ote",
+            "reclaimed_above",
+            trial,
+            current_bar=20,
+        )
+        self.assertFalse(result["directional_catalyst"])
+        self.assertIn("formal_without_evidence", result["hard_blocks"])
+
+
 class CoreLevelsFilterTests(unittest.TestCase):
     def test_1h_filter_only_never_alerts(self):
         from engine.core_levels_filter import build_core_levels_filter

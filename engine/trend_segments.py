@@ -60,6 +60,33 @@ def decide_trend_segment(
     trend_state = trend_state or {}
     ict = ict or {}
     cfg = TREND_ENGINE_CONFIG["score"]
+    # ICT/MSB structure-shift path hard-deleted. Formal alerts come from
+    # key_zones + evidence (IFVG / sweep / auto_range / delta / RAR / OTE).
+    # Keep this function as a no-alert shell for scanner API compatibility.
+    if not ict and str(msb.get("direction", "neutral")) == "neutral" and not msb.get("structure_zone"):
+        price = float(aux.get("price", 0.0) or 0.0)
+        decision = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "alert_type": "NO_TRADE_RANGE",
+            "direction": "neutral",
+            "price": price,
+            "score": 0,
+            "score_breakdown": {"penalty_reason": "ict_msb_stack_deleted"},
+            "htf_context": htf_ctx.get("text", "4H 背景中性"),
+            "htf_relation": htf_ctx.get("relation", "neutral"),
+            "zone": (price, price),
+            "zone_low": price,
+            "zone_high": price,
+            "zone_source": "none",
+            "invalid_level": price,
+            "should_alert": False,
+            "suppress_reason": "ict_msb_stack_deleted",
+            "state_version": "DELETED",
+            "momentum_desc": str(aux.get("momentum_desc", "")),
+            "temperature_desc": str(aux.get("temperature_desc", "")),
+        }
+        return attach_vp_fields(decision, vp or {}, [])
 
     ict_direction = str(ict.get("structure_direction", "neutral"))
     ict_event = str(ict.get("structure_event", "none"))

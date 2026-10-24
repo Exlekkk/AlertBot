@@ -3,9 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from engine.chart_indicators import build_chart_context
-from engine.ict_ob import build_ict_ob_context
 from engine.liquidity import build_liquidity_context
-from engine.msb_ob import build_msb_ob_context
 
 
 def _vote(scores: dict[str, float], side: str, weight: float) -> None:
@@ -45,30 +43,22 @@ def build_htf_bias_context(
     ict: dict[str, Any] | None = None,
     chart: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """4H bias from structure, liquidity and fibonacci context.
+    """4H bias from liquidity sweep + fibonacci OTE context.
 
-    EMA crosses are deliberately absent. Dual-log channel and classic swing
-    votes are peeled from this path. The result is a background vote, not a
-    4H entry signal, and 15m data is never accepted here.
+    EMA crosses, dual-log, classic swing, ICT structure and MSB-OB votes are
+    hard-deleted from this path. Background vote only; never a 4H entry signal.
     """
 
     if not klines_4h:
         return {"h4_direction": "range", "relation": "neutral", "text": "4H 震荡", "h4_strength": 0.0}
     liquidity = liquidity or build_liquidity_context(klines_4h)
-    msb = msb or build_msb_ob_context(klines_4h, liquidity)
-    ict = ict or build_ict_ob_context(klines_4h)
+    msb = msb or {"direction": "neutral"}
+    ict = ict or {}
     chart = chart or build_chart_context(klines_4h)
+    _ = (msb, ict)
 
     scores = {"bull": 0.0, "bear": 0.0}
     evidence: list[str] = []
-    ict_direction = str(ict.get("structure_direction", "neutral"))
-    if ict_direction in scores:
-        _vote(scores, ict_direction, 3.0)
-        evidence.append(f"ict_structure_{ict_direction}")
-    msb_direction = str(msb.get("direction", "neutral"))
-    if msb_direction in scores:
-        _vote(scores, msb_direction, 2.0)
-        evidence.append(f"msb_{msb_direction}")
 
     fibonacci = chart.get("fibonacci", {})
     fib_direction = str(fibonacci.get("trend", "neutral"))
@@ -101,7 +91,7 @@ def build_htf_bias_context(
         "bias_evidence": evidence,
         "premium_discount": fibonacci.get("premium_discount", "unknown"),
         "market_cycle": "unknown",
-        "source": "smc_ict_structure",
+        "source": "fibonacci_liquidity_bias",
     }
     context["relation"] = relation_to_htf(context, direction_1h)
     return context

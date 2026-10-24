@@ -292,18 +292,6 @@ def rar_components(values: list[float], length: int = 15, power: float = 1.0):
     }
 
 
-def inertial_stochastic_components(*args, **kwargs):
-    """Compatibility shim → engine.legacy_quarantine.inertial."""
-    from engine.legacy_quarantine.inertial import inertial_stochastic_components as _impl
-    return _impl(*args, **kwargs)
-
-
-def inertial_stochastic_proxy_components(*args, **kwargs):
-    """Compatibility shim → engine.legacy_quarantine.inertial."""
-    from engine.legacy_quarantine.inertial import inertial_stochastic_proxy_components as _impl
-    return _impl(*args, **kwargs)
-
-
 def tai_components(klines: list[dict], len_form: int = 30, len_hist: int = 350):
     dollar_vol = [k["close"] * k["volume"] for k in klines]
     dollar_vol_avg = sma(dollar_vol, len_form)

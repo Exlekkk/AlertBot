@@ -94,7 +94,7 @@ class AutoRangeContractTests(unittest.TestCase):
             ict={"coexist": True, "source": "explicit_feed"},
         )
         self.assertTrue(ctx["active"])
-        self.assertTrue(ctx["ict_ob_conflict"])
+        self.assertFalse(ctx["ict_ob_conflict"])
 
 
 if __name__ == "__main__":

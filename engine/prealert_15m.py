@@ -7,10 +7,8 @@ from typing import Any
 
 from engine.chart_indicators import build_chart_context
 from engine.framework import build_htf_bias_context
-from engine.ict_ob import build_ict_ob_context
 from engine.indicators import enrich_klines
 from engine.liquidity import build_liquidity_context
-from engine.msb_ob import build_msb_ob_context
 
 
 @dataclass(frozen=True)
@@ -183,8 +181,8 @@ def _candidate_zones(
     lower_klines: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     liq = build_liquidity_context(klines_1h)
-    msb = build_msb_ob_context(klines_1h, liq)
-    ict = build_ict_ob_context(klines_1h)
+    msb = {"direction": "neutral"}
+    ict = {}
     chart = build_chart_context(klines_1h, lower_klines=lower_klines)
     zones: list[dict[str, Any]] = []
 
@@ -950,7 +948,7 @@ def evaluate_15m_prealert(
         # to return only a list of zones.
         candidates = candidate_result  # type: ignore[assignment]
         liq1h = build_liquidity_context(klines_1h)
-        msb = build_msb_ob_context(klines_1h, liq1h)
+        msb = {"direction": "neutral"}
     htf_text = _htf_context_text(klines_4h)
 
     if cfg.require_1h_context and not candidates:

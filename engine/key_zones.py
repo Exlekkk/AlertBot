@@ -485,6 +485,7 @@ def _select_zone(
     msb: dict[str, Any],
     ict: dict[str, Any] | None = None,
     vp: dict[str, Any] | None = None,
+    evidence_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cfg = TREND_ENGINE_CONFIG["key_zone"]
     latest = klines_1h[-1]
@@ -495,50 +496,50 @@ def _select_zone(
     pad = max(atr * cfg["touch_atr_mult"], close * cfg["touch_pct"])
 
     zones: list[dict[str, Any]] = []
-    ict = ict or {}
+    ict = ict or {}  # deleted stack; ignored
+    _ = ict
     vp = vp or {}
+    evidence_bundle = evidence_bundle if isinstance(evidence_bundle, dict) else {}
 
-    has_ob_context = bool(msb.get("has_order_block_context"))
-    has_fvg_context = bool(msb.get("active_fvg_zone"))
-    # Sweep alone is not enough for observation alerts.  It is useful for the
-    # structure-shift engine, but key-zone observation must be anchored to an
-    # actual FVG/structure/POI context to avoid hourly noise after a waterfall.
-    has_ict_context = bool(ict.get("bullish_active")) or bool(ict.get("bearish_active"))
-    has_structural_context = has_ob_context or has_fvg_context or has_ict_context
-
-    # ICT Concepts +OB/-OB are a dedicated source.  They are never folded into
-    # the MSB-OB proxy.  Exact feed zones and the clearly-labelled price proxy
-    # use the same downstream interface but remain distinguishable in logs.
-    bull_ict = ict.get("bullish_nearest")
-    if bull_ict:
-        full_zone = _ordered_zone(tuple(bull_ict))
-        zone = _ict_entry_boundary(full_zone, "lower", atr, pad)
-        zones.append(
-            {
-                "side": "lower",
-                "source": "ict_plus_ob",
-                "ict_ob_source": ict.get("source", "none"),
-                "zone": zone,
-                "full_zone": full_zone,
-                "interaction": _zone_relation(latest, zone, pad),
-            }
-        )
-    bear_ict = ict.get("bearish_nearest")
-    if bear_ict:
-        full_zone = _ordered_zone(tuple(bear_ict))
-        zone = _ict_entry_boundary(full_zone, "upper", atr, pad)
-        zones.append(
-            {
-                "side": "upper",
-                "source": "ict_minus_ob",
-                "ict_ob_source": ict.get("source", "none"),
-                "zone": zone,
-                "full_zone": full_zone,
-                "interaction": _zone_relation(latest, zone, pad),
-            }
-        )
-
+    # Structural context without ICT/MSB: OTE, IFVG, volume-profile POIs, or sweep.
     fibonacci = msb.get("fibonacci", {}) if isinstance(msb.get("fibonacci"), dict) else {}
+    ifvg = evidence_bundle.get("ifvg") if isinstance(evidence_bundle.get("ifvg"), dict) else {}
+    has_ote = bool(fibonacci.get("ote_zone") and fibonacci.get("trend") in {"bull", "bear"})
+    has_ifvg = bool(
+        ifvg.get("nearest_active")
+        and not (ifvg.get("nearest_active") or {}).get("invalidated", False)
+    )
+    has_vp = bool((vp.get("fvg_profile") or {}).get("bullish") or (vp.get("fvg_profile") or {}).get("bearish")) or bool(
+        (vp.get("high_volume_pivots") or {}).get("support") or (vp.get("high_volume_pivots") or {}).get("resistance")
+    )
+    # Sweep alone is not enough for observation alerts (same rule as pre-delete).
+    has_structural_context = has_ote or has_ifvg or has_vp
+
+    nearest_ifvg = ifvg.get("nearest_active") if isinstance(ifvg.get("nearest_active"), dict) else None
+    if nearest_ifvg and not nearest_ifvg.get("invalidated"):
+        top = nearest_ifvg.get("top")
+        bottom = nearest_ifvg.get("bottom")
+        if top is not None and bottom is not None:
+            full_zone = _ordered_zone((float(bottom), float(top)))
+            # direction 1 (bullish origin) inverted → resistance / upper;
+            # direction -1 inverted → support / lower. Non-inverted keeps origin side.
+            direction = int(nearest_ifvg.get("direction") or 0)
+            inverted = bool(nearest_ifvg.get("inverted"))
+            if inverted:
+                side = "upper" if direction == 1 else "lower"
+            else:
+                side = "lower" if direction == 1 else "upper"
+            zone = full_zone
+            zones.append(
+                {
+                    "side": side,
+                    "source": "ifvg_zone",
+                    "zone": zone,
+                    "full_zone": full_zone,
+                    "interaction": _zone_relation(latest, zone, pad),
+                }
+            )
+
     ote_zone = fibonacci.get("ote_zone")
     if ote_zone and fibonacci.get("trend") in {"bull", "bear"}:
         zone = _ordered_zone(tuple(ote_zone))
@@ -551,6 +552,20 @@ def _select_zone(
                 "interaction": _zone_relation(latest, zone, pad),
             }
         )
+
+    # Residual shell field only: MSB builder is deleted, but callers/tests may still
+    # pass active_fvg_zone on the msb dict. Map to ifvg_zone so observation keeps a
+    # POI without resurrecting MSB scoring weights.
+    if not has_ifvg and msb.get("active_fvg_zone"):
+        zone = _ordered_zone(tuple(msb["active_fvg_zone"]))
+        direction = str(msb.get("active_fvg_direction", "none"))
+        relation = _zone_relation(latest, zone, pad)
+        if direction == "bull":
+            zones.append({"side": "lower", "source": "ifvg_zone", "zone": zone, "interaction": relation})
+            has_structural_context = True
+        elif direction == "bear":
+            zones.append({"side": "upper", "source": "ifvg_zone", "zone": zone, "interaction": relation})
+            has_structural_context = True
 
     fvg_profile = vp.get("fvg_profile", {}) if isinstance(vp.get("fvg_profile"), dict) else {}
     for item in list(fvg_profile.get("bullish", []))[:1] + list(fvg_profile.get("bearish", []))[:1]:
@@ -582,40 +597,7 @@ def _select_zone(
             }
         )
 
-    # FVG-style zones are valid observation targets even before a full
-    # structure-shift alert.  They are internal-only and never exposed by name.
-    fvg_zone = msb.get("active_fvg_zone")
-    if fvg_zone:
-        zone = _ordered_zone(tuple(fvg_zone))
-        direction = str(msb.get("active_fvg_direction", "none"))
-        relation = _zone_relation(latest, zone, pad)
-        if direction == "bull":
-            zones.append({"side": "lower", "source": "fvg_zone", "zone": zone, "interaction": relation})
-        elif direction == "bear":
-            zones.append({"side": "upper", "source": "fvg_zone", "zone": zone, "interaction": relation})
-
-    # Structural zones from the trend engine.  Do not use synthetic zones when
-    # no real structure context exists; otherwise the bot becomes noisy and
-    # reports every moving range edge as a key area.
-    if has_ob_context or not cfg.get("structural_zone_requires_context", True):
-        for source in ("structure_zone", "order_block_zone", "mid_observe_zone"):
-            raw = msb.get(source)
-            if not raw:
-                continue
-            zone = _ordered_zone(tuple(raw))
-            relation = _zone_relation(latest, zone, pad)
-            if relation == "rejected_below":
-                zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
-            elif relation == "reclaimed_above":
-                zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
-            elif zone[1] < close:
-                zones.append({"side": "lower", "source": source, "zone": zone, "interaction": relation})
-            elif zone[0] > close:
-                zones.append({"side": "upper", "source": source, "zone": zone, "interaction": relation})
-            else:
-                # If price is inside the zone, infer side from the latest movement.
-                side = "lower" if close >= prev_close else "upper"
-                zones.append({"side": side, "source": source, "zone": zone, "interaction": relation})
+    # MSB-OB / ICT structure zones hard-deleted.
 
     # Range edges are allowed only when there is a valid context behind them
     # (recent sweep / FVG / structure).  This preserves useful range-boundary
@@ -646,27 +628,39 @@ def _select_zone(
     is_red = close < open_
     is_green = close > open_
 
+    def _prefer_poi(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        poi = [
+            z
+            for z in hits
+            if z.get("source")
+            in {
+                "ifvg_zone",
+                "fibonacci_ote",
+                "fvg_volume_profile",
+                "high_volume_support",
+                "high_volume_resistance",
+            }
+        ]
+        return poi or hits
+
     # If a bearish candle actually reaches a lower area, prefer the pullback /
-    # support-test description over "upper-zone rejection".  This matches the
-    # user's intraday use case: a waterfall into a useful area should wake them
-    # up for the possible reaction, not describe only where the drop started.
+    # support-test description over "upper-zone rejection".
     if is_red and lower_hits:
-        return _best_zone(lower_hits, close, "lower")
+        return _best_zone(_prefer_poi(lower_hits), close, "lower")
     if is_green and upper_hits:
-        return _best_zone(upper_hits, close, "upper")
+        return _best_zone(_prefer_poi(upper_hits), close, "upper")
 
     rejected_upper = [z for z in upper_hits if z.get("interaction") == "rejected_below"]
     reclaimed_lower = [z for z in lower_hits if z.get("interaction") == "reclaimed_above"]
     if is_red and rejected_upper:
-        return _best_zone(rejected_upper, close, "upper")
+        return _best_zone(_prefer_poi(rejected_upper), close, "upper")
     if is_green and reclaimed_lower:
-        return _best_zone(reclaimed_lower, close, "lower")
+        return _best_zone(_prefer_poi(reclaimed_lower), close, "lower")
 
     if lower_hits:
-        # Prefer the closest lower zone.
-        return _best_zone(lower_hits, close, "lower")
+        return _best_zone(_prefer_poi(lower_hits), close, "lower")
     if upper_hits:
-        return _best_zone(upper_hits, close, "upper")
+        return _best_zone(_prefer_poi(upper_hits), close, "upper")
     return {}
 
 
@@ -773,7 +767,7 @@ def decide_key_zone_observation(
             range_lock,
         )
 
-    selected = _select_zone(klines_1h, liq, msb, ict=ict, vp=vp)
+    selected = _select_zone(klines_1h, liq, msb, ict=ict, vp=vp, evidence_bundle=evidence_bundle)
     if not selected:
         update = dict(observation_state)
         update.update({

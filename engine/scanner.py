@@ -8,12 +8,10 @@ from engine.chart_indicators import build_chart_context
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.framework import build_htf_bias_context
-from engine.ict_ob import build_ict_ob_context
 from engine.liquidity import build_liquidity_context
 from engine.key_zones import decide_key_zone_observation
 from engine.late_filter import apply_late_filter
 from engine.market_data import BinanceMarketDataClient
-from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.range_lock import build_range_lock_context
 from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
@@ -89,12 +87,10 @@ class SMCTScanner:
             klines_4h = self._fetch_enriched("4h")
             klines_1h = self._fetch_enriched("1h")
             liq = build_liquidity_context(klines_1h)
-            msb = build_msb_ob_context(klines_1h, liq)
-            ict = build_ict_ob_context(klines_1h)
             chart_1h = build_chart_context(klines_1h)
-            msb["fibonacci"] = chart_1h.get("fibonacci", {})
-            # classic_market / Dow peeled from decision path
-            ict["killzone"] = chart_1h.get("killzone", {})
+            # ICT/MSB builders hard-deleted. msb shell carries OTE/fibonacci only.
+            msb = {"direction": "neutral", "fibonacci": chart_1h.get("fibonacci", {})}
+            ict: dict = {}
             matrix = build_trend_matrix_proxy(klines_1h)
             vp = build_volume_profile_context(klines_1h)
             aux = build_aux_filters_proxy(klines_1h, klines_4h)
@@ -102,12 +98,11 @@ class SMCTScanner:
             aux["killzone"] = chart_1h.get("killzone", {})
             aux["fibonacci"] = chart_1h.get("fibonacci", {})
             liq_4h = build_liquidity_context(klines_4h)
-            msb_4h = build_msb_ob_context(klines_4h, liq_4h)
-            ict_4h = build_ict_ob_context(klines_4h)
             chart_4h = build_chart_context(klines_4h)
-            direction_1h_source = str(ict.get("structure_direction", "neutral"))
-            if direction_1h_source not in {"bull", "bear"}:
-                direction_1h_source = str(msb.get("direction", "neutral"))
+            msb_4h = {"direction": "neutral", "fibonacci": chart_4h.get("fibonacci", {})}
+            ict_4h: dict = {}
+            fib_trend = str((chart_1h.get("fibonacci") or {}).get("trend", "neutral"))
+            direction_1h_source = fib_trend if fib_trend in {"bull", "bear"} else "neutral"
             htf = self._htf_context(
                 klines_4h,
                 "long" if direction_1h_source == "bull" else "short" if direction_1h_source == "bear" else "neutral",

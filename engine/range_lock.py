@@ -51,7 +51,7 @@ def build_range_lock_context(
 ) -> dict[str, Any]:
     """Balance / same-box noise gate.
 
-    Range detection is candle-approx; legacy ICT coexist still forces an active box.
+    Range detection is candle-approx; ICT coexist no longer forces an active box.
     """
     _ = (htf_ctx, liq, msb, matrix, aux, vp)  # keep legacy signature; trial reads new evidence
     ict = ict or {}
@@ -87,11 +87,12 @@ def build_range_lock_context(
         directional_breakout = False
         accepted_breakout = "none"
 
-    ict_ob_conflict = bool(ict.get("coexist", False))
+    # ICT coexist box force hard-deleted; range active comes from auto_range only.
+    ict_ob_conflict = False
     # live/provisional (incl. pending break) keep the balance gate; confirmed broken opens it
     balance_active = state in {"provisional", "live"} or bool(pending_break)
     # After reclaim, state stays live → keep same-box suppression; event is for weighting
-    active = bool((balance_active and not directional_breakout) or ict_ob_conflict)
+    active = bool(balance_active and not directional_breakout)
 
     box_width = max(box_high - box_low, 0.0)
     if box_width <= 0:
