@@ -254,10 +254,48 @@ class TrialEvidenceBundlePreferenceTests(unittest.TestCase):
         self.assertIn("profile_node_bull", long_reasons)
         self.assertIn("imbalance_inverted_support", long_reasons)
         self.assertIn("core_levels_reclaim_50", long_reasons)
+        # Confluence from structure tags (range/sweep/profile/ifvg), not core_levels.
         self.assertIn("evidence_confluence", long_reasons)
         self.assertIn("auto_range", ctx.get("evidence_bundle_keys", []))
         self.assertIn("sweep", ctx.get("evidence_bundle_keys", []))
         self.assertIn("ifvg", ctx.get("evidence_bundle_keys", []))
+
+    def test_core_levels_does_not_count_toward_evidence_confluence(self):
+        """Soft core_levels filter + one structure tag must not trigger confluence."""
+        from engine.trial_decision import build_trial_context
+
+        bars, htf, matrix, aux = self._base()
+        evidence_bundle = {
+            "sweep": {
+                "swept": True,
+                "recent_sweep_valid": True,
+                "side": "sell_side",
+                "reclaim_or_reject": "reclaim",
+            },
+            "core_levels_filter": {
+                "allowed": True,
+                "filter_only": True,
+                "midline_event": "reclaim_above_50",
+                "lean": "bull",
+                "squeeze": False,
+            },
+        }
+        ctx = build_trial_context(
+            bars,
+            htf,
+            {},
+            {},
+            matrix,
+            aux,
+            vp={},
+            range_lock={"active": False},
+            ict={},
+            evidence_bundle=evidence_bundle,
+        )
+        long_reasons = " ".join(ctx.get("evidence", {}).get("long", []))
+        self.assertIn("sweep_sell_side_reclaim", long_reasons)
+        self.assertIn("core_levels_reclaim_50", long_reasons)
+        self.assertNotIn("evidence_confluence", long_reasons)
 
 class CoreLevelsFilterTests(unittest.TestCase):
     def test_1h_filter_only_never_alerts(self):

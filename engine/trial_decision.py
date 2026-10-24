@@ -320,22 +320,21 @@ def build_trial_context(
         elif int(nearest_imb.get("direction") or 0) == -1:
             _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
 
-    # Soft confluence when 2+ candle-evidence tags agree (contract: joint weight).
-    # Pending-break and soft leans do not count toward confluence.
+    # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
+    # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
+    # core_levels remains soft filter-only weight, never structure confluence.
     _confluence_tokens = {
         "long": (
             "range_reclaim_after_break_down",
             "sweep_sell_side_reclaim",
             "profile_node_bull",
             "imbalance_inverted_support",
-            "core_levels_reclaim_50",
         ),
         "short": (
             "range_reclaim_after_break_up",
             "sweep_buy_side_reject",
             "profile_node_bear",
             "imbalance_inverted_resistance",
-            "core_levels_loss_50",
         ),
     }
     for _side, _tokens in _confluence_tokens.items():
