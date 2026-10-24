@@ -46,6 +46,7 @@ Same skeleton; swap 做空→做多, 站回→跌破 for the invalidation line.
 | Flip-flop | Side-neutral `zone_cluster_hash` short opposite-side suppress |
 | Isolation | Must not mutate 1H cooldown, observation pending, formal scores, or formal titles |
 | Coexistence | May fire while 1H is quiet or active; copy must stay “弱提醒” |
+| Lead to 1H close | Keep `min_lead_to_1h_close_min=30` |
 | Bias | Prefer miss over false positive (raise score / tighten before enabling TG) |
 
 ## Building blocks
@@ -77,7 +78,11 @@ Suggested env (names provisional): `SMCT_15M_WEAK_REMINDER_ENABLED`, optional `S
 - Dedupe / opposite-side unit tests  
 - Manual: one known session in shadow logs before enabling TG  
 
-## Open for later (not blocking this doc)
+## L locks (2026-10-24 final)
 
-- Dedicated chat vs same business chat (default: same chat)  
-- Whether `/check` shows a one-line 15m on/off bit  
+1. Titles exactly: `📍 BTC 15m 做多位置提醒` / `📍 BTC 15m 做空位置提醒` (no 「预警」, no `⚡`)
+2. Body = prior template (zone + 跌破/站回 invalidation + not-1H-formal disclaimer); forbid 试多/试空/开单建议/关注点/结论
+3. Chat: **same business group** (no separate topic required)
+4. Keep `min_lead_to_1h_close_min=30` (anti-rush into 1H close)
+
+Optional later: `/check` one-line 15m on/off — not required for Phase 1.
