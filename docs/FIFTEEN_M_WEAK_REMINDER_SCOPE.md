@@ -34,7 +34,7 @@ Same skeleton; swap 做空🔴→做多🟢, 站回→跌破 for the invalidatio
 
 - Substrings: `试多`, `试空`, `止盈目标`, `开单建议`, `关注点`, `结论`
 - Dual trailing emoji formal heads (e.g. `📈 … 📈`)
-- Legacy log titles without side emoji / with 「预警」 (replace before any TG send)
+- Forbidden wording: 「预警」 in titles/body (use `位置提醒`); no bare side without 🟢/🔴
 
 ## Hard gates
 

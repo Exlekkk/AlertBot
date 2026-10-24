@@ -391,10 +391,10 @@ def _common_sections(d: dict, risk_line: str, conclusion: str) -> str:
 def _prealert_zone_note(d: dict) -> str:
     direction = str(d.get("direction", "neutral"))
     if direction == "short":
-        return "反抽压制区，站不上则预警有效。"
+        return "反抽压制区，站不上则位置提醒有效。"
     if direction == "long":
-        return "回踩承接区，守住则预警有效。"
-    return "短线反应区，仅作预警参考。"
+        return "回踩承接区，守住则位置提醒有效。"
+    return "短线反应区，仅作位置提醒参考。"
 
 
 def format_prealert_message(d: dict) -> str:
@@ -406,28 +406,28 @@ def format_prealert_message(d: dict) -> str:
     """
 
     direction = str(d.get("direction", "neutral"))
-    title = str(d.get("title") or ("📍 BTC 15m 做空🔴预警" if direction == "short" else "📍 BTC 15m 做多🟢预警"))
+    title = str(d.get("title") or ("📍 BTC 15m 做空🔴位置提醒" if direction == "short" else "📍 BTC 15m 做多🟢位置提醒"))
     invalid = float(d.get("invalid_level", 0.0) or 0.0)
 
     if direction == "short":
         status = "15m 出现可能的做空🔴位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
         zone_note = "关注反抽是否继续受压。"
         risk = (
-            f"若价格重新站回 {invalid:.2f}，本次 15m 做空🔴预警失效。\n"
+            f"若价格重新站回 {invalid:.2f}，本次 15m 做空🔴位置提醒失效。\n"
             "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
         )
     elif direction == "long":
         status = "15m 出现可能的做多🟢位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
         zone_note = "关注回踩是否继续承接。"
         risk = (
-            f"若价格重新跌破 {invalid:.2f}，本次 15m 做多🟢预警失效。\n"
+            f"若价格重新跌破 {invalid:.2f}，本次 15m 做多🟢位置提醒失效。\n"
             "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
         )
     else:
         status = "15m 出现可能的入场位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
         zone_note = "关注该区间是否出现明确反应。"
         risk = (
-            f"若价格突破风险位 {invalid:.2f}，本次 15m 预警失效。\n"
+            f"若价格突破风险位 {invalid:.2f}，本次 15m 位置提醒失效。\n"
             "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
         )
 
