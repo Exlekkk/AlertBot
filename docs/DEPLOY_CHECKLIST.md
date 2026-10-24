@@ -92,6 +92,7 @@ Exact unit names and paths are host-local — adjust to the install, do not inve
 - `/check` HEAD resolution prefers `SMCT_REPO_ROOT` (optional) then the install root from `__file__`, not the process cwd.
 - Backend exceptions (scanner loop / `run_once`) push a short `⚠️ 系统异常` with cooldown (`TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS`, default 900).
 - Do not change business alert templates in this path.
+- Live Telegram send allowlist: only `EARLY_LONG_TRIAL` / `LOWER_KEY_ZONE_RECLAIM` / `EARLY_SHORT_TRIAL` / `UPPER_KEY_ZONE_REJECTION` (+ continuation types that already use 试多/试空 titles). Key-zone observation / structure-confirm / secondary-confirm copy is suppressed at send path (`should_send_alert_copy`); scoring unchanged.
 
 ## Before any production cutover
 
