@@ -1,0 +1,203 @@
+"""Ops Telegram helpers: /check replies and backend-error alerts.
+
+Does not change business alert copy (试多观察 / 开单 templates).
+"""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+import time
+from typing import Any
+
+from config import (
+    FREEZE_MODE_SEND_X_ONLY,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS,
+)
+from engine.runtime_state import RuntimeStateStore
+from services.telegram import TelegramSendError, send_telegram_message
+
+logger = logging.getLogger("ops_status")
+
+
+def extract_bot_command(text: str | None) -> str | None:
+    """Return bare command name (e.g. 'check') from a Telegram message text."""
+    if not text:
+        return None
+    raw = str(text).strip()
+    if not raw.startswith("/"):
+        return None
+    token = raw.split()[0]
+    name = token[1:]
+    if "@" in name:
+        name = name.split("@", 1)[0]
+    name = name.strip().lower()
+    return name or None
+
+
+def resolve_git_head(cwd: str | None = None) -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=cwd or ".",
+            timeout=2,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return (out or "").strip() or "n/a"
+    except Exception:
+        return "n/a"
+
+
+def build_check_message(
+    health: dict[str, Any] | None = None,
+    *,
+    freeze_mode: bool | None = None,
+    head_sha: str | None = None,
+) -> str:
+    health = health or {}
+    freeze = FREEZE_MODE_SEND_X_ONLY if freeze_mode is None else bool(freeze_mode)
+    head = head_sha if head_sha is not None else resolve_git_head()
+    ok = bool(health.get("ok"))
+    stale = bool(health.get("stale"))
+    if ok:
+        status = "running"
+    elif stale:
+        status = "stale"
+    else:
+        status = "error"
+
+    age = health.get("seconds_since_last_scan")
+    age_text = f"{age}s" if age is not None else "n/a"
+    last_err = (health.get("last_scan_error") or "").strip() or "无"
+    if len(last_err) > 160:
+        last_err = last_err[:160] + "…"
+
+    return (
+        "🛠 /check\n"
+        f"状态: {status}\n"
+        f"HEAD: {head}\n"
+        f"freeze: {1 if freeze else 0}\n"
+        f"上次扫描: {age_text} ({'ok' if health.get('last_scan_ok') else 'fail'})\n"
+        f"上次错误: {last_err}"
+    )
+
+
+def build_error_message(source: str, error: str) -> str:
+    brief = (error or "unknown").strip()[:200] or "unknown"
+    src = (source or "backend").strip()[:64] or "backend"
+    return f"⚠️ 系统异常\n来源: {src}\n错误: {brief}"
+
+
+def _error_fingerprint(source: str, error: str) -> str:
+    return f"{source}|{(error or '')[:120]}"
+
+
+def should_send_error_alert(
+    state: RuntimeStateStore,
+    source: str,
+    error: str,
+    *,
+    cooldown_seconds: int | None = None,
+    now: float | None = None,
+) -> bool:
+    cooldown = (
+        TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS
+        if cooldown_seconds is None
+        else int(cooldown_seconds)
+    )
+    now_ts = time.time() if now is None else float(now)
+    snap = state.get_snapshot()
+    last = snap.get("last_error_alert") or {}
+    last_at = float(last.get("at") or 0.0)
+    last_fp = str(last.get("fingerprint") or "")
+    fp = _error_fingerprint(source, error)
+    if last_fp == fp and last_at and (now_ts - last_at) < cooldown:
+        return False
+    return True
+
+
+def mark_error_alert_sent(state: RuntimeStateStore, source: str, error: str) -> None:
+    state.state["last_error_alert"] = {
+        "source": source,
+        "fingerprint": _error_fingerprint(source, error),
+        "error": (error or "")[:200],
+        "at": time.time(),
+    }
+    state._save()
+
+
+def notify_backend_error(
+    source: str,
+    error: str,
+    *,
+    token: str | None = None,
+    chat_id: str | None = None,
+    state: RuntimeStateStore | None = None,
+    cooldown_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Push a TG ops alert for a backend failure (rate-limited). Never raises."""
+    token = TELEGRAM_BOT_TOKEN if token is None else token
+    chat_id = TELEGRAM_CHAT_ID if chat_id is None else chat_id
+    store = state or RuntimeStateStore()
+    if not token or not chat_id:
+        logger.warning("ops_error_alert_skipped reason=missing_telegram_creds source=%s", source)
+        return {"ok": False, "skipped": True, "reason": "missing_telegram_creds"}
+    if not should_send_error_alert(store, source, error, cooldown_seconds=cooldown_seconds):
+        logger.info("ops_error_alert_suppressed source=%s", source)
+        return {"ok": True, "skipped": True, "reason": "cooldown"}
+    message = build_error_message(source, error)
+    try:
+        result = send_telegram_message(token, chat_id, message)
+        mark_error_alert_sent(store, source, error)
+        return {"ok": True, "skipped": False, "telegram_result": result, "message": message}
+    except TelegramSendError as exc:
+        logger.warning("ops_error_alert_send_failed source=%s error=%s", source, exc)
+        return {"ok": False, "skipped": False, "error": str(exc), "message": message}
+
+
+def handle_check_command(
+    *,
+    state: RuntimeStateStore | None = None,
+    token: str | None = None,
+    chat_id: str | None = None,
+    reply_chat_id: str | None = None,
+) -> dict[str, Any]:
+    token = TELEGRAM_BOT_TOKEN if token is None else token
+    configured_chat = str(TELEGRAM_CHAT_ID if chat_id is None else chat_id)
+    dest = str(reply_chat_id or configured_chat)
+    if configured_chat and dest != configured_chat:
+        logger.info("ops_check_ignored foreign_chat=%s", dest)
+        return {"ok": True, "skipped": True, "reason": "foreign_chat"}
+    store = state or RuntimeStateStore()
+    health = store.build_health_payload()
+    # Prefer last_scan_ok from raw state for the "上次扫描" line.
+    snap = store.get_snapshot()
+    health = dict(health)
+    health["last_scan_ok"] = bool(snap.get("last_scan_ok"))
+    message = build_check_message(health)
+    if not token or not dest:
+        return {"ok": False, "skipped": True, "reason": "missing_telegram_creds", "message": message}
+    result = send_telegram_message(token, dest, message)
+    return {"ok": True, "skipped": False, "telegram_result": result, "message": message}
+
+
+def process_telegram_update(update: dict[str, Any], *, state: RuntimeStateStore | None = None) -> dict[str, Any]:
+    """Handle one Bot API update. Only /check is supported."""
+    message = update.get("message") or update.get("edited_message") or {}
+    text = message.get("text") or message.get("caption")
+    command = extract_bot_command(text)
+    if command != "check":
+        return {"ok": True, "handled": False, "command": command}
+    chat = message.get("chat") or {}
+    reply_chat_id = chat.get("id")
+    try:
+        result = handle_check_command(state=state, reply_chat_id=str(reply_chat_id) if reply_chat_id is not None else None)
+        result["handled"] = True
+        result["command"] = "check"
+        return result
+    except TelegramSendError as exc:
+        logger.warning("ops_check_send_failed error=%s", exc)
+        return {"ok": False, "handled": True, "command": "check", "error": str(exc)}

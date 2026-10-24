@@ -32,8 +32,14 @@ def main():
         try:
             result = scanner.run_once()
             logger.info("scanner_loop_tick result=%s", result)
-        except Exception:
+        except Exception as exc:
             logger.exception("scanner_loop_error")
+            try:
+                from services.ops_status import notify_backend_error
+
+                notify_backend_error("scanner.loop", str(exc), state=scanner.runtime_state)
+            except Exception:
+                logger.exception("scanner_loop_error_notify_failed")
 
         time.sleep(SCAN_INTERVAL_SECONDS)
 

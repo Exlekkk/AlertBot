@@ -18,6 +18,8 @@ Neutral overview of how this bot runs. No strategy playbook.
 | Webhook / X path | Separate entry; must not share 1H formal state carelessly |
 | Shadow / 15m prealert | Participation / timing only; not a solo formal trigger |
 | Telegram | Delivery; pending confirmation state is written only after successful send |
+| Ops `/check` | Webhook app getUpdates poll (default) or POST `/telegram/updates`; status only |
+| Bihourly probe | Silent when healthy; error alert only |
 | Cooldown store | Family-level dedupe |
 
 ## Evidence bundle

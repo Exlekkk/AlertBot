@@ -79,6 +79,14 @@ Exact unit names and paths are host-local — adjust to the install, do not inve
 - Pending-confirmation state must only be written after a successful send (runtime invariant).
 - Rotate or revoke tokens outside git if exposure is suspected.
 
+## Ops Telegram (/check + error-only)
+
+- Timed bihourly probe (`scripts/run_bihourly_report.py`) is **silent on success**; it may still push on health failure.
+- Prefer disabling any host cron/timer that only existed to spam the old running heartbeat, or keep it as a silent probe.
+- Group `/check` is handled by the webhook app: default **getUpdates poll** when `TELEGRAM_OPS_POLL_ENABLED=1` (requires no Telegram `setWebhook`), or POST `/telegram/updates` if you point Bot API webhook there.
+- Backend exceptions (scanner loop / `run_once`) push a short `⚠️ 系统异常` with cooldown (`TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS`, default 900).
+- Do not change business alert templates in this path.
+
 ## Before any production cutover
 
 - [ ] Draft PR reviewed and marked ready only after explicit OK

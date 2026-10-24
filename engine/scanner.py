@@ -192,6 +192,12 @@ class SMCTScanner:
             self.runtime_state.mark_scan(ok=True, symbol=self.symbol, summary=summary)
             return {"ok": True, "symbol": self.symbol, "sent": sent, "summary": summary}
         except Exception as exc:
-            self.runtime_state.mark_scan(ok=False, symbol=self.symbol, summary={"error": str(exc)})
+            self.runtime_state.mark_scan(ok=False, symbol=self.symbol, summary={"error": str(exc)}, error=str(exc))
             self.logger.exception("scanner_failed symbol=%s error=%s", self.symbol, exc)
+            try:
+                from services.ops_status import notify_backend_error
+
+                notify_backend_error("scanner.run_once", str(exc), state=self.runtime_state)
+            except Exception as notify_exc:
+                self.logger.warning("scanner_error_notify_failed error=%s", notify_exc)
             return {"ok": False, "symbol": self.symbol, "sent": 0, "error": str(exc)}
