@@ -8,14 +8,20 @@ Ops-only. Do **not** cover production from a Draft PR.
 |------|------|
 | `app.py` / `config.py` | App entry + env loading |
 | `scripts/run_scanner.py` | Scanner process entry |
+| `scripts/run_ci.sh` | Minimal local/CI unittest hook |
+| `docs/ci-workflow.example.yml` | Example GitHub Actions workflow (promote when `workflow` scope available) |
 | `systemd/smct-scanner.service` | Example unit file |
 | `engine/` | Runtime decision / filter code |
 | `legacy_quarantine/` | Dead helpers; do not run as entrypoints |
 | `engine/legacy_quarantine/` | Peeled builders; tests/shims only |
-| `.github/workflows/ci.yml` | Minimal unittest CI |
 | `docs/ARCHITECTURE.md` | Runtime overview |
 | `docs/DEPLOY_CHECKLIST.md` | This file |
-| `tests/` | Unit tests (`python -m unittest discover -s tests`) |
+| `tests/` | Unit tests |
+
+## Continuous checks
+
+- **Local / host hook:** `./scripts/run_ci.sh` (or `python -m unittest discover -s tests -p 'test_*.py' -v`).
+- **GitHub Actions:** copy `docs/ci-workflow.example.yml` → `.github/workflows/ci.yml` using a credential with the `workflow` scope, then push. Triggers: push to `main` / `refactor/**`, and PRs targeting `main`.
 
 ## Pull / install (host)
 
@@ -23,7 +29,7 @@ Ops-only. Do **not** cover production from a Draft PR.
 2. `git fetch` and check out the reviewed commit (or tag).
 3. Activate the host venv; `pip install -r requirements.txt`.
 4. Confirm `SMCT_ENV_FILE` points at the host `.env` (do not commit secrets).
-5. Run tests on the host: `python -m unittest discover -s tests -p 'test_*.py' -q`.
+5. Run `./scripts/run_ci.sh` on the host (or the unittest command above).
 6. Restart the scanner unit only after a successful dry check (see below).
 
 ## Environment keys (placeholders — never commit real values)
@@ -76,7 +82,7 @@ Exact unit names and paths are host-local — adjust to the install, do not inve
 ## Before any production cutover
 
 - [ ] Draft PR reviewed and marked ready only after explicit OK
-- [ ] CI green on the tip commit
+- [ ] `./scripts/run_ci.sh` (or CI) green on the tip commit
 - [ ] Full unittest green on the target host
 - [ ] Shadow / dry run without live Telegram send (or freeze mode)
 - [ ] Confirm `.env` / secrets untouched by the deploy pull
