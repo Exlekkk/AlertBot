@@ -81,22 +81,23 @@ Notification-channel credentials and webhook secrets stay in the host env file o
 
 ## systemd
 
-Production expects three units (host names may match these examples):
+Production expects four units (host names may match these examples):
 
 | Unit | Role |
 |------|------|
 | `smct-scanner` | Scanner loop (`scripts/run_scanner.py`) |
 | `smct-alert` | App process (shared `app:app` with webhook on many hosts) |
 | `smct-webhook` | Webhook / HTTP surface |
+| `smct-15m-shadow` | 15m shadow log-only (`scripts/run_15m_shadow.py --shadow`); must stay running even if later TG weak reminders enable |
 
-Example unit file in-repo: `systemd/smct-scanner.service` (WorkingDirectory `/opt/smct-alert`, venv interpreter in `ExecStart`).
+Example unit files in-repo: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service` (WorkingDirectory `/opt/smct-alert`, venv interpreter in `ExecStart`).
 
 After install or unit edits:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart smct-alert smct-scanner smct-webhook
-sudo systemctl is-active smct-alert smct-scanner smct-webhook
+sudo systemctl restart smct-alert smct-scanner smct-webhook smct-15m-shadow
+sudo systemctl is-active smct-alert smct-scanner smct-webhook smct-15m-shadow
 ```
 
 Prefer `Restart=always`; investigate crash loops via journal before force-restarting.

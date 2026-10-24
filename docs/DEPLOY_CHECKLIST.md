@@ -10,7 +10,8 @@ Ops-only. Do **not** cover production from a Draft PR.
 | `scripts/run_scanner.py` | Scanner process entry |
 | `scripts/run_ci.sh` | Minimal local/CI unittest hook |
 | `docs/ci-workflow.example.yml` | Example CI workflow (promote when `workflow` scope available) |
-| `systemd/smct-scanner.service` | Example unit file |
+| `systemd/smct-scanner.service` | Example scanner unit file |
+| `systemd/smct-15m-shadow.service` | 15m shadow log-only unit (Phase 1; no TG) |
 | `engine/` | Runtime decision / filter code |
 | `legacy_quarantine/` | Dead helpers; do not run as entrypoints |
 | `docs/ARCHITECTURE.md` | Runtime overview |
@@ -63,17 +64,18 @@ Do not paste production tokens, destinations, or webhook secrets into git, CI lo
 
 ## systemd (high level)
 
-Example unit: `systemd/smct-scanner.service`.
+Example units: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service`.
 
 Host units commonly used in production:
 
 - `smct-scanner`
 - `smct-alert`
 - `smct-webhook`
+- `smct-15m-shadow` — 15m shadow log-only (`scripts/run_15m_shadow.py --shadow`); enable/restart with the other units when restoring resident shadow. Does **not** require enabling TG weak reminders (`SMCT_15M_WEAK_REMINDER_ENABLED` stays off for Phase 1).
 
 - Working directory and `ExecStart` point at the host install (example: `/opt/smct-alert`).
 - Prefer the host venv interpreter in `ExecStart`.
-- After a reviewed cutover: `systemctl daemon-reload` (if the unit changed), then restart all three and confirm they are active.
+- After a reviewed cutover: `systemctl daemon-reload` (if the unit changed), then restart the active units (including `smct-15m-shadow` when used) and confirm they are active.
 - Keep `Restart=always`; investigate crash loops via journal before force-restarting again.
 
 Exact unit names and paths are host-local — adjust to the install; do not invent secrets in the unit file.
@@ -109,5 +111,5 @@ Exact unit names and paths are host-local — adjust to the install; do not inve
 1. Stop or freeze outbound send if alerts are misfiring (`FREEZE_MODE_SEND_X_ONLY=1` or stop units).
 2. Check out the previous known-good tag/commit.
 3. Restore state JSON from the pre-cutover backup if needed.
-4. Reinstall requirements if dependency pins changed; restart `smct-alert`, `smct-scanner`, and `smct-webhook`.
+4. Reinstall requirements if dependency pins changed; restart `smct-alert`, `smct-scanner`, `smct-webhook`, and `smct-15m-shadow` (if installed).
 5. Confirm heartbeat / one safe scan cycle before re-enabling live send.
