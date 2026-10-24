@@ -1,4 +1,4 @@
-"""Ops Telegram helpers: /check replies and backend-error alerts.
+"""Ops Telegram helpers: /check, /test replies and backend-error alerts.
 
 Does not change business alert copy (试多观察 / 开单 templates).
 """
@@ -20,6 +20,7 @@ from config import (
     TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS,
 )
 from engine.runtime_state import RuntimeStateStore
+from engine.trend_messages import build_format_test_message
 from services.telegram import TelegramSendError, send_telegram_message
 
 logger = logging.getLogger("ops_status")
@@ -216,20 +217,45 @@ def handle_check_command(
     return {"ok": True, "skipped": False, "telegram_result": result, "message": message}
 
 
+
+def handle_test_command(
+    *,
+    token: str | None = None,
+    chat_id: str | None = None,
+    reply_chat_id: str | None = None,
+) -> dict[str, Any]:
+    """Reply with locked 试多/试空 sample copy (ops-only; no signal state mutation)."""
+    token = TELEGRAM_BOT_TOKEN if token is None else token
+    configured_chat = str(TELEGRAM_CHAT_ID if chat_id is None else chat_id)
+    dest = str(reply_chat_id or configured_chat)
+    if configured_chat and dest != configured_chat:
+        logger.info("ops_test_ignored foreign_chat=%s", dest)
+        return {"ok": True, "skipped": True, "reason": "foreign_chat"}
+    message = build_format_test_message()
+    if not token or not dest:
+        return {"ok": False, "skipped": True, "reason": "missing_telegram_creds", "message": message}
+    result = send_telegram_message(token, dest, message)
+    return {"ok": True, "skipped": False, "telegram_result": result, "message": message}
+
+
 def process_telegram_update(update: dict[str, Any], *, state: RuntimeStateStore | None = None) -> dict[str, Any]:
-    """Handle one Bot API update. Only /check is supported."""
+    """Handle one Bot API update. Supports /check and /test (business chat only)."""
     message = update.get("message") or update.get("edited_message") or {}
     text = message.get("text") or message.get("caption")
     command = extract_bot_command(text)
-    if command != "check":
+    if command not in {"check", "test"}:
         return {"ok": True, "handled": False, "command": command}
     chat = message.get("chat") or {}
     reply_chat_id = chat.get("id")
+    reply_id = str(reply_chat_id) if reply_chat_id is not None else None
     try:
-        result = handle_check_command(state=state, reply_chat_id=str(reply_chat_id) if reply_chat_id is not None else None)
+        if command == "check":
+            result = handle_check_command(state=state, reply_chat_id=reply_id)
+        else:
+            result = handle_test_command(reply_chat_id=reply_id)
         result["handled"] = True
-        result["command"] = "check"
+        result["command"] = command
         return result
     except TelegramSendError as exc:
-        logger.warning("ops_check_send_failed error=%s", exc)
-        return {"ok": False, "handled": True, "command": "check", "error": str(exc)}
+        logger.warning("ops_%s_send_failed error=%s", command, exc)
+        return {"ok": False, "handled": True, "command": command, "error": str(exc)}

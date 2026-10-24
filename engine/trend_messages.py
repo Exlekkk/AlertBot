@@ -590,3 +590,44 @@ def format_trend_message(d: dict) -> str:
         )
 
     return _sanitize(_dedupe_major_sections(text))
+
+
+# Fixed illustrative levels for TG /test (not live prices; deterministic CI).
+_SAMPLE_TRIAL_LONG = {
+    "zone": (95000.0, 95200.0),
+    "invalid_level": 94850.0,
+    "htf_context": "4H 偏多",
+    "take_profit_zone": (96000.0, 96500.0),
+}
+_SAMPLE_TRIAL_SHORT = {
+    "zone": (97000.0, 97200.0),
+    "invalid_level": 97350.0,
+    "htf_context": "4H 偏空",
+    "take_profit_zone": (95800.0, 96200.0),
+}
+
+TEST_FORMAT_PREFIX = "🧪 播报格式测试（非实盘信号）"
+
+
+def _sample_trial_title(*, side: str) -> str:
+    if side == "long":
+        return "📈 BTC 1H 试多观察【测试】📈"
+    return "📉 BTC 1H 试空观察【测试】📉"
+
+
+def format_sample_trial_alert(*, side: str) -> str:
+    """One ops /test sample alert; reuses production section builder + 【测试】 title."""
+    if side not in {"long", "short"}:
+        raise ValueError(f"unsupported sample side: {side}")
+    payload = dict(_SAMPLE_TRIAL_LONG if side == "long" else _SAMPLE_TRIAL_SHORT)
+    text = f"{_sample_trial_title(side=side)}\n\n" + _trial_probe_sections(payload, side=side)
+    return _sanitize(_dedupe_major_sections(text))
+
+
+def build_format_test_message() -> str:
+    """Full /test reply: required prefix + 试多样例 + 试空样例. No state / no send path."""
+    return (
+        f"{TEST_FORMAT_PREFIX}\n\n"
+        f"{format_sample_trial_alert(side='long')}\n\n"
+        f"{format_sample_trial_alert(side='short')}"
+    )

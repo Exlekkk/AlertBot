@@ -11,6 +11,8 @@ class OpsCommandParseTests(unittest.TestCase):
         self.assertEqual(extract_bot_command("/check"), "check")
         self.assertEqual(extract_bot_command("/check@MyBot"), "check")
         self.assertEqual(extract_bot_command("  /CHECK please "), "check")
+        self.assertEqual(extract_bot_command("/test"), "test")
+        self.assertEqual(extract_bot_command("/test@AlertBot"), "test")
         self.assertIsNone(extract_bot_command("check"))
         self.assertIsNone(extract_bot_command(""))
         self.assertIsNone(extract_bot_command(None))
@@ -149,6 +151,102 @@ class TelegramUpdateCheckTests(unittest.TestCase):
         self.assertTrue(result["handled"])
         self.assertTrue(result.get("skipped"))
         send_mock.assert_not_called()
+
+
+
+
+class FormatTestMessageTests(unittest.TestCase):
+    def test_build_format_test_message_shape(self):
+        from engine.trend_messages import BANNED, TEST_FORMAT_PREFIX, build_format_test_message
+
+        msg = build_format_test_message()
+        self.assertTrue(msg.startswith(TEST_FORMAT_PREFIX))
+        self.assertIn("📈 BTC 1H 试多观察【测试】📈", msg)
+        self.assertIn("📉 BTC 1H 试空观察【测试】📉", msg)
+        self.assertIn("🧭 4H 偏多", msg)
+        self.assertIn("🧭 4H 偏空", msg)
+        self.assertIn("📍 开单建议", msg)
+        self.assertIn("止盈目标", msg)
+        self.assertIn("👁 关注点", msg)
+        self.assertIn("✅ 结论", msg)
+        self.assertIn("跌破", msg)
+        self.assertIn("站回", msg)
+        self.assertIn("具备试多观察条件", msg)
+        self.assertIn("具备试空观察条件", msg)
+        # Titles without 【测试】 must not appear as the live title form alone
+        self.assertNotIn("📈 BTC 1H 试多观察 📈", msg)
+        self.assertNotIn("📉 BTC 1H 试空观察 📉", msg)
+        for term in BANNED:
+            self.assertNotIn(term, msg)
+            self.assertNotIn(term.lower(), msg.lower())
+
+    def test_sample_uses_fixed_illustrative_numbers(self):
+        from engine.trend_messages import format_sample_trial_alert
+
+        long_msg = format_sample_trial_alert(side="long")
+        self.assertIn("区间 95000.00 - 95200.00。", long_msg)
+        self.assertIn("止盈目标 96000.00 - 96500.00。", long_msg)
+        self.assertIn("跌破 94850.00", long_msg)
+
+        short_msg = format_sample_trial_alert(side="short")
+        self.assertIn("区间 97000.00 - 97200.00。", short_msg)
+        self.assertIn("止盈目标 95800.00 - 96200.00。", short_msg)
+        self.assertIn("站回 97350.00", short_msg)
+
+
+class TelegramUpdateTestCommandTests(unittest.TestCase):
+    def test_process_test_update_replies_sample(self):
+        from services.ops_status import process_telegram_update
+
+        update = {
+            "update_id": 2,
+            "message": {
+                "text": "/test@AlertBot",
+                "chat": {"id": -100123},
+            },
+        }
+        with patch("services.ops_status.TELEGRAM_CHAT_ID", "-100123"), \
+             patch("services.ops_status.TELEGRAM_BOT_TOKEN", "token"), \
+             patch("services.ops_status.send_telegram_message", return_value={"ok": True}) as send_mock:
+            result = process_telegram_update(update)
+
+        self.assertTrue(result["handled"])
+        self.assertEqual(result["command"], "test")
+        self.assertTrue(result["ok"])
+        send_mock.assert_called_once()
+        sent_text = send_mock.call_args.args[2]
+        self.assertTrue(sent_text.startswith("🧪 播报格式测试（非实盘信号）"))
+        self.assertIn("试多观察【测试】", sent_text)
+        self.assertIn("试空观察【测试】", sent_text)
+
+    def test_test_foreign_chat_ignored(self):
+        from services.ops_status import process_telegram_update
+
+        update = {"message": {"text": "/test", "chat": {"id": 999}}}
+        with patch("services.ops_status.TELEGRAM_CHAT_ID", "111"), \
+             patch("services.ops_status.TELEGRAM_BOT_TOKEN", "token"), \
+             patch("services.ops_status.send_telegram_message") as send_mock:
+            result = process_telegram_update(update)
+
+        self.assertTrue(result["handled"])
+        self.assertTrue(result.get("skipped"))
+        send_mock.assert_not_called()
+
+    def test_test_does_not_touch_runtime_state(self):
+        from engine.runtime_state import RuntimeStateStore
+        from services.ops_status import handle_test_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "runtime.json"
+            store = RuntimeStateStore(state_file=str(state_path))
+            before = store.get_snapshot()
+            with patch("services.ops_status.TELEGRAM_CHAT_ID", "111"), \
+                 patch("services.ops_status.TELEGRAM_BOT_TOKEN", "token"), \
+                 patch("services.ops_status.send_telegram_message", return_value={"ok": True}):
+                handle_test_command(reply_chat_id="111")
+            after = RuntimeStateStore(state_file=str(state_path)).get_snapshot()
+        # Ops /test must not mutate signal/runtime state.
+        self.assertEqual(before, after)
 
 
 
