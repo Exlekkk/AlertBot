@@ -20,7 +20,7 @@ from config import (
     TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS,
 )
 from engine.runtime_state import RuntimeStateStore
-from engine.trend_messages import build_format_test_message
+from engine.trend_messages import build_format_test_message, build_format_test_message_15m
 from services.telegram import TelegramSendError, send_telegram_message
 
 logger = logging.getLogger("ops_status")
@@ -39,6 +39,17 @@ def extract_bot_command(text: str | None) -> str | None:
         name = name.split("@", 1)[0]
     name = name.strip().lower()
     return name or None
+
+
+def extract_bot_command_arg(text: str | None) -> str | None:
+    """Return first argument after /command (lowercased), or None if missing."""
+    if not text:
+        return None
+    parts = str(text).strip().split()
+    if len(parts) < 2:
+        return None
+    arg = parts[1].strip().lower()
+    return arg or None
 
 
 def _repo_root_candidates(explicit_cwd: str | None = None) -> list[str]:
@@ -223,19 +234,43 @@ def handle_test_command(
     token: str | None = None,
     chat_id: str | None = None,
     reply_chat_id: str | None = None,
+    arg: str | None = None,
 ) -> dict[str, Any]:
-    """Reply with locked 试多/试空 sample copy (ops-only; no signal state mutation)."""
+    """Reply with format sample copy (ops-only; no signal state mutation).
+
+    Routing (L+user 2026-10-25):
+    - first arg ``15`` / ``15m`` → 15m weak-reminder dual sample
+    - missing / any other arg → existing 1H 试多/试空 dual sample (bare /test unchanged)
+    """
     token = TELEGRAM_BOT_TOKEN if token is None else token
     configured_chat = str(TELEGRAM_CHAT_ID if chat_id is None else chat_id)
     dest = str(reply_chat_id or configured_chat)
     if configured_chat and dest != configured_chat:
         logger.info("ops_test_ignored foreign_chat=%s", dest)
         return {"ok": True, "skipped": True, "reason": "foreign_chat"}
-    message = build_format_test_message()
+    mode = (arg or "").strip().lower()
+    if mode in {"15", "15m"}:
+        message = build_format_test_message_15m()
+        sample_kind = "15m"
+    else:
+        message = build_format_test_message()
+        sample_kind = "1h"
     if not token or not dest:
-        return {"ok": False, "skipped": True, "reason": "missing_telegram_creds", "message": message}
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "missing_telegram_creds",
+            "message": message,
+            "sample_kind": sample_kind,
+        }
     result = send_telegram_message(token, dest, message)
-    return {"ok": True, "skipped": False, "telegram_result": result, "message": message}
+    return {
+        "ok": True,
+        "skipped": False,
+        "telegram_result": result,
+        "message": message,
+        "sample_kind": sample_kind,
+    }
 
 
 def process_telegram_update(update: dict[str, Any], *, state: RuntimeStateStore | None = None) -> dict[str, Any]:
@@ -252,7 +287,10 @@ def process_telegram_update(update: dict[str, Any], *, state: RuntimeStateStore 
         if command == "check":
             result = handle_check_command(state=state, reply_chat_id=reply_id)
         else:
-            result = handle_test_command(reply_chat_id=reply_id)
+            result = handle_test_command(
+                reply_chat_id=reply_id,
+                arg=extract_bot_command_arg(text),
+            )
         result["handled"] = True
         result["command"] = command
         return result

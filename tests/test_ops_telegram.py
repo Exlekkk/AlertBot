@@ -13,9 +13,23 @@ class OpsCommandParseTests(unittest.TestCase):
         self.assertEqual(extract_bot_command("  /CHECK please "), "check")
         self.assertEqual(extract_bot_command("/test"), "test")
         self.assertEqual(extract_bot_command("/test@AlertBot"), "test")
+        self.assertEqual(extract_bot_command("/test 15"), "test")
+        self.assertEqual(extract_bot_command("/test@AlertBot 15m"), "test")
         self.assertIsNone(extract_bot_command("check"))
         self.assertIsNone(extract_bot_command(""))
         self.assertIsNone(extract_bot_command(None))
+
+    def test_extract_bot_command_arg(self):
+        from services.ops_status import extract_bot_command_arg
+
+        self.assertIsNone(extract_bot_command_arg("/test"))
+        self.assertIsNone(extract_bot_command_arg("/test@AlertBot"))
+        self.assertEqual(extract_bot_command_arg("/test 15"), "15")
+        self.assertEqual(extract_bot_command_arg("/test@AlertBot 15m"), "15m")
+        self.assertEqual(extract_bot_command_arg("/test 1"), "1")
+        self.assertEqual(extract_bot_command_arg("  /TEST 15 extra "), "15")
+        self.assertIsNone(extract_bot_command_arg(""))
+        self.assertIsNone(extract_bot_command_arg(None))
 
 
 class OpsStatusMessageTests(unittest.TestCase):
@@ -203,6 +217,57 @@ class FormatTestMessageTests(unittest.TestCase):
         self.assertIn("站回 97350.00", short_msg)
 
 
+class FormatTestMessage15mTests(unittest.TestCase):
+    def test_build_format_test_message_15m_shape(self):
+        from engine.trend_messages import (
+            BANNED,
+            TEST_FORMAT_PREFIX,
+            TEST_FORMAT_SIDE_SEPARATOR,
+            WEAK_REMINDER_FORBIDDEN,
+            build_format_test_message_15m,
+        )
+
+        msg = build_format_test_message_15m()
+        self.assertTrue(msg.startswith(TEST_FORMAT_PREFIX))
+        self.assertIn("📍 BTC 15m 做多位置提醒【测试】", msg)
+        self.assertIn("📍 BTC 15m 做空位置提醒【测试】", msg)
+        self.assertEqual(TEST_FORMAT_SIDE_SEPARATOR, "────────────────")
+        self.assertIn(f"\n\n{TEST_FORMAT_SIDE_SEPARATOR}\n\n", msg)
+        long_idx = msg.index("📍 BTC 15m 做多位置提醒【测试】")
+        sep_idx = msg.index(f"\n\n{TEST_FORMAT_SIDE_SEPARATOR}\n\n")
+        short_idx = msg.index("📍 BTC 15m 做空位置提醒【测试】")
+        self.assertLess(long_idx, sep_idx)
+        self.assertLess(sep_idx, short_idx)
+        self.assertIn("这不是 1H 正式观察，只提醒看盘。", msg)
+        self.assertIn("区间 95000.00 - 95200.00。", msg)
+        self.assertIn("跌破 94850.00 → 本提醒失效。", msg)
+        self.assertIn("区间 97000.00 - 97200.00。", msg)
+        self.assertIn("站回 97350.00 → 本提醒失效。", msg)
+        self.assertIn("最终以 1H / 4H 为准。", msg)
+        # No dual-emoji formal heads / legacy 预警 titles.
+        self.assertNotIn("📈", msg)
+        self.assertNotIn("📉", msg)
+        self.assertNotIn("预警", msg)
+        for term in WEAK_REMINDER_FORBIDDEN:
+            self.assertNotIn(term, msg)
+        for term in BANNED:
+            self.assertNotIn(term, msg)
+            self.assertNotIn(term.lower(), msg.lower())
+
+    def test_sample_weak_reminder_numbers(self):
+        from engine.trend_messages import format_sample_weak_reminder
+
+        long_msg = format_sample_weak_reminder(side="long")
+        self.assertTrue(long_msg.startswith("📍 BTC 15m 做多位置提醒【测试】"))
+        self.assertIn("区间 95000.00 - 95200.00。", long_msg)
+        self.assertIn("跌破 94850.00 → 本提醒失效。", long_msg)
+
+        short_msg = format_sample_weak_reminder(side="short")
+        self.assertTrue(short_msg.startswith("📍 BTC 15m 做空位置提醒【测试】"))
+        self.assertIn("区间 97000.00 - 97200.00。", short_msg)
+        self.assertIn("站回 97350.00 → 本提醒失效。", short_msg)
+
+
 class TelegramUpdateTestCommandTests(unittest.TestCase):
     def test_process_test_update_replies_sample(self):
         from services.ops_status import process_telegram_update
@@ -241,6 +306,60 @@ class TelegramUpdateTestCommandTests(unittest.TestCase):
         self.assertTrue(result["handled"])
         self.assertTrue(result.get("skipped"))
         send_mock.assert_not_called()
+
+    def test_process_test_15_replies_weak_reminder_sample(self):
+        from services.ops_status import process_telegram_update
+
+        update = {
+            "update_id": 3,
+            "message": {
+                "text": "/test 15",
+                "chat": {"id": -100123},
+            },
+        }
+        with patch("services.ops_status.TELEGRAM_CHAT_ID", "-100123"), \
+             patch("services.ops_status.TELEGRAM_BOT_TOKEN", "token"), \
+             patch("services.ops_status.send_telegram_message", return_value={"ok": True}) as send_mock:
+            result = process_telegram_update(update)
+
+        self.assertTrue(result["handled"])
+        self.assertEqual(result["command"], "test")
+        self.assertEqual(result.get("sample_kind"), "15m")
+        self.assertTrue(result["ok"])
+        send_mock.assert_called_once()
+        sent_text = send_mock.call_args.args[2]
+        self.assertIn("📍 BTC 15m 做多位置提醒【测试】", sent_text)
+        self.assertIn("📍 BTC 15m 做空位置提醒【测试】", sent_text)
+        self.assertNotIn("试多", sent_text)
+        self.assertNotIn("试空", sent_text)
+
+    def test_process_test_15m_alias(self):
+        from services.ops_status import process_telegram_update
+
+        update = {"message": {"text": "/test@AlertBot 15m", "chat": {"id": -100123}}}
+        with patch("services.ops_status.TELEGRAM_CHAT_ID", "-100123"), \
+             patch("services.ops_status.TELEGRAM_BOT_TOKEN", "token"), \
+             patch("services.ops_status.send_telegram_message", return_value={"ok": True}) as send_mock:
+            result = process_telegram_update(update)
+
+        self.assertEqual(result.get("sample_kind"), "15m")
+        sent_text = send_mock.call_args.args[2]
+        self.assertIn("15m 做多位置提醒【测试】", sent_text)
+
+    def test_process_test_unknown_arg_falls_back_to_1h(self):
+        from services.ops_status import process_telegram_update
+
+        update = {"message": {"text": "/test 1", "chat": {"id": -100123}}}
+        with patch("services.ops_status.TELEGRAM_CHAT_ID", "-100123"), \
+             patch("services.ops_status.TELEGRAM_BOT_TOKEN", "token"), \
+             patch("services.ops_status.send_telegram_message", return_value={"ok": True}) as send_mock:
+            result = process_telegram_update(update)
+
+        self.assertEqual(result.get("sample_kind"), "1h")
+        sent_text = send_mock.call_args.args[2]
+        self.assertIn("试多观察【测试】", sent_text)
+        self.assertIn("试空观察【测试】", sent_text)
+        self.assertNotIn("15m 做多位置提醒", sent_text)
 
     def test_test_does_not_touch_runtime_state(self):
         from engine.runtime_state import RuntimeStateStore
