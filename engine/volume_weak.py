@@ -7,6 +7,7 @@ OK for this weak path only.
 
 Env kill switch: SMCT_ABNORMAL_VOLUME_WEAK_ENABLED default 0 (TG off).
 Shadow / log path always available via scripts/run_volume_weak_shadow.py.
+No systemd unit in this PR (deferred until after merge + user awake).
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from typing import Any
 
 from engine.x_signals import MIN_15M_ABNORMAL_VOLUME, MIN_1H_ABNORMAL_VOLUME
 
-# Draft frequency / thresholds for L to scan (see docs/AUTO_RANGE_AND_VOLUME_WEAK_SCOPE.md).
+# L-locked frequency (2026-10-25): prefer miss over false positive.
 DEFAULT_MIN_VOLUME_RATIO = 1.8
 DEFAULT_COOLDOWN_BARS_15M = 4  # same side
 DEFAULT_OPPOSITE_COOLDOWN_BARS = 2
@@ -32,6 +33,20 @@ def _float(v: Any, default: float = 0.0) -> float:
 
 def _volume_ratio(k: dict[str, Any]) -> float:
     return _float(k.get("volume")) / max(_float(k.get("vol_sma20"), 0.0), 1e-9)
+
+
+def _fmt_vol(vol: Any) -> str:
+    try:
+        return str(int(round(float(vol))))
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _fmt_ratio(ratio: Any) -> str:
+    try:
+        return f"{float(ratio):.1f}"
+    except (TypeError, ValueError):
+        return "0.0"
 
 
 def abnormal_volume_weak_enabled() -> bool:
@@ -52,6 +67,9 @@ def evaluate_forming_volume_weak(
 
     Expects klines with the **last** bar possibly still open (forming).
     Returns a decision dict; never touches formal 1H state stores.
+
+    Frequency (L-locked): ratio >= 1.8 AND abs volume above x_signals floors
+    (15m OR 1H). Prefer miss over false positive.
     """
     base: dict[str, Any] = {
         "symbol": symbol,
@@ -137,27 +155,33 @@ def format_volume_weak_log(decision: dict[str, Any]) -> str:
     )
 
 
-def format_volume_weak_message_draft(decision: dict[str, Any]) -> str:
-    """Draft TG copy — L locks final Chinese later. Forbidden: 试多/试空 formal family.
+def format_volume_weak_message(decision: dict[str, Any]) -> str:
+    """L-locked TG copy (2026-10-25). Forbidden: 试多/试空 formal family.
 
     Only call when should_alert; TG send still gated by abnormal_volume_weak_enabled().
     """
     side = str(decision.get("side") or "")
-    side_zh = "偏多" if side == "long" else "偏空" if side == "short" else "中性"
+    if side == "long":
+        side_zh = "偏多🟢"
+    elif side == "short":
+        side_zh = "偏空🔴"
+    else:
+        side_zh = "中性"
     symbol = str(decision.get("symbol") or "BTCUSDT").replace("USDT", "")
-    ratio = decision.get("volume_ratio_15m")
-    vol = decision.get("volume_15m")
-    # TODO(L): lock final Chinese copy; keep short; no 试多/试空 template.
+    vol_s = _fmt_vol(decision.get("volume_15m"))
+    ratio_s = _fmt_ratio(decision.get("volume_ratio_15m"))
     return (
-        f"📍 {symbol} 未收盘放量弱提醒【草稿】\n"
+        f"📍 {symbol} 未收盘放量弱提醒\n"
         f"\n"
-        f"15m 未收盘量能异常（{side_zh}）。\n"
-        f"vol≈{vol}  ratio≈{ratio}\n"
+        f"15m 未收盘出现异常放量（{side_zh}）。\n"
+        f"vol≈{vol_s}  ratio≈{ratio_s}\n"
         f"这不是 1H 正式观察，只提醒看盘。\n"
-        f"最终以 1H / 4H 为准。\n"
-        f"\n"
-        f"TODO(L): 锁定终稿文案"
+        f"最终以 1H / 4H 为准。"
     )
+
+
+# Back-compat alias.
+format_volume_weak_message_draft = format_volume_weak_message
 
 
 def should_send_volume_weak_tg(decision: dict[str, Any]) -> bool:
@@ -174,6 +198,7 @@ __all__ = [
     "abnormal_volume_weak_enabled",
     "evaluate_forming_volume_weak",
     "format_volume_weak_log",
+    "format_volume_weak_message",
     "format_volume_weak_message_draft",
     "should_send_volume_weak_tg",
 ]
