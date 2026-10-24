@@ -229,13 +229,13 @@ class FormatTestMessage15mTests(unittest.TestCase):
 
         msg = build_format_test_message_15m()
         self.assertTrue(msg.startswith(TEST_FORMAT_PREFIX))
-        self.assertIn("📍 BTC 15m 做多位置提醒【测试】", msg)
-        self.assertIn("📍 BTC 15m 做空位置提醒【测试】", msg)
+        self.assertIn("📍 BTC 15m 做多📈位置提醒【测试】", msg)
+        self.assertIn("📍 BTC 15m 做空📉位置提醒【测试】", msg)
         self.assertEqual(TEST_FORMAT_SIDE_SEPARATOR, "────────────────")
         self.assertIn(f"\n\n{TEST_FORMAT_SIDE_SEPARATOR}\n\n", msg)
-        long_idx = msg.index("📍 BTC 15m 做多位置提醒【测试】")
+        long_idx = msg.index("📍 BTC 15m 做多📈位置提醒【测试】")
         sep_idx = msg.index(f"\n\n{TEST_FORMAT_SIDE_SEPARATOR}\n\n")
-        short_idx = msg.index("📍 BTC 15m 做空位置提醒【测试】")
+        short_idx = msg.index("📍 BTC 15m 做空📉位置提醒【测试】")
         self.assertLess(long_idx, sep_idx)
         self.assertLess(sep_idx, short_idx)
         self.assertIn("这不是 1H 正式观察，只提醒看盘。", msg)
@@ -244,10 +244,14 @@ class FormatTestMessage15mTests(unittest.TestCase):
         self.assertIn("区间 97000.00 - 97200.00。", msg)
         self.assertIn("站回 97350.00 → 本提醒失效。", msg)
         self.assertIn("最终以 1H / 4H 为准。", msg)
-        # No dual-emoji formal heads / legacy 预警 titles.
-        self.assertNotIn("📈", msg)
-        self.assertNotIn("📉", msg)
+        # Side emoji after 做多/做空; still single leading 📍 (no dual formal wrap / 预警).
+        self.assertIn("做多📈", msg)
+        self.assertIn("做空📉", msg)
+        self.assertNotIn("📈 BTC", msg)
+        self.assertNotIn("📉 BTC", msg)
         self.assertNotIn("预警", msg)
+        self.assertNotIn("🟢", msg)
+        self.assertNotIn("🔴", msg)
         for term in WEAK_REMINDER_FORBIDDEN:
             self.assertNotIn(term, msg)
         for term in BANNED:
@@ -258,12 +262,14 @@ class FormatTestMessage15mTests(unittest.TestCase):
         from engine.trend_messages import format_sample_weak_reminder
 
         long_msg = format_sample_weak_reminder(side="long")
-        self.assertTrue(long_msg.startswith("📍 BTC 15m 做多位置提醒【测试】"))
+        self.assertTrue(long_msg.startswith("📍 BTC 15m 做多📈位置提醒【测试】"))
+        self.assertIn("15m 出现可能的做多📈位置。", long_msg)
         self.assertIn("区间 95000.00 - 95200.00。", long_msg)
         self.assertIn("跌破 94850.00 → 本提醒失效。", long_msg)
 
         short_msg = format_sample_weak_reminder(side="short")
-        self.assertTrue(short_msg.startswith("📍 BTC 15m 做空位置提醒【测试】"))
+        self.assertTrue(short_msg.startswith("📍 BTC 15m 做空📉位置提醒【测试】"))
+        self.assertIn("15m 出现可能的做空📉位置。", short_msg)
         self.assertIn("区间 97000.00 - 97200.00。", short_msg)
         self.assertIn("站回 97350.00 → 本提醒失效。", short_msg)
 
@@ -328,8 +334,8 @@ class TelegramUpdateTestCommandTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[2]
-        self.assertIn("📍 BTC 15m 做多位置提醒【测试】", sent_text)
-        self.assertIn("📍 BTC 15m 做空位置提醒【测试】", sent_text)
+        self.assertIn("📍 BTC 15m 做多📈位置提醒【测试】", sent_text)
+        self.assertIn("📍 BTC 15m 做空📉位置提醒【测试】", sent_text)
         self.assertNotIn("试多", sent_text)
         self.assertNotIn("试空", sent_text)
 
@@ -344,7 +350,7 @@ class TelegramUpdateTestCommandTests(unittest.TestCase):
 
         self.assertEqual(result.get("sample_kind"), "15m")
         sent_text = send_mock.call_args.args[2]
-        self.assertIn("15m 做多位置提醒【测试】", sent_text)
+        self.assertIn("15m 做多📈位置提醒【测试】", sent_text)
 
     def test_process_test_unknown_arg_falls_back_to_1h(self):
         from services.ops_status import process_telegram_update
@@ -359,7 +365,7 @@ class TelegramUpdateTestCommandTests(unittest.TestCase):
         sent_text = send_mock.call_args.args[2]
         self.assertIn("试多观察【测试】", sent_text)
         self.assertIn("试空观察【测试】", sent_text)
-        self.assertNotIn("15m 做多位置提醒", sent_text)
+        self.assertNotIn("15m 做多📈位置提醒", sent_text)
 
     def test_test_does_not_touch_runtime_state(self):
         from engine.runtime_state import RuntimeStateStore
