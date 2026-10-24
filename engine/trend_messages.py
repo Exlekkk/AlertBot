@@ -624,7 +624,7 @@ def format_sample_trial_alert(*, side: str) -> str:
     return _sanitize(_dedupe_major_sections(text))
 
 
-TEST_FORMAT_SIDE_SEPARATOR = "────────"
+TEST_FORMAT_SIDE_SEPARATOR = "────────────────"
 
 
 def build_format_test_message() -> str:
