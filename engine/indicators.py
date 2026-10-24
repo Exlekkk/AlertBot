@@ -366,17 +366,10 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
     fl = follow_line_components(klines)
     chart_cfg = TREND_ENGINE_CONFIG["chart_framework"]
     rar_cfg = chart_cfg["rar"]
-    inertial_cfg = chart_cfg["inertial"]
     tai_cfg = chart_cfg["tai"]
     rar = rar_components(closes, length=int(rar_cfg["length"]), power=float(rar_cfg["power"]))
-    # Enrich-compat only: inertial is quarantined and not scored on decision paths.
-    inertial = inertial_stochastic_components(
-        klines,
-        min_length=int(inertial_cfg["min_length"]),
-        max_length=int(inertial_cfg["max_length"]),
-        smooth_k=int(inertial_cfg["smooth_k"]),
-        smooth_d=int(inertial_cfg["smooth_d"]),
-    )
+    # Inertial peeled: enrich no longer computes or writes inertia_* fields.
+    # Quarantined builder remains available via shim for unit tests only.
     tai = tai_components(
         klines,
         len_form=int(tai_cfg["formation_length"]),
@@ -387,24 +380,17 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
     enriched = []
     for i, k in enumerate(klines):
         item = dict(k)
-        explicit_inertia = k.get("inertia")
-        explicit_inertia_signal = k.get("inertia_signal")
-        use_explicit_inertia = explicit_inertia is not None
-        inertia_value = float(explicit_inertia) if use_explicit_inertia else inertial["value"][i]
-        inertia_signal = (
-            float(explicit_inertia_signal)
-            if use_explicit_inertia and explicit_inertia_signal is not None
-            else inertial["signal"][i]
-        )
-        if use_explicit_inertia:
-            inertia_green = bool(k.get("inertia_green", inertia_value > 50.0))
-            previous_green = bool(enriched[-1].get("inertia_green", inertia_green)) if enriched else inertia_green
-            inertia_turn_up = bool(k.get("inertia_turn_up", inertia_green and not previous_green))
-            inertia_turn_down = bool(k.get("inertia_turn_down", (not inertia_green) and previous_green))
-        else:
-            inertia_green = bool(inertial["green"][i])
-            inertia_turn_up = bool(inertial["turn_up"][i])
-            inertia_turn_down = bool(inertial["turn_down"][i])
+        # Strip any inbound inertia fields so enrich never re-emits them.
+        for _inertia_key in (
+            "inertia",
+            "inertia_signal",
+            "inertia_green",
+            "inertia_red",
+            "inertia_turn_up",
+            "inertia_turn_down",
+            "inertia_source",
+        ):
+            item.pop(_inertia_key, None)
         item.update(
             {
                 "ema10": ema10[i],
@@ -432,14 +418,6 @@ def enrich_klines(klines: list[dict]) -> list[dict]:
                 "rar_trigger": rar["rar_trigger"][i],
                 "rar_spread": rar["rar_spread"][i],
                 "rar_trend_strong": rar["rar_trend_strong"][i],
-
-                "inertia": inertia_value,
-                "inertia_signal": inertia_signal,
-                "inertia_green": inertia_green,
-                "inertia_red": not inertia_green,
-                "inertia_turn_up": inertia_turn_up,
-                "inertia_turn_down": inertia_turn_down,
-                "inertia_source": "explicit_feed" if use_explicit_inertia else "legacy_inertial",
 
                 "tai_value": tai["tai_value"][i],
                 "tai_p20": tai["tai_p20"][i],

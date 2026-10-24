@@ -1,4 +1,10 @@
-# Quarantine
+# Quarantine (repo root)
 
-- `legacy_quarantine/` (repo root): old one-shot refactor helper moved off the main path. Do not run as an entrypoint.
-- `engine/legacy_quarantine/`: peeled dual-log / classic-swing / inertial builders. Importable for enrich-compat and tests only — not live decision scoring.
+Dead / one-shot helpers moved off the live entry path. Do not run as an
+entrypoint, and do not reattach to scanner / trial / deploy wiring without
+an explicit review.
+
+- `apply_refactor.py` — historical one-shot file rewriter; unused by the live
+  path. Kept for archaeology only (not executed).
+- Engine builders (dual-log / classic-swing / inertial) live under
+  `engine/legacy_quarantine/`.

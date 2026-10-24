@@ -190,6 +190,75 @@ if __name__ == "__main__":
     unittest.main()
 
 
+
+class TrialEvidenceBundlePreferenceTests(unittest.TestCase):
+    def _base(self):
+        bars = []
+        base = 10000.0
+        for i in range(50):
+            bars.append(_bar(base, base + 10, base - 10, base, vol=100, ts=i * 3600000))
+        htf = {"bias": "neutral", "text": "neutral", "relation": "neutral"}
+        matrix = {"rar_slope": 0.0, "inertia_slope": 0.0, "momentum_text": "", "temperature": ""}
+        aux = {"price_impulse": 0.0}
+        return bars, htf, matrix, aux
+
+    def test_prefers_evidence_bundle_over_side_channels(self):
+        """auto_range / sweep / delta / ifvg / core_levels read from evidence_bundle first."""
+        from engine.trial_decision import build_trial_context
+
+        bars, htf, matrix, aux = self._base()
+        evidence_bundle = {
+            "auto_range": {"last_event": "deviation_down", "pending_break": None},
+            "sweep": {
+                "swept": True,
+                "recent_sweep_valid": True,
+                "side": "sell_side",
+                "reclaim_or_reject": "reclaim",
+            },
+            "delta_profile": {"node_bias": "bull", "value_area_pos": "inside", "approx": True},
+            "ifvg": {
+                "nearest_active": {
+                    "inverted": True,
+                    "invalidated": False,
+                    "direction": -1,
+                    "top": 10020.0,
+                    "bottom": 9990.0,
+                },
+                "zones": [],
+                "approx": True,
+            },
+            "core_levels_filter": {
+                "allowed": True,
+                "filter_only": True,
+                "midline_event": "reclaim_above_50",
+                "lean": "bull",
+                "squeeze": False,
+            },
+        }
+        # Conflicting / empty side-channels must not win over evidence_bundle.
+        ctx = build_trial_context(
+            bars,
+            htf,
+            {"sweep_hunter": {"swept": False}},
+            {},
+            matrix,
+            aux,
+            vp={"delta_profile": {"node_bias": "bear", "value_area_pos": "below"}},
+            range_lock={"active": False, "auto_range": {"last_event": "deviation_up"}},
+            ict={},
+            evidence_bundle=evidence_bundle,
+        )
+        long_reasons = " ".join(ctx.get("evidence", {}).get("long", []))
+        self.assertIn("range_reclaim_after_break_down", long_reasons)
+        self.assertIn("sweep_sell_side_reclaim", long_reasons)
+        self.assertIn("profile_node_bull", long_reasons)
+        self.assertIn("imbalance_inverted_support", long_reasons)
+        self.assertIn("core_levels_reclaim_50", long_reasons)
+        self.assertIn("evidence_confluence", long_reasons)
+        self.assertIn("auto_range", ctx.get("evidence_bundle_keys", []))
+        self.assertIn("sweep", ctx.get("evidence_bundle_keys", []))
+        self.assertIn("ifvg", ctx.get("evidence_bundle_keys", []))
+
 class CoreLevelsFilterTests(unittest.TestCase):
     def test_1h_filter_only_never_alerts(self):
         from engine.core_levels_filter import build_core_levels_filter

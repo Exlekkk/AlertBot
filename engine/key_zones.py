@@ -1077,6 +1077,8 @@ def decide_key_zone_observation(
         "trial_recent_extension_atr": trial_assessment.get("recent_extension_atr"),
         "trial_directional_catalyst": bool(trial_assessment.get("directional_catalyst", False)),
         "trial_evidence": trial_assessment.get("reasons", []),
+        "evidence": evidence_bundle if isinstance(evidence_bundle, dict) else {},
+        "evidence_bundle_keys": trial_context.get("evidence_bundle_keys", []),
         "observation_update": update,
     }
     return attach_range_lock_fields(attach_vp_fields(decision, vp, vp_reasons), range_lock)

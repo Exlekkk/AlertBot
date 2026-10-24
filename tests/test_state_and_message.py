@@ -1772,21 +1772,21 @@ class V139LayeredDecisionTests(unittest.TestCase):
         self.assertGreaterEqual(decision["secondary_progress_atr"], 0.22)
         self.assertFalse(decision["observation_update"]["pending_confirm"])
 
-    def test_inertial_pine_reimplementation_is_present_and_explicit_values_are_preserved(self):
+    def test_enrich_klines_does_not_write_inertia_fields(self):
         from engine.indicators import enrich_klines
 
         bars = []
         for i, close in enumerate([100, 99, 98, 97, 96, 95, 96, 98, 101, 104, 106, 108, 109, 110, 111, 112, 113, 114, 115, 116]):
             bars.append({"open": close - 0.5, "high": close + 1, "low": close - 1, "close": close, "volume": 1000 + i})
         enriched = enrich_klines(bars)
-        self.assertEqual(enriched[-1]["inertia_source"], "legacy_inertial")
-        self.assertTrue(any(bar["inertia_turn_up"] for bar in enriched))
+        for key in ("inertia", "inertia_signal", "inertia_green", "inertia_turn_up", "inertia_source"):
+            self.assertNotIn(key, enriched[-1])
 
+        # Even explicit inbound inertia is stripped — enrich must not re-emit it.
         bars[-1].update({"inertia": 12.0, "inertia_signal": 15.0, "inertia_turn_up": True})
-        explicit = enrich_klines(bars)
-        self.assertEqual(explicit[-1]["inertia_source"], "explicit_feed")
-        self.assertEqual(explicit[-1]["inertia"], 12.0)
-        self.assertTrue(explicit[-1]["inertia_turn_up"])
+        stripped = enrich_klines(bars)
+        for key in ("inertia", "inertia_signal", "inertia_turn_up", "inertia_source"):
+            self.assertNotIn(key, stripped[-1])
 
     def test_trend_message_removes_duplicate_major_sections(self):
         from engine.trend_messages import _dedupe_major_sections, format_trend_message

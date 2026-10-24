@@ -239,7 +239,10 @@ def build_trial_context(
         _append_score(scores, evidence, "short", 1.5, "momentum_supports_short")
 
     # 1H formation/TAI temperature peeled; core-levels filter is soft lean only.
-    core = aux.get("core_levels_filter") if isinstance(aux.get("core_levels_filter"), dict) else {}
+    # Prefer scanner evidence_bundle; fall back to aux side-channel.
+    core = evidence_bundle.get("core_levels_filter") if isinstance(evidence_bundle.get("core_levels_filter"), dict) else {}
+    if not core:
+        core = aux.get("core_levels_filter") if isinstance(aux.get("core_levels_filter"), dict) else {}
     if core.get("allowed") and core.get("filter_only", True):
         if core.get("midline_event") == "reclaim_above_50":
             _append_score(scores, evidence, "long", 0.5, "core_levels_reclaim_50")
@@ -271,8 +274,10 @@ def build_trial_context(
     elif h4 == "bear" or "偏空" in htf_text:
         _append_score(scores, evidence, "short", 0.75, "h4_bear_background")
 
-    # --- New candle-approx evidence (partial; legacy ict/liq/vp still parallel) ---
-    auto_range = range_lock.get("auto_range") if isinstance(range_lock.get("auto_range"), dict) else {}
+    # --- Candle-approx evidence: prefer scanner evidence_bundle; side-channels are fallback ---
+    auto_range = evidence_bundle.get("auto_range") if isinstance(evidence_bundle.get("auto_range"), dict) else {}
+    if not auto_range:
+        auto_range = range_lock.get("auto_range") if isinstance(range_lock.get("auto_range"), dict) else {}
     last_range_event = auto_range.get("last_event")
     if last_range_event == "deviation_down":
         _append_score(scores, evidence, "long", 1.5, "range_reclaim_after_break_down")
@@ -284,14 +289,18 @@ def build_trial_context(
     elif auto_range.get("pending_break") == "down":
         _append_score(scores, evidence, "short", 0.25, "range_break_pending_down")
 
-    sweep_ctx = liq.get("sweep_hunter") if isinstance(liq.get("sweep_hunter"), dict) else {}
+    sweep_ctx = evidence_bundle.get("sweep") if isinstance(evidence_bundle.get("sweep"), dict) else {}
+    if not sweep_ctx:
+        sweep_ctx = liq.get("sweep_hunter") if isinstance(liq.get("sweep_hunter"), dict) else {}
     if sweep_ctx.get("swept") and sweep_ctx.get("recent_sweep_valid"):
         if sweep_ctx.get("side") == "sell_side" and sweep_ctx.get("reclaim_or_reject") == "reclaim":
             _append_score(scores, evidence, "long", 2.0, "sweep_sell_side_reclaim")
         elif sweep_ctx.get("side") == "buy_side" and sweep_ctx.get("reclaim_or_reject") == "reject":
             _append_score(scores, evidence, "short", 2.0, "sweep_buy_side_reject")
 
-    delta = vp.get("delta_profile") if isinstance(vp.get("delta_profile"), dict) else {}
+    delta = evidence_bundle.get("delta_profile") if isinstance(evidence_bundle.get("delta_profile"), dict) else {}
+    if not delta:
+        delta = vp.get("delta_profile") if isinstance(vp.get("delta_profile"), dict) else {}
     node_bias = str(delta.get("node_bias") or vp.get("node_bias") or "neutral")
     va_pos = str(delta.get("value_area_pos") or vp.get("value_area_pos") or "inside")
     if node_bias == "bull" and va_pos in {"inside", "above"}:
@@ -310,6 +319,29 @@ def build_trial_context(
             _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
         elif int(nearest_imb.get("direction") or 0) == -1:
             _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
+
+    # Soft confluence when 2+ candle-evidence tags agree (contract: joint weight).
+    # Pending-break and soft leans do not count toward confluence.
+    _confluence_tokens = {
+        "long": (
+            "range_reclaim_after_break_down",
+            "sweep_sell_side_reclaim",
+            "profile_node_bull",
+            "imbalance_inverted_support",
+            "core_levels_reclaim_50",
+        ),
+        "short": (
+            "range_reclaim_after_break_up",
+            "sweep_buy_side_reject",
+            "profile_node_bear",
+            "imbalance_inverted_resistance",
+            "core_levels_loss_50",
+        ),
+    }
+    for _side, _tokens in _confluence_tokens.items():
+        _hits = sum(1 for token in _tokens if any(token in r for r in evidence[_side]))
+        if _hits >= 2:
+            _append_score(scores, evidence, _side, 0.75, "evidence_confluence")
 
     range_active, box_low, box_high, box_ratio, box_position = _box_context(close, range_lock, ict)
     if range_active and box_position == "lower_edge":
@@ -350,7 +382,11 @@ def build_trial_context(
         "box_ratio": box_ratio,
         "box_position": box_position,
         "range_cluster": str(range_lock.get("cluster", "")),
-        "accepted_breakout": str(range_lock.get("accepted_breakout", "none")),
+        "accepted_breakout": str(
+            range_lock.get("accepted_breakout")
+            or auto_range.get("accepted_breakout")
+            or "none"
+        ),
         "ict_ob_coexist": bool(ict.get("coexist", False)),
         "ict_ob_source": str(ict.get("source", "none")),
         "ict_bullish_active": bool(ict.get("bullish_active", False)),
@@ -372,6 +408,9 @@ def build_trial_context(
             or bool(sweep_ctx)
             or bool(delta)
             or bool(volume_flow)
+        ),
+        "evidence_bundle_keys": sorted(
+            k for k, v in evidence_bundle.items() if isinstance(v, dict) and v
         ),
         "scores": scores,
         "evidence": evidence,
@@ -513,9 +552,10 @@ def assess_trial_candidate(
     else:
         reward_risk = None
 
+    reason_blob = " ".join(reasons)
     matching_fresh_event = (
-        (side == "long" and "sellside_sweep_reclaim" in " ".join(reasons))
-        or (side == "short" and "buyside_sweep_reject" in " ".join(reasons))
+        (side == "long" and ("sellside_sweep_reclaim" in reason_blob or "sweep_sell_side_reclaim" in reason_blob))
+        or (side == "short" and ("buyside_sweep_reject" in reason_blob or "sweep_buy_side_reject" in reason_blob))
         or breakout_matches
     )
     bull_dist = trial_context.get("ict_bullish_distance_atr")
@@ -538,6 +578,7 @@ def assess_trial_candidate(
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "core_levels_reclaim_50" if side == "long" else "core_levels_loss_50",
+            "evidence_confluence",
         )
     )
     matching_distance = bull_dist if side == "long" else bear_dist
