@@ -225,7 +225,7 @@ class LayeredDecisionSafetyTests(unittest.TestCase):
     def test_same_box_same_side_requires_new_information_during_cooldown(self):
         from engine.trial_decision import assess_trial_candidate
 
-        context = self._trial_context(["sellside_sweep_reclaim:+3.50"])
+        context = self._trial_context(["sweep_sell_side_reclaim:+2.00"])
         context.update(
             {
                 "range_active": True,

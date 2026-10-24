@@ -66,13 +66,15 @@ def build_htf_bias_context(
         _vote(scores, fib_direction, 1.5)
         evidence.append(f"fibonacci_{fib_direction}")
 
-    if liquidity.get("recent_sweep_valid"):
-        if liquidity.get("sweep_type") == "sellside" and liquidity.get("reclaim_or_reject") == "reclaim":
+    # H4 bias: evidence / sweep_hunter path only — no legacy liq +3.5 fields.
+    sweep_ctx = liquidity.get("sweep_hunter") if isinstance(liquidity.get("sweep_hunter"), dict) else {}
+    if sweep_ctx.get("swept") and sweep_ctx.get("recent_sweep_valid"):
+        if sweep_ctx.get("side") == "sell_side" and sweep_ctx.get("reclaim_or_reject") == "reclaim":
             _vote(scores, "bull", 1.5)
-            evidence.append("sellside_sweep_reclaim")
-        elif liquidity.get("sweep_type") == "buyside" and liquidity.get("reclaim_or_reject") == "reject":
+            evidence.append("sweep_sell_side_reclaim")
+        elif sweep_ctx.get("side") == "buy_side" and sweep_ctx.get("reclaim_or_reject") == "reject":
             _vote(scores, "bear", 1.5)
-            evidence.append("buyside_sweep_reject")
+            evidence.append("sweep_buy_side_reject")
 
     difference = scores["bull"] - scores["bear"]
     if difference >= 2.0:

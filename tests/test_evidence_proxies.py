@@ -341,7 +341,7 @@ class TrialFourGateFixesTests(unittest.TestCase):
         self.assertIn("sweep_sell_side_reclaim", long_reasons)
         self.assertNotIn("sellside_sweep_reclaim", long_reasons)
 
-    def test_legacy_liq_sweep_fallback_when_evidence_absent(self):
+    def test_legacy_liq_sweep_scores_nothing_without_evidence(self):
         from engine.trial_decision import build_trial_context
 
         htf, matrix, aux = self._base_ctx()
@@ -352,7 +352,8 @@ class TrialFourGateFixesTests(unittest.TestCase):
         }
         ctx = build_trial_context(self._bars(), htf, liq, {}, matrix, aux, evidence_bundle={})
         long_reasons = " ".join(ctx["evidence"]["long"])
-        self.assertIn("sellside_sweep_reclaim", long_reasons)
+        self.assertNotIn("sellside_sweep_reclaim", long_reasons)
+        self.assertNotIn("sweep_sell_side_reclaim", long_reasons)
 
     def test_pending_break_adds_no_direction_score(self):
         from engine.trial_decision import build_trial_context
@@ -413,6 +414,55 @@ class TrialFourGateFixesTests(unittest.TestCase):
         )
         self.assertFalse(result["directional_catalyst"])
         self.assertIn("formal_without_directional_catalyst", result["hard_blocks"])
+
+
+    def test_old_vp_fields_do_not_score(self):
+        from engine.trial_decision import build_trial_context
+
+        htf, matrix, aux = self._base_ctx()
+        vp = {
+            "reclaimed_val": True,
+            "rejected_vah": True,
+            "accepted_below_value": True,
+            "fvg_profile": {"nearest": {"direction": "bull", "distance": 1.0}},
+            "high_volume_pivots": {
+                "support": {"zone": (9990, 10010), "broken": False},
+                "resistance": {"zone": (10090, 10110), "broken": False},
+            },
+            "node_bias": "bull",
+            "value_area_pos": "inside",
+        }
+        ctx = build_trial_context(
+            self._bars(), htf, {}, {}, matrix, aux, vp=vp, evidence_bundle={}
+        )
+        blob = " ".join(ctx["evidence"]["long"] + ctx["evidence"]["short"])
+        for banned in (
+            "value_reclaimed",
+            "value_rejected",
+            "accepted_below_value",
+            "near_bull_fvg_volume_poc",
+            "high_volume_support",
+            "high_volume_resistance",
+            "profile_node_bull",
+        ):
+            self.assertNotIn(banned, blob)
+
+    def test_delta_profile_from_evidence_still_scores(self):
+        from engine.trial_decision import build_trial_context
+
+        htf, matrix, aux = self._base_ctx()
+        ctx = build_trial_context(
+            self._bars(),
+            htf,
+            {},
+            {},
+            matrix,
+            aux,
+            evidence_bundle={
+                "delta_profile": {"node_bias": "bull", "value_area_pos": "inside", "approx": True}
+            },
+        )
+        self.assertIn("profile_node_bull", " ".join(ctx["evidence"]["long"]))
 
     def test_empty_evidence_blocks_formal_without_catalyst(self):
         from engine.trial_decision import assess_trial_candidate

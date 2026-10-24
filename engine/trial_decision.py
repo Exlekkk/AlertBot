@@ -131,36 +131,9 @@ def build_trial_context(
         if fibonacci.get("in_ote"):
             _append_score(scores, evidence, "short", 1.25, "bearish_ote_location")
 
-    if vp.get("reclaimed_val"):
-        _append_score(scores, evidence, "long", 1.5, "value_reclaimed")
-    if vp.get("rejected_vah"):
-        _append_score(scores, evidence, "short", 1.5, "value_rejected")
-    if vp.get("accepted_below_value"):
-        _append_score(scores, evidence, "long", -1.5, "accepted_below_value")
-        _append_score(scores, evidence, "short", 0.75, "accepted_below_value")
-    if vp.get("accepted_above_value"):
-        _append_score(scores, evidence, "short", -1.5, "accepted_above_value")
-        _append_score(scores, evidence, "long", 0.75, "accepted_above_value")
-
-    fvg_profile = vp.get("fvg_profile", {}) if isinstance(vp.get("fvg_profile"), dict) else {}
-    nearest_fvg = fvg_profile.get("nearest") if isinstance(fvg_profile.get("nearest"), dict) else None
-    if nearest_fvg:
-        fvg_side = str(nearest_fvg.get("direction", "none"))
-        distance = _f(nearest_fvg.get("distance"), 99.0) / atr
-        if distance <= 0.35 and fvg_side == "bull":
-            _append_score(scores, evidence, "long", 1.0, "near_bull_fvg_volume_poc")
-        elif distance <= 0.35 and fvg_side == "bear":
-            _append_score(scores, evidence, "short", 1.0, "near_bear_fvg_volume_poc")
-
-    volume_pivots = vp.get("high_volume_pivots", {}) if isinstance(vp.get("high_volume_pivots"), dict) else {}
-    support = volume_pivots.get("support") if isinstance(volume_pivots.get("support"), dict) else None
-    resistance = volume_pivots.get("resistance") if isinstance(volume_pivots.get("resistance"), dict) else None
-    if support and _distance_to_zone(close, support.get("zone")) is not None and _f(_distance_to_zone(close, support.get("zone")), 99.0) / atr <= 0.35:
-        side = "short" if support.get("broken") else "long"
-        _append_score(scores, evidence, side, 1.25, "flipped_volume_support" if support.get("broken") else "high_volume_support")
-    if resistance and _distance_to_zone(close, resistance.get("zone")) is not None and _f(_distance_to_zone(close, resistance.get("zone")), 99.0) / atr <= 0.35:
-        side = "long" if resistance.get("broken") else "short"
-        _append_score(scores, evidence, side, 1.25, "flipped_volume_resistance" if resistance.get("broken") else "high_volume_resistance")
+    # Old VP main-path scoring (reclaimed_val / vah / fvg_profile /
+    # high_volume_pivots) removed. Profile weight comes only from evidence
+    # delta_profile (or vp.delta_profile merge) below.
 
     rar_slope = _f(aux.get("rar_slope"))
     # Inertial fully peeled from trial scoring and phase detection.
@@ -228,31 +201,23 @@ def build_trial_context(
     # pending_break is status-only (exposed on auto_range); never adds direction score.
     _ = auto_range.get("pending_break")
 
-    # Sweep weight: prefer evidence.sweep (or liq.sweep_hunter). Legacy liq
-    # sellside/buyside +3.5 is fallback ONLY when no evidence sweep context is
-    # present — never stack both on the same bar.
+    # Sweep weight: evidence.sweep only (liq.sweep_hunter is the merge target
+    # of sweep_hunter). Legacy liq sellside/buyside +3.5 path hard-deleted.
     sweep_ctx = evidence_bundle.get("sweep") if isinstance(evidence_bundle.get("sweep"), dict) else {}
     if not sweep_ctx:
         sweep_ctx = liq.get("sweep_hunter") if isinstance(liq.get("sweep_hunter"), dict) else {}
-    evidence_sweep_scored = False
     if sweep_ctx.get("swept") and sweep_ctx.get("recent_sweep_valid"):
         if sweep_ctx.get("side") == "sell_side" and sweep_ctx.get("reclaim_or_reject") == "reclaim":
             _append_score(scores, evidence, "long", 2.0, "sweep_sell_side_reclaim")
-            evidence_sweep_scored = True
         elif sweep_ctx.get("side") == "buy_side" and sweep_ctx.get("reclaim_or_reject") == "reject":
             _append_score(scores, evidence, "short", 2.0, "sweep_buy_side_reject")
-            evidence_sweep_scored = True
-    if not evidence_sweep_scored and bool(liq.get("recent_sweep_valid")):
-        if liq.get("sweep_type") == "sellside" and liq.get("reclaim_or_reject") == "reclaim":
-            _append_score(scores, evidence, "long", 3.5, "sellside_sweep_reclaim")
-        elif liq.get("sweep_type") == "buyside" and liq.get("reclaim_or_reject") == "reject":
-            _append_score(scores, evidence, "short", 3.5, "buyside_sweep_reject")
 
     delta = evidence_bundle.get("delta_profile") if isinstance(evidence_bundle.get("delta_profile"), dict) else {}
     if not delta:
         delta = vp.get("delta_profile") if isinstance(vp.get("delta_profile"), dict) else {}
-    node_bias = str(delta.get("node_bias") or vp.get("node_bias") or "neutral")
-    va_pos = str(delta.get("value_area_pos") or vp.get("value_area_pos") or "inside")
+    # Read bias only from delta_profile — never raw vp.vah/val/node fields.
+    node_bias = str(delta.get("node_bias") or "neutral")
+    va_pos = str(delta.get("value_area_pos") or "inside")
     if node_bias == "bull" and va_pos in {"inside", "above"}:
         _append_score(scores, evidence, "long", 1.0, "profile_node_bull")
     elif node_bias == "bear" and va_pos in {"inside", "below"}:
@@ -442,15 +407,10 @@ def assess_trial_candidate(
     if zone_source in {"ifvg_zone", "imbalance_zone"}:
         reaction_score += 1.25
         reasons.append("matching_ifvg:+1.25")
-    elif zone_source in {"fvg_zone", "fvg_volume_profile"}:
-        reaction_score += 0.75
-        reasons.append("matching_fvg:+0.75")
     elif zone_source == "fibonacci_ote":
         reaction_score += 1.0
         reasons.append("matching_ote:+1.00")
-    elif zone_source in {"high_volume_support", "high_volume_resistance"}:
-        reaction_score += 0.75
-        reasons.append("matching_volume_pivot:+0.75")
+    # Old fvg_volume_profile / high_volume_* zone reaction bonuses removed.
 
     score += reaction_score
     direction_advantage = score - opposite_score
@@ -499,8 +459,8 @@ def assess_trial_candidate(
 
     reason_blob = " ".join(reasons)
     matching_fresh_event = (
-        (side == "long" and ("sellside_sweep_reclaim" in reason_blob or "sweep_sell_side_reclaim" in reason_blob))
-        or (side == "short" and ("buyside_sweep_reject" in reason_blob or "sweep_buy_side_reject" in reason_blob))
+        (side == "long" and "sweep_sell_side_reclaim" in reason_blob)
+        or (side == "short" and "sweep_buy_side_reject" in reason_blob)
         or breakout_matches
     )
     reason_text = " ".join(reasons)
@@ -513,7 +473,6 @@ def assess_trial_candidate(
         token in reason_text
         for token in (
             "sweep_sell_side_reclaim" if side == "long" else "sweep_buy_side_reject",
-            "sellside_sweep_reclaim" if side == "long" else "buyside_sweep_reject",
             "range_reclaim_after_break_down" if side == "long" else "range_reclaim_after_break_up",
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
@@ -549,7 +508,6 @@ def assess_trial_candidate(
         "ifvg_zone",
         "imbalance_zone",
         "fibonacci_ote",
-        "fvg_volume_profile",
     }
     poi_catalyst = bool(poi_reaction and (rar_aligned or momentum_aligned or evidence_aux_aligned))
     # RAR (or momentum) plus a non-empty evidence bundle is enough — replaces

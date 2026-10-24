@@ -415,14 +415,10 @@ def _ict_entry_boundary(
 
 
 def _source_priority(source: str) -> int:
-    if source in {"ict_plus_ob", "ict_minus_ob"}:
+    if source in {"ifvg_zone", "fibonacci_ote"}:
         return 0
-    if source in {"fibonacci_ote", "fvg_volume_profile", "high_volume_support", "high_volume_resistance"}:
-        return 1
     if source == "fvg_zone":
         return 2
-    if source in {"order_block_zone", "structure_zone", "mid_observe_zone"}:
-        return 3
     return 4
 
 
@@ -509,11 +505,9 @@ def _select_zone(
         ifvg.get("nearest_active")
         and not (ifvg.get("nearest_active") or {}).get("invalidated", False)
     )
-    has_vp = bool((vp.get("fvg_profile") or {}).get("bullish") or (vp.get("fvg_profile") or {}).get("bearish")) or bool(
-        (vp.get("high_volume_pivots") or {}).get("support") or (vp.get("high_volume_pivots") or {}).get("resistance")
-    )
-    # Sweep alone is not enough for observation alerts (same rule as pre-delete).
-    has_structural_context = has_ote or has_ifvg or has_vp
+    # Old VP pivots / fvg_profile must NOT open observation windows.
+    # Structural context = OTE or IFVG only (evidence sweep is scored elsewhere).
+    has_structural_context = has_ote or has_ifvg
 
     nearest_ifvg = ifvg.get("nearest_active") if isinstance(ifvg.get("nearest_active"), dict) else None
     if nearest_ifvg and not nearest_ifvg.get("invalidated"):
@@ -567,35 +561,8 @@ def _select_zone(
             zones.append({"side": "upper", "source": "ifvg_zone", "zone": zone, "interaction": relation})
             has_structural_context = True
 
-    fvg_profile = vp.get("fvg_profile", {}) if isinstance(vp.get("fvg_profile"), dict) else {}
-    for item in list(fvg_profile.get("bullish", []))[:1] + list(fvg_profile.get("bearish", []))[:1]:
-        zone = _ordered_zone(tuple(item["zone"]))
-        zones.append(
-            {
-                "side": "lower" if item.get("direction") == "bull" else "upper",
-                "source": "fvg_volume_profile",
-                "zone": zone,
-                "interaction": _zone_relation(latest, zone, pad),
-            }
-        )
-
-    high_volume = vp.get("high_volume_pivots", {}) if isinstance(vp.get("high_volume_pivots"), dict) else {}
-    for key, default_side in (("support", "lower"), ("resistance", "upper")):
-        item = high_volume.get(key)
-        if not isinstance(item, dict) or not item.get("zone"):
-            continue
-        zone = _ordered_zone(tuple(item["zone"]))
-        side = default_side
-        if item.get("broken"):
-            side = "upper" if default_side == "lower" else "lower"
-        zones.append(
-            {
-                "side": side,
-                "source": f"high_volume_{key}",
-                "zone": zone,
-                "interaction": _zone_relation(latest, zone, pad),
-            }
-        )
+    # Old VP fvg_profile / high_volume_pivots zones removed from observation.
+    _ = vp  # accepted for API compat / attach_vp_fields blockers only
 
     # MSB-OB / ICT structure zones hard-deleted.
 
@@ -636,9 +603,6 @@ def _select_zone(
             in {
                 "ifvg_zone",
                 "fibonacci_ote",
-                "fvg_volume_profile",
-                "high_volume_support",
-                "high_volume_resistance",
             }
         ]
         return poi or hits
