@@ -57,6 +57,10 @@ Load via `SMCT_ENV_FILE` (default path on host installs: `/opt/smct-alert/config
 | `FREEZE_MODE_SEND_X_ONLY` | `1` / `0` delivery freeze flag |
 | `SEND_NEAR_MISS_SUMMARY` | `1` / `0` near-miss summary flag |
 | `HEARTBEAT_STALE_AFTER_SECONDS` | Heartbeat staleness threshold |
+| `TELEGRAM_OPS_POLL_ENABLED` | `1` / `0` enable getUpdates `/check` poll |
+| `TELEGRAM_OPS_POLL_LOCK_FILE` | Exclusive flock path (default `/tmp/smct-tg-ops-poll.lock`) |
+| `SMCT_REPO_ROOT` | Optional absolute git root for `/check` HEAD |
+| `TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS` | Ops error alert cooldown |
 | `WEBHOOK_PERSIST_SECONDS` | Webhook persistence window |
 
 Do not paste production tokens, chat ids, or webhook secrets into git, CI logs, or this checklist.
@@ -84,6 +88,8 @@ Exact unit names and paths are host-local — adjust to the install, do not inve
 - Timed bihourly probe (`scripts/run_bihourly_report.py`) is **silent on success**; it may still push on health failure.
 - Prefer disabling any host cron/timer that only existed to spam the old running heartbeat, or keep it as a silent probe.
 - Group `/check` is handled by the webhook app: default **getUpdates poll** when `TELEGRAM_OPS_POLL_ENABLED=1` (requires no Telegram `setWebhook`), or POST `/telegram/updates` if you point Bot API webhook there.
+- When **both** `smct-alert` and `smct-webhook` share the same `app:app`, poll uses an exclusive flock (`TELEGRAM_OPS_POLL_LOCK_FILE`, default `/tmp/smct-tg-ops-poll.lock`): only one process runs getUpdates; the other logs `ops_poll_skipped reason=lock_held`. No host unit/.env change required.
+- `/check` HEAD resolution prefers `SMCT_REPO_ROOT` (optional) then the install root from `__file__`, not the process cwd.
 - Backend exceptions (scanner loop / `run_once`) push a short `⚠️ 系统异常` with cooldown (`TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS`, default 900).
 - Do not change business alert templates in this path.
 

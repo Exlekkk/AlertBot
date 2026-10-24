@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import asynccontextmanager
+from typing import IO
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -9,6 +10,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     TELEGRAM_OPS_POLL_ENABLED,
+    TELEGRAM_OPS_POLL_LOCK_FILE,
     TELEGRAM_OPS_POLL_TIMEOUT_SECONDS,
     WEBHOOK_LOG_FILE,
     WEBHOOK_PERSIST_SECONDS,
@@ -18,6 +20,7 @@ from config import (
 from engine.cooldown import SignalStateStore
 from engine.runtime_state import RuntimeStateStore
 from services.logger import get_logger
+from services.ops_poll_lock import release_ops_poll_lock, try_acquire_ops_poll_lock
 from services.ops_status import process_telegram_update
 from services.telegram import format_webhook_message, send_telegram_message
 
@@ -26,6 +29,7 @@ webhook_state = SignalStateStore(state_file=WEBHOOK_STATE_FILE, price_change_thr
 runtime_state = RuntimeStateStore()
 _ops_poll_stop = threading.Event()
 _ops_poll_thread: threading.Thread | None = None
+_ops_poll_lock_fh: IO[str] | None = None
 
 
 def _telegram_get_updates(token: str, offset: int | None, timeout: int) -> list[dict]:
@@ -77,11 +81,18 @@ def _ops_poll_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _ops_poll_thread
+    global _ops_poll_thread, _ops_poll_lock_fh
     _ops_poll_stop.clear()
+    _ops_poll_lock_fh = None
+    _ops_poll_thread = None
     if TELEGRAM_OPS_POLL_ENABLED and TELEGRAM_BOT_TOKEN:
-        _ops_poll_thread = threading.Thread(target=_ops_poll_loop, name="tg-ops-poll", daemon=True)
-        _ops_poll_thread.start()
+        lock_fh = try_acquire_ops_poll_lock(TELEGRAM_OPS_POLL_LOCK_FILE)
+        if lock_fh is None:
+            logger.info("ops_poll_skipped reason=lock_held path=%s", TELEGRAM_OPS_POLL_LOCK_FILE)
+        else:
+            _ops_poll_lock_fh = lock_fh
+            _ops_poll_thread = threading.Thread(target=_ops_poll_loop, name="tg-ops-poll", daemon=True)
+            _ops_poll_thread.start()
     else:
         logger.info(
             "ops_poll_not_started enabled=%s has_token=%s",
@@ -95,6 +106,8 @@ async def lifespan(app: FastAPI):
         thread = _ops_poll_thread
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        release_ops_poll_lock(_ops_poll_lock_fh)
+        _ops_poll_lock_fh = None
 
 
 app = FastAPI(lifespan=lifespan)

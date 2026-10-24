@@ -6,12 +6,15 @@ Does not change business alert copy (试多观察 / 开单 templates).
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from config import (
     FREEZE_MODE_SEND_X_ONLY,
+    SMCT_REPO_ROOT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS,
@@ -37,18 +40,47 @@ def extract_bot_command(text: str | None) -> str | None:
     return name or None
 
 
+def _repo_root_candidates(explicit_cwd: str | None = None) -> list[str]:
+    """Ordered git cwd candidates: explicit, SMCT_REPO_ROOT, install root, cwd."""
+    roots: list[str] = []
+    if explicit_cwd:
+        roots.append(explicit_cwd)
+    env_root = (SMCT_REPO_ROOT or os.getenv("SMCT_REPO_ROOT", "") or "").strip()
+    if env_root:
+        roots.append(env_root)
+    # services/ops_status.py -> repo install root
+    install_root = str(Path(__file__).resolve().parents[1])
+    roots.append(install_root)
+    roots.append(".")
+    # Dedupe while preserving order
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for root in roots:
+        key = os.path.abspath(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(root)
+    return ordered
+
+
 def resolve_git_head(cwd: str | None = None) -> str:
-    try:
-        out = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=cwd or ".",
-            timeout=2,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-        return (out or "").strip() or "n/a"
-    except Exception:
-        return "n/a"
+    """Return short HEAD sha; prefer SMCT_REPO_ROOT / install root over fragile cwd."""
+    for root in _repo_root_candidates(cwd):
+        try:
+            out = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=root,
+                timeout=2,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            sha = (out or "").strip()
+            if sha:
+                return sha
+        except Exception:
+            continue
+    return "n/a"
 
 
 def build_check_message(
