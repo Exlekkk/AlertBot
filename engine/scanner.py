@@ -19,7 +19,7 @@ from engine.delta_profile import build_delta_profile_context, merge_delta_into_v
 from engine.ifvg import build_ifvg_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
-from engine.trend_messages import format_trend_message
+from engine.trend_messages import format_trend_message, should_send_alert_copy
 from engine.trend_segments import decide_trend_segment
 from engine.trend_snapshot import load_observation_state, load_trend_state, make_snapshot_key, save_observation_state, save_trend_state
 from services.logger import get_logger
@@ -172,21 +172,33 @@ class SMCTScanner:
 
             sent = 0
             if decision["should_alert"] and self.state_store.should_send(decision):
-                msg = format_trend_message(decision)
-                try:
-                    send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, msg)
-                    self.state_store.mark_sent(decision)
-                    self.runtime_state.mark_sent_signal(decision)
+                if not should_send_alert_copy(decision):
+                    # Kill 关键区观察 / 确认 / 二次确认 copy; keep scoring paths intact.
+                    self.logger.info(
+                        "alert_send_suppressed reason=non_trial_copy alert_type=%s",
+                        decision.get("alert_type"),
+                    )
                     if decision.get("observation_update") is not None:
-                        # Pending/confirmation state exists only for an alert
-                        # that was actually delivered.  This prevents phantom
-                        # second confirmations after Telegram failure or dedupe.
                         save_observation_state(self.symbol, "1h", decision["observation_update"])
-                    if decision.get("alert_type") in {"BULLISH_STRUCTURE_SHIFT", "BEARISH_STRUCTURE_SHIFT"}:
-                        save_trend_state(self.symbol, "1h", decision.get("direction", "neutral"), decision.get("signature", ""))
-                    sent = 1
-                except TelegramSendError:
-                    pass
+                    # Dedupe without Telegram delivery so the same non-trial
+                    # observation does not re-enter the send path every scan.
+                    self.state_store.mark_sent(decision)
+                else:
+                    msg = format_trend_message(decision)
+                    try:
+                        send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, msg)
+                        self.state_store.mark_sent(decision)
+                        self.runtime_state.mark_sent_signal(decision)
+                        if decision.get("observation_update") is not None:
+                            # Pending/confirmation state exists only for an alert
+                            # that was actually delivered.  This prevents phantom
+                            # second confirmations after Telegram failure or dedupe.
+                            save_observation_state(self.symbol, "1h", decision["observation_update"])
+                        if decision.get("alert_type") in {"BULLISH_STRUCTURE_SHIFT", "BEARISH_STRUCTURE_SHIFT"}:
+                            save_trend_state(self.symbol, "1h", decision.get("direction", "neutral"), decision.get("signature", ""))
+                        sent = 1
+                    except TelegramSendError:
+                        pass
 
             summary = {"decision": decision, "sent": sent}
             self.runtime_state.mark_scan(ok=True, symbol=self.symbol, summary=summary)

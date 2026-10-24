@@ -39,6 +39,42 @@ CONFIRMATION_ALERTS = {
     "SECONDARY_CONFIRM_UPPER",
 }
 
+# Telegram send allowlist (L 2026-10-24): only 试多观察 / 试空观察 full template.
+# Scoring / decide_* algorithms unchanged; scanner gates on this before send.
+TRIAL_PROBE_SEND_ALERT_TYPES = {
+    "EARLY_LONG_TRIAL",
+    "LOWER_KEY_ZONE_RECLAIM",
+    "EARLY_SHORT_TRIAL",
+    "UPPER_KEY_ZONE_REJECTION",
+    # Continuations already use 试多观察 / 试空观察 titles via _long/_short_probe_title.
+    "BULLISH_CONTINUATION",
+    "BEARISH_CONTINUATION",
+}
+
+KEY_ZONE_OBSERVATION_SUPPRESS_ALERT_TYPES = {
+    "LOWER_KEY_ZONE_TEST",
+    "FAST_PULLBACK_OBSERVE",
+    "RANGE_LOWER_PROBE",
+    "UPPER_KEY_ZONE_TEST",
+    "FAST_REBOUND_OBSERVE",
+    "RANGE_UPPER_PROBE",
+}
+
+CONFIRM_SUPPRESS_ALERT_TYPES = {
+    "BULLISH_STRUCTURE_SHIFT",
+    "BEARISH_STRUCTURE_SHIFT",
+    "SECONDARY_CONFIRM_LOWER",
+    "SECONDARY_CONFIRM_UPPER",
+    "LOWER_CONFIRM_INVALIDATED",
+    "UPPER_CONFIRM_INVALIDATED",
+}
+
+
+def should_send_alert_copy(decision: dict) -> bool:
+    """True only for allowlisted 试多/试空 probe templates."""
+    alert_type = str(decision.get("alert_type", "") or "")
+    return alert_type in TRIAL_PROBE_SEND_ALERT_TYPES
+
 
 def _is_pin_context(d: dict) -> bool:
     return (

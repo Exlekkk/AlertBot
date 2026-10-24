@@ -151,5 +151,52 @@ class TelegramUpdateCheckTests(unittest.TestCase):
         send_mock.assert_not_called()
 
 
+
+class ResolveGitHeadTests(unittest.TestCase):
+    def test_explicit_cwd_without_git_returns_na(self):
+        from services.ops_status import resolve_git_head
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Force only the empty dir: patch candidates to that single path
+            with patch("services.ops_status._repo_root_candidates", return_value=[tmp]):
+                self.assertEqual(resolve_git_head(cwd=tmp), "n/a")
+
+    def test_prefers_smct_repo_root_over_bad_cwd(self):
+        from services import ops_status
+
+        repo_root = str(Path(__file__).resolve().parents[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(ops_status, "SMCT_REPO_ROOT", repo_root), \
+                 patch.dict("os.environ", {"SMCT_REPO_ROOT": repo_root}, clear=False):
+                # Process cwd is irrelevant; env/install root should still resolve.
+                sha = ops_status.resolve_git_head(cwd=tmp)
+        self.assertNotEqual(sha, "n/a")
+        self.assertTrue(len(sha) >= 7)
+
+    def test_install_root_works_when_cwd_is_elsewhere(self):
+        from services.ops_status import resolve_git_head
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # cwd arg points at non-repo; install root (via __file__) still wins after it fails
+            sha = resolve_git_head(cwd=tmp)
+        self.assertNotEqual(sha, "n/a")
+        self.assertRegex(sha, r"^[0-9a-f]{7,}$")
+
+
+class OpsPollLockTests(unittest.TestCase):
+    def test_second_acquire_skipped_while_held(self):
+        from services.ops_poll_lock import release_ops_poll_lock, try_acquire_ops_poll_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = str(Path(tmp) / "smct-tg-ops-poll.lock")
+            first = try_acquire_ops_poll_lock(lock_path)
+            self.assertIsNotNone(first)
+            second = try_acquire_ops_poll_lock(lock_path)
+            self.assertIsNone(second)
+            release_ops_poll_lock(first)
+            third = try_acquire_ops_poll_lock(lock_path)
+            self.assertIsNotNone(third)
+            release_ops_poll_lock(third)
+
 if __name__ == "__main__":
     unittest.main()
