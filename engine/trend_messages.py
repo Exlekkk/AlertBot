@@ -635,3 +635,74 @@ def build_format_test_message() -> str:
         f"{TEST_FORMAT_SIDE_SEPARATOR}\n\n"
         f"{format_sample_trial_alert(side='short')}"
     )
+
+
+# Fixed illustrative levels for TG /test 15 (15m weak-reminder preview; not live).
+_SAMPLE_WEAK_REMINDER_LONG = {
+    "zone": (95000.0, 95200.0),
+    "invalid_level": 94850.0,
+}
+_SAMPLE_WEAK_REMINDER_SHORT = {
+    "zone": (97000.0, 97200.0),
+    "invalid_level": 97350.0,
+}
+
+# Substrings forbidden in 15m weak-reminder TG body/title (L lock 2026-10-24).
+WEAK_REMINDER_FORBIDDEN = (
+    "试多",
+    "试空",
+    "止盈目标",
+    "开单建议",
+    "关注点",
+    "结论",
+)
+
+
+def _sample_weak_reminder_title(*, side: str) -> str:
+    if side == "long":
+        return "📍 BTC 15m 做多位置提醒【测试】"
+    return "📍 BTC 15m 做空位置提醒【测试】"
+
+
+def format_sample_weak_reminder(*, side: str) -> str:
+    """One ops /test 15 sample; L-locked 15m weak-reminder skeleton + 【测试】 title.
+
+    Must not look like 1H formal 试多/试空 (single leading emoji; no section headers
+    开单建议/关注点/结论; no 止盈目标).
+    """
+    if side not in {"long", "short"}:
+        raise ValueError(f"unsupported sample side: {side}")
+    payload = dict(
+        _SAMPLE_WEAK_REMINDER_LONG if side == "long" else _SAMPLE_WEAK_REMINDER_SHORT
+    )
+    zone = payload["zone"]
+    invalid = float(payload["invalid_level"])
+    zone_line = f"区间 {float(zone[0]):.2f} - {float(zone[1]):.2f}。"
+    if side == "long":
+        body = (
+            "15m 出现可能的做多位置。\n"
+            "这不是 1H 正式观察，只提醒看盘。\n\n"
+            f"{zone_line}\n"
+            f"跌破 {invalid:.2f} → 本提醒失效。\n"
+            "最终以 1H / 4H 为准。"
+        )
+    else:
+        body = (
+            "15m 出现可能的做空位置。\n"
+            "这不是 1H 正式观察，只提醒看盘。\n\n"
+            f"{zone_line}\n"
+            f"站回 {invalid:.2f} → 本提醒失效。\n"
+            "最终以 1H / 4H 为准。"
+        )
+    text = f"{_sample_weak_reminder_title(side=side)}\n\n{body}"
+    return _sanitize(text)
+
+
+def build_format_test_message_15m() -> str:
+    """Full /test 15 reply: prefix + 做多样例 + separator + 做空样例. Ops preview only."""
+    return (
+        f"{TEST_FORMAT_PREFIX}\n\n"
+        f"{format_sample_weak_reminder(side='long')}\n\n"
+        f"{TEST_FORMAT_SIDE_SEPARATOR}\n\n"
+        f"{format_sample_weak_reminder(side='short')}"
+    )
