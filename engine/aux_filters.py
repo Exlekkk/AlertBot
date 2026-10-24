@@ -3,13 +3,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from engine.trend_config import TREND_ENGINE_CONFIG
-
-
-_TAI_CONFIG = TREND_ENGINE_CONFIG["chart_framework"]["tai"]
-TAI_LEN_FORM = int(_TAI_CONFIG["formation_length"])
-TAI_LEN_HIST = int(_TAI_CONFIG["history_length"])
-
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -31,150 +24,16 @@ def _series(klines: list[dict[str, Any]], key: str, default: float | None = None
     return values
 
 
-def _linear_percentile(values: list[float], percentile: float) -> float | None:
-    """Pine-style linear interpolation percentile over a finite window."""
-
-    clean = sorted(v for v in values if not math.isnan(v) and not math.isinf(v))
-    if not clean:
-        return None
-    if len(clean) == 1:
-        return clean[0]
-
-    rank = (percentile / 100.0) * (len(clean) - 1)
-    lo = int(math.floor(rank))
-    hi = int(math.ceil(rank))
-    if lo == hi:
-        return clean[lo]
-    weight = rank - lo
-    return clean[lo] * (1.0 - weight) + clean[hi] * weight
-
-
-def _tai_vscale_series(klines: list[dict[str, Any]], len_form: int = TAI_LEN_FORM) -> list[float | None]:
-    """Replicate Zeiierman TAI core: log(SMA(close * volume, len_form))."""
-
-    dollar_volume = [
-        max(_safe_float(k.get("close"), 0.0) * _safe_float(k.get("volume"), 0.0), 0.0)
-        for k in klines
-    ]
-
-    out: list[float | None] = []
-    window_sum = 0.0
-    for i, value in enumerate(dollar_volume):
-        window_sum += value
-        if i >= len_form:
-            window_sum -= dollar_volume[i - len_form]
-        if i >= len_form - 1:
-            avg = window_sum / float(len_form)
-            out.append(math.log(max(avg, 1e-10)))
-        else:
-            out.append(None)
-    return out
-
-
-def _latest_tai_from_pine(
-    klines_1h: list[dict[str, Any]],
-    len_form: int = TAI_LEN_FORM,
-    len_hist: int = TAI_LEN_HIST,
-) -> dict[str, float | None]:
-    """Return latest TAI vscale and P20/P40/P60/P80 bands.
-
-    Trading Activity Index (Zeiierman) is not a 0-100 oscillator.  Its plotted
-    value is log(SMA(close * volume, formation_window)), and heat is determined
-    by visible rolling percentile bands.
-    """
-
-    vscale_series = _tai_vscale_series(klines_1h, len_form=len_form)
-    valid = [v for v in vscale_series if v is not None]
-    if not valid:
-        return {"value": None, "p20": None, "p40": None, "p60": None, "p80": None, "rank01": None}
-
-    current = valid[-1]
-    hist_window = valid[-len_hist:]
-    if len(hist_window) < min(50, len_hist):
-        return {"value": current, "p20": None, "p40": None, "p60": None, "p80": None, "rank01": None}
-
-    p20 = _linear_percentile(hist_window, 20)
-    p40 = _linear_percentile(hist_window, 40)
-    p60 = _linear_percentile(hist_window, 60)
-    p80 = _linear_percentile(hist_window, 80)
-
-    lo, hi = min(hist_window), max(hist_window)
-    rank01 = 0.5 if hi <= lo else max(0.0, min(1.0, (current - lo) / (hi - lo)))
-
-    return {"value": current, "p20": p20, "p40": p40, "p60": p60, "p80": p80, "rank01": rank01}
-
-
-def _explicit_tai_bands(latest: dict[str, Any]) -> dict[str, float | None]:
-    value = latest.get("tai_value")
-    p20 = latest.get("tai_p20")
-    p40 = latest.get("tai_p40")
-    p60 = latest.get("tai_p60")
-    p80 = latest.get("tai_p80")
-
-    if value is None or p20 is None or p40 is None or p60 is None or p80 is None:
-        return {"value": None, "p20": None, "p40": None, "p60": None, "p80": None, "rank01": None}
-
-    value_f = _safe_float(value, float("nan"))
-    p20_f = _safe_float(p20, float("nan"))
-    p40_f = _safe_float(p40, float("nan"))
-    p60_f = _safe_float(p60, float("nan"))
-    p80_f = _safe_float(p80, float("nan"))
-
-    if not (p20_f < p40_f < p60_f < p80_f):
-        return {"value": None, "p20": None, "p40": None, "p60": None, "p80": None, "rank01": None}
-
-    if value_f < p20_f:
-        rank01 = 0.10
-    elif value_f < p40_f:
-        rank01 = 0.30
-    elif value_f < p60_f:
-        rank01 = 0.50
-    elif value_f < p80_f:
-        rank01 = 0.70
-    else:
-        rank01 = 0.90
-
-    return {"value": value_f, "p20": p20_f, "p40": p40_f, "p60": p60_f, "p80": p80_f, "rank01": rank01}
-
-
-def _temperature_from_tai(klines_1h: list[dict[str, Any]]) -> tuple[str, dict[str, float | None]]:
-    latest = klines_1h[-1] if klines_1h else {}
-
-    # Unit tests or external feeds may provide the TradingView bands directly.
-    tai = _explicit_tai_bands(latest)
-    if tai["value"] is None:
-        tai = _latest_tai_from_pine(klines_1h)
-
-    value = tai["value"]
-    p20 = tai["p20"]
-    p40 = tai["p40"]
-    p60 = tai["p60"]
-    p80 = tai["p80"]
-
-    if value is None or p20 is None or p40 is None or p60 is None or p80 is None:
-        # If real bands are not available, do not force a hot/cold call.
-        return "中性", tai
-
-    if value < p20:
-        return "过冷", tai
-    if value < p40:
-        return "偏冷", tai
-    if value < p60:
-        return "中性", tai
-    if value < p80:
-        return "偏热", tai
-    return "过热", tai
-
-
 def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def _momentum_from_rar_inertial_volume(
+def _momentum_from_rar_volume(
     klines_1h: list[dict[str, Any]],
     rar_proxy: float,
-    inertia_proxy: float,
-) -> tuple[str, float, float, float, float]:
+) -> tuple[str, float, float, float]:
+    """RAR + volume momentum only. Inertial slope peeled from this path."""
+
     rar_values = _series(klines_1h[-8:], "rar_value", rar_proxy)
     if len(rar_values) >= 3:
         rar_slope = rar_values[-1] - rar_values[-3]
@@ -182,14 +41,6 @@ def _momentum_from_rar_inertial_volume(
         rar_slope = rar_values[-1] - rar_values[-2]
     else:
         rar_slope = 0.0
-
-    inertia_values = _series(klines_1h[-8:], "inertia", inertia_proxy)
-    if len(inertia_values) >= 3:
-        inertia_slope = inertia_values[-1] - inertia_values[-3]
-    elif len(inertia_values) >= 2:
-        inertia_slope = inertia_values[-1] - inertia_values[-2]
-    else:
-        inertia_slope = 0.0
 
     if len(klines_1h) >= 3:
         close_now = _safe_float(klines_1h[-1].get("close"), 0.0)
@@ -207,16 +58,16 @@ def _momentum_from_rar_inertial_volume(
     else:
         volume_ratio = 1.0
 
-    downside_confirmation = rar_slope < -0.25 or inertia_slope < -0.25 or volume_ratio >= 1.20
-    upside_confirmation = rar_slope > 0.25 or inertia_slope > 0.25 or volume_ratio >= 1.20
+    downside_confirmation = rar_slope < -0.25 or volume_ratio >= 1.20
+    upside_confirmation = rar_slope > 0.25 or volume_ratio >= 1.20
 
     if price_impulse <= -0.75 and downside_confirmation:
         momentum = "短线卖压释放"
     elif price_impulse >= 0.75 and upside_confirmation:
         momentum = "短线买盘释放"
-    elif rar_slope >= 1.0 or inertia_slope >= 1.0:
+    elif rar_slope >= 1.0:
         momentum = "短线动能修复"
-    elif rar_slope <= -1.0 or inertia_slope <= -1.0:
+    elif rar_slope <= -1.0:
         momentum = "短线动能转弱"
     elif rar_proxy >= 55 and rar_slope >= 0:
         momentum = "短线动能偏强"
@@ -225,54 +76,60 @@ def _momentum_from_rar_inertial_volume(
     else:
         momentum = "短线动能一般"
 
-    return momentum, rar_slope, inertia_slope, price_impulse, volume_ratio
+    return momentum, rar_slope, price_impulse, volume_ratio
 
 
 def build_aux_filters_proxy(
     klines_1h: list[dict[str, Any]],
     klines_4h: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build auxiliary context without MACD.
+    """Build auxiliary 1H context without MACD.
 
-    RAR, Inertial Stochastic and TAI are auxiliary filters from the supplied
-    chart, never standalone triggers.  Order-flow language is limited to
-    closed-candle volume proxies because no trade-delta/footprint feed exists.
+    RAR remains the primary aux filter. Inertial is peeled from momentum.
+    Formation/participation shadow is 15m-only and is not scored here.
+    Core-levels is a soft 1H+ filter only (never a solo trigger).
+    Order-flow language stays limited to closed-candle volume proxies.
     """
 
+    from engine.core_levels_filter import build_core_levels_filter
+
+    _ = klines_4h
     k1 = klines_1h[-1]
 
     rar_proxy = _safe_float(k1.get("rar_value"), 50.0)
     rar_trigger = _safe_float(k1.get("rar_trigger"), 50.0)
-    inertia = _safe_float(k1.get("inertia"), 50.0)
 
-    heat, tai = _temperature_from_tai(klines_1h)
-    momentum, rar_slope, inertia_slope, price_impulse, volume_ratio = _momentum_from_rar_inertial_volume(
+    momentum, rar_slope, price_impulse, volume_ratio = _momentum_from_rar_volume(
         klines_1h,
         rar_proxy,
-        inertia,
     )
+    core = build_core_levels_filter(klines_1h, timeframe="1h")
 
+    # Legacy inertia / formation fields kept inert for older readers.
     return {
         "rar_proxy": rar_proxy,
         "rar_trigger": rar_trigger,
         "rar_above_trigger": rar_proxy >= rar_trigger,
-        "inertia": inertia,
-        "inertia_signal": _safe_float(k1.get("inertia_signal"), inertia),
-        "inertia_green": bool(k1.get("inertia_green", False)),
-        "inertia_turn_up": bool(k1.get("inertia_turn_up", False)),
-        "inertia_turn_down": bool(k1.get("inertia_turn_down", False)),
-        "inertia_source": str(k1.get("inertia_source", "unknown")),
+        "inertia": None,
+        "inertia_signal": None,
+        "inertia_green": False,
+        "inertia_turn_up": False,
+        "inertia_turn_down": False,
+        "inertia_source": "peeled",
         "rar_slope": rar_slope,
-        "inertia_slope": inertia_slope,
+        "inertia_slope": 0.0,
         "price_impulse": price_impulse,
         "volume_ratio": volume_ratio,
-        "tai_value": tai["value"],
-        "tai_p20": tai["p20"],
-        "tai_p40": tai["p40"],
-        "tai_p60": tai["p60"],
-        "tai_p80": tai["p80"],
-        "tai_percentile": tai["rank01"],
+        # Formation shadow is not active on the 1H aux path.
+        "tai_value": None,
+        "tai_p20": None,
+        "tai_p40": None,
+        "tai_p60": None,
+        "tai_p80": None,
+        "tai_percentile": None,
+        "formation_shadow_1h": False,
+        "core_levels_filter": core,
         "price": _safe_float(k1.get("close"), 0.0),
         "momentum_desc": momentum,
-        "temperature_desc": f"热度 {heat}",
+        "temperature_desc": "热度 中性",
     }

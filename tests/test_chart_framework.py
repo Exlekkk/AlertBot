@@ -1,6 +1,5 @@
 import math
 import unittest
-from unittest.mock import patch
 
 
 def _wave_bars(count: int = 520, interval_ms: int = 3_600_000) -> list[dict]:
@@ -73,36 +72,7 @@ class SuppliedChartConfigTests(unittest.TestCase):
 
 
 class SuppliedPineTranslationTests(unittest.TestCase):
-    def test_ict_structure_uses_latest_opposite_pivot_reference(self):
-        from engine.ict_ob import _zigzag_points
 
-        bars = [
-            {"open": 95, "high": 120, "low": 80, "close": close, "volume": 1000}
-            for close in (95, 95, 95, 95, 95, 99, 105, 111)
-        ]
-        pivot_events = [
-            [(3, 3, 100.0), (5, 5, 110.0)],
-            [(2, 2, 90.0), (4, 4, 95.0), (6, 6, 100.0)],
-        ]
-        with patch("engine.ict_ob._pivot_indices", side_effect=pivot_events):
-            _, events = _zigzag_points(bars, 6)
-
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["event"], "bullish_mss")
-        self.assertEqual(events[0]["level"], 110.0)
-        self.assertEqual(events[0]["index"], 7)
-
-    def test_inertial_selects_length_closest_to_prior_value(self):
-        from engine.indicators import inertial_stochastic_components
-
-        closes = [100, 99, 98, 97, 96, 95, 96, 98, 101, 104, 106, 108]
-        bars = [
-            {"open": close - 0.5, "high": close + 1, "low": close - 1, "close": close, "volume": 1000}
-            for close in closes
-        ]
-        result = inertial_stochastic_components(bars, min_length=10, max_length=40, smooth_k=3, smooth_d=3)
-        self.assertAlmostEqual(result["raw"][9], 90.9090909091, places=7)
-        self.assertTrue(result["turn_up"][9])
 
     def test_chartprime_fvg_profile_uses_supplied_filter_and_stays_active(self):
         from engine.chart_indicators import build_fvg_volume_profile_context
@@ -142,16 +112,6 @@ class SuppliedPineTranslationTests(unittest.TestCase):
         self.assertFalse(context["is_true_orderflow"])
         self.assertEqual(context["source"], "candle_direction_volume_proxy")
 
-    def test_ict_reimplementation_uses_custom_settings_and_one_visible_ob(self):
-        from engine.ict_ob import build_ict_ob_context
-        from engine.indicators import enrich_klines
-
-        context = build_ict_ob_context(enrich_klines(_wave_bars()))
-        self.assertEqual(context["source"], "luxalgo_pine_reimplementation")
-        self.assertTrue(context["settings_match_chart"])
-        self.assertLessEqual(len(context["bullish_zones"]), 1)
-        self.assertLessEqual(len(context["bearish_zones"]), 1)
-        self.assertIn(context["premium_discount"], {"premium", "discount", "equilibrium", "unknown"})
 
     def test_htf_bias_does_not_depend_on_ema_crosses(self):
         from engine.framework import build_htf_bias_context
@@ -162,7 +122,7 @@ class SuppliedPineTranslationTests(unittest.TestCase):
             bar["ema10"] = 0.0
             bar["ema20"] = 1_000_000.0
         context = build_htf_bias_context(bars)
-        self.assertEqual(context["source"], "smc_ict_dow_log_regression")
+        self.assertEqual(context["source"], "fibonacci_liquidity_bias")
         self.assertFalse(any("ema" in reason for reason in context["bias_evidence"]))
 
 
@@ -207,9 +167,11 @@ class LayeredDecisionSafetyTests(unittest.TestCase):
         self.assertFalse(result["allow_formal"])
         self.assertIn("formal_without_directional_catalyst", result["hard_blocks"])
 
-    def test_near_ict_ob_with_rar_and_inertial_can_be_early_catalyst(self):
+    def test_rar_with_evidence_sweep_can_be_directional_catalyst(self):
         from engine.trial_decision import assess_trial_candidate
 
+        ctx = self._trial_context(["rar_turn_up:+1.00", "sweep_sell_side_reclaim:+2.00"])
+        ctx["evidence_bundle_keys"] = ["sweep"]
         result = assess_trial_candidate(
             "long",
             "LOWER_KEY_ZONE_RECLAIM",
@@ -217,9 +179,9 @@ class LayeredDecisionSafetyTests(unittest.TestCase):
             98.0,
             {"open": 99.0, "high": 100.0, "low": 98.7, "close": 99.5, "atr": 1.0},
             99.0,
-            "ict_plus_ob",
+            "ifvg_zone",
             "reclaimed_above",
-            self._trial_context(["rar_turn_up:+1.00", "inertial_turn_up:+1.00"]),
+            ctx,
             current_bar=20,
         )
         self.assertTrue(result["directional_catalyst"])
@@ -263,7 +225,7 @@ class LayeredDecisionSafetyTests(unittest.TestCase):
     def test_same_box_same_side_requires_new_information_during_cooldown(self):
         from engine.trial_decision import assess_trial_candidate
 
-        context = self._trial_context(["sellside_sweep_reclaim:+3.50"])
+        context = self._trial_context(["sweep_sell_side_reclaim:+2.00"])
         context.update(
             {
                 "range_active": True,

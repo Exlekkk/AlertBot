@@ -1,8 +1,15 @@
+"""Range / balance gate.
+
+Maps the candle-approx range detector onto legacy box fields
+(`active` / `box_*` / `accepted_breakout` / `cluster`) plus an `auto_range`
+payload. Pending breaks are not accepted_breakout.
+"""
 from __future__ import annotations
 
 import hashlib
 from typing import Any
 
+from engine.auto_range import build_auto_range_context
 from engine.trend_config import TREND_ENGINE_CONFIG
 
 
@@ -22,7 +29,11 @@ def _avg(values: list[float]) -> float:
 def _cluster_key(low: float, high: float, atr: float, close: float) -> str:
     center = (float(low) + float(high)) / 2.0
     width = max(float(high) - float(low), 1.0)
-    bucket = max(float(atr) * float(TREND_ENGINE_CONFIG["range_lock"].get("box_shift_atr_mult", 1.25)), abs(float(close)) * 0.006, 1.0)
+    bucket = max(
+        float(atr) * float(TREND_ENGINE_CONFIG["range_lock"].get("box_shift_atr_mult", 1.25)),
+        abs(float(close)) * 0.006,
+        1.0,
+    )
     center_bucket = round(center / bucket)
     width_bucket = round(width / max(bucket, 1.0))
     return hashlib.md5(f"range-lock:{center_bucket}:{width_bucket}".encode()).hexdigest()[:10]
@@ -38,111 +49,86 @@ def build_range_lock_context(
     vp: dict[str, Any] | None = None,
     ict: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Detect sideways / accumulation conditions for 1H alert throttling.
+    """Balance / same-box noise gate.
 
-    This is not a trade signal.  It is a noise gate: when price keeps rotating
-    inside the same accepted value area, AlertBot should not keep creating fresh
-    key-zone alerts from every upper/lower touch.
+    Range detection is candle-approx; ICT coexist no longer forces an active box.
     """
-
-    cfg = TREND_ENGINE_CONFIG["range_lock"]
-    lookback = max(8, int(cfg.get("lookback_bars", 14)))
-    if len(klines_1h) < lookback + 3:
-        return {"active": False, "reason": "insufficient_history"}
-
-    window = klines_1h[-lookback:]
-    latest = window[-1]
-    close = _f(latest.get("close"))
-    atr = max(_f(latest.get("atr"), max(abs(close) * 0.004, 1.0)), 1e-9)
-
-    lows = [_f(k.get("low"), close) for k in window]
-    highs = [_f(k.get("high"), close) for k in window]
-    closes = [_f(k.get("close"), close) for k in window]
-    volumes = [_f(k.get("volume"), 0.0) for k in window]
-
-    box_low = min(lows)
-    box_high = max(highs)
-    box_width = box_high - box_low
-    range_atr = box_width / atr
-    range_pct = box_width / max(abs(close), 1e-9)
-
-    lower_band = box_low + box_width * 0.28
-    upper_band = box_high - box_width * 0.28
-    lower_touches = sum(1 for k in window if _f(k.get("low"), close) <= lower_band)
-    upper_touches = sum(1 for k in window if _f(k.get("high"), close) >= upper_band)
-    edge_touches = lower_touches + upper_touches
-
-    msb_dir = str(msb.get("direction", "neutral"))
-    leg_type = str(msb.get("leg_type", "SHORT"))
-    msb_quality = int(msb.get("quality", 0) or 0)
-    matrix_dir = str(matrix.get("matrix_direction", "neutral"))
-
-    directional_breakout = False
-    accepted_breakout = "none"
-    if len(closes) >= 3:
-        prev_high = max(highs[:-1])
-        prev_low = min(lows[:-1])
-        breakout_pad = atr * float(cfg.get("breakout_accept_atr_mult", 0.35))
-        if closes[-1] > prev_high + breakout_pad:
-            directional_breakout = True
-            accepted_breakout = "up"
-        elif closes[-1] < prev_low - breakout_pad:
-            directional_breakout = True
-            accepted_breakout = "down"
-
-    vp = vp or {}
+    _ = (htf_ctx, liq, msb, matrix, aux, vp)  # keep legacy signature; trial reads new evidence
     ict = ict or {}
-    value_acceptance = bool(vp.get("inside_value_area")) or bool(vp.get("near_hvn_or_poc")) or bool(vp.get("current_bin_is_hvn"))
-    ict_ob_conflict = bool(ict.get("coexist", False))
+    auto_range = build_auto_range_context(klines_1h)
 
-    htf_text = str(htf_ctx.get("text", ""))
-    htf_range_or_mixed = "震荡" in htf_text or str(htf_ctx.get("relation", "neutral")) == "neutral"
+    latest = klines_1h[-1] if klines_1h else {}
+    close = _f(latest.get("close"))
+    atr = max(_f(auto_range.get("atr"), _f(latest.get("atr"), max(abs(close) * 0.004, 1.0))), 1e-9)
 
-    short_structure = leg_type == "SHORT" or msb_dir == "neutral" or msb_quality < 18
-    no_matrix_trend = matrix_dir == "neutral" or matrix_dir == msb_dir or leg_type == "SHORT"
+    state = str(auto_range.get("state", "none"))
+    box_low = _f(auto_range.get("low"), float("nan"))
+    box_high = _f(auto_range.get("high"), float("nan"))
+    has_box = state in {"provisional", "live", "broken"} and box_low == box_low and box_high == box_high
 
-    tight_enough = range_atr <= float(cfg.get("max_range_atr", 3.4)) or range_pct <= float(cfg.get("max_range_pct", 0.024))
-    enough_edges = edge_touches >= int(cfg.get("min_edge_touches", 3))
+    if not has_box and klines_1h:
+        # Fallback box when no qualifying range; active still driven by conflict/state
+        lookback = max(8, int(TREND_ENGINE_CONFIG["range_lock"].get("lookback_bars", 14)))
+        window = klines_1h[-lookback:]
+        box_low = min(_f(k.get("low"), close) for k in window)
+        box_high = max(_f(k.get("high"), close) for k in window)
 
-    # Active when the market is rotating in the same box / accepted value area
-    # without a real 1H expansion.  In a strong trend, this stays inactive.
-    statistical_range = bool(
-        tight_enough
-        and enough_edges
-        and (value_acceptance or htf_range_or_mixed or short_structure)
-        and (short_structure or no_matrix_trend)
-    )
-    # ICT +OB/-OB coexistence is its own conflict state.  It is deliberately
-    # separate from MSB-OB and keeps the market in a box/undetermined regime
-    # until price is accepted beyond one side.  It does not forbid an early
-    # edge trial; the weighted trial layer decides that later.
-    active = bool(not directional_breakout and (statistical_range or ict_ob_conflict))
+    last_event = auto_range.get("last_event")
+    pending_break = auto_range.get("pending_break")
+    # Only confirmed breakout_* sets accepted_breakout.
+    # pending / deviation keep accepted_breakout=none so the same-box gate stays closed.
+    if last_event == "breakout_up" and not pending_break:
+        directional_breakout = True
+        accepted_breakout = "up"
+    elif last_event == "breakout_down" and not pending_break:
+        directional_breakout = True
+        accepted_breakout = "down"
+    else:
+        directional_breakout = False
+        accepted_breakout = "none"
 
+    # ICT coexist box force hard-deleted; range active comes from auto_range only.
+    ict_ob_conflict = False
+    # live/provisional (incl. pending break) keep the balance gate; confirmed broken opens it
+    balance_active = state in {"provisional", "live"} or bool(pending_break)
+    # After reclaim, state stays live → keep same-box suppression; event is for weighting
+    active = bool(balance_active and not directional_breakout)
+
+    box_width = max(box_high - box_low, 0.0)
     if box_width <= 0:
         box_position = "unknown"
     else:
         box_ratio = (close - box_low) / box_width
         box_position = "lower" if box_ratio <= 0.38 else "upper" if box_ratio >= 0.62 else "middle"
 
+    volumes = [_f(k.get("volume"), 0.0) for k in klines_1h[-14:]] if klines_1h else []
+
     return {
         "active": active,
-        "reason": "range_lock_active" if active else "range_lock_inactive",
+        "reason": "auto_range_balance" if balance_active else (
+            "range_lock_active" if active else "range_lock_inactive"
+        ),
         "box_low": round(box_low, 2),
         "box_high": round(box_high, 2),
         "box_mid": round((box_low + box_high) / 2.0, 2),
-        "box_width_pct": round(range_pct, 5),
-        "box_width_atr": round(range_atr, 3),
-        "lower_touches": lower_touches,
-        "upper_touches": upper_touches,
-        "edge_touches": edge_touches,
-        "cluster": _cluster_key(box_low, box_high, atr, close),
+        "box_width_pct": round(box_width / max(abs(close), 1e-9), 5),
+        "box_width_atr": round(box_width / atr, 3),
+        "lower_touches": int(auto_range.get("lower_touches") or 0),
+        "upper_touches": int(auto_range.get("upper_touches") or 0),
+        "edge_touches": int(auto_range.get("lower_touches") or 0) + int(auto_range.get("upper_touches") or 0),
+        "cluster": _cluster_key(box_low, box_high, atr, close) if has_box or active else "",
         "directional_breakout": directional_breakout,
         "accepted_breakout": accepted_breakout,
         "box_position": box_position,
-        "value_acceptance": value_acceptance,
+        "value_acceptance": state in {"provisional", "live"},
         "ict_ob_conflict": ict_ob_conflict,
         "ict_ob_source": ict.get("source", "none"),
         "latest_volume_ratio": (volumes[-1] / max(_avg(volumes[:-1]), 1e-9)) if len(volumes) >= 3 else 1.0,
+        # full range payload for newer consumers
+        "auto_range": auto_range,
+        "last_event": last_event,
+        "pending_break": pending_break,
+        "approx": True,
     }
 
 
@@ -155,12 +141,7 @@ def is_strong_sweep_reversal(
     aux: dict[str, Any],
     range_lock: dict[str, Any] | None = None,
 ) -> bool:
-    """Allow rare formal trial alerts after a true sweep + sharp reclaim/reject.
-
-    This preserves the user's "after a waterfall, watch the bounce" use case
-    without reopening hourly trial spam inside a pure range.
-    """
-
+    """Allow rare post-waterfall strong reclaim trials (legacy behavior)."""
     range_lock = range_lock or {}
     cfg = TREND_ENGINE_CONFIG["range_lock"]
     open_ = _f(latest.get("open"))
@@ -199,4 +180,10 @@ def attach_range_lock_fields(decision: dict[str, Any], range_lock: dict[str, Any
         out["range_lock_box_low"] = range_lock.get("box_low")
         out["range_lock_box_high"] = range_lock.get("box_high")
         out["range_lock_width_atr"] = range_lock.get("box_width_atr")
+    # pass through range events for copy/weighting (not a solo trigger)
+    auto_range = range_lock.get("auto_range") or {}
+    if auto_range:
+        out["auto_range_state"] = auto_range.get("state")
+        out["auto_range_last_event"] = auto_range.get("last_event")
+        out["auto_range_approx"] = True
     return out

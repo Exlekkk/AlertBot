@@ -144,6 +144,95 @@ TREND_ENGINE_CONFIG = {
         "strong_reversal_atr": 1.35,
         "strong_reversal_volume_ratio": 1.15,
     },
+    # --- evidence feature knobs (candle approx); see docs/ARCHITECTURE.md ---
+    "auto_range": {
+        "scan_scales": [1, 2, 3],  # Base + 2x + 3x
+        "base_length": 20,
+        "band_percentile": 90.0,
+        "signal_timing": "bar_close",
+        "atr_length": 200,
+        "compression_percentile": 40.0,
+        "calibration_lookback": 500,
+        "min_rotation": 0.18,
+        "touch_basis": "wick",
+        "min_touches": 3,
+        "touch_tolerance_atr": 0.10,
+        "max_drift": 0.45,
+        "min_containment": 0.70,
+        "anchoring": "extend",
+        "anchor_lookback": 300,
+        "min_range_bars": 10,
+        "absorb_overshoot": True,
+        "overshoot_tol_atr": 0.25,
+        "break_confirm": "close",
+        "breakout_buffer_atr": 0.25,
+        "merge_deviations": True,
+        "deviation_window": 6,
+        "cooldown_bars": 5,
+        "max_range_age": 0,
+    },
+    "sweep_hunter": {
+        "length": 10,
+        "filter": 1.0,
+        "max_line_width": 4,
+        "min_transparency": 0,
+        "max_transparency": 60,
+        "calc_bars": 700,
+    },
+    "delta_profile": {
+        "length": 200,
+        "buckets": 35,
+        "value_area_pct": 70.0,
+        "highlight_hvol": False,
+        "anomaly_threshold": 2.5,
+    },
+    "ifvg": {
+        "min_size_1h": 0.2,
+        "min_size_15m": 0.15,
+        "longevity": 500,
+        "calc_bars": 2000,
+        "display_mode": "Both",
+    },
+    "ote": {
+        "pivot": 10,
+        "upper": 0.786,
+        "lower": 0.618,
+    },
+    "rar": {
+        "length": 15,
+        "power": 1,
+        "source": "close",
+    },
+    # 15m participation shadow only (not a formal 1H trigger).
+    "formation_shadow": {
+        "formation": 30,
+        "history": 350,
+        "timeframes": ["15m"],
+    },
+    # 1H+ oscillator core-levels filter only (never solo alert).
+    "core_levels_filter": {
+        "max_levels": 5,
+        "rsi_length": 14,
+        "signal_length": 14,
+        "midline_squeeze": True,
+        "dashboard": False,
+        "timeframes": ["1h", "4h"],
+    },
+    # Legacy aliases for older callers (prefer primary keys above).
+    # tai → formation_shadow; rsi_heatmap → core_levels_filter.
+    "tai": {
+        "formation": 30,
+        "history": 350,
+        "timeframes": ["15m"],
+    },
+    "rsi_heatmap": {  # legacy alias of core_levels_filter; do not use in new code
+        "max_levels": 5,
+        "rsi_length": 14,
+        "signal_length": 14,
+        "midline_squeeze": True,
+        "dashboard": False,
+        "timeframes": ["1h", "4h"],
+    },
     "trial_decision": {
         # Formal 1H trial alerts use weighted evidence.  No individual
         # auxiliary indicator is required; hard blocks are reserved for poor

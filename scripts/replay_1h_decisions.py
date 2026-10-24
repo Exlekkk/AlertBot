@@ -16,16 +16,16 @@ if str(ROOT) not in sys.path:
 
 from engine.aux_filters import build_aux_filters_proxy
 from engine.chart_indicators import build_chart_context
-try:
-    from engine.ict_ob import build_ict_ob_context
-except ImportError:  # v1.3.8 replay compatibility
-    def build_ict_ob_context(_: list[dict[str, Any]]) -> dict[str, Any]:
-        return {}
+def build_ict_ob_context(_: list[dict[str, Any]]) -> dict[str, Any]:
+    """ICT stack hard-deleted; empty stub for replay compatibility."""
+    return {}
 from engine.indicators import enrich_klines
 from engine.key_zones import decide_key_zone_observation
 from engine.late_filter import apply_late_filter
 from engine.liquidity import build_liquidity_context
-from engine.msb_ob import build_msb_ob_context
+def build_msb_ob_context(_klines, _liq) -> dict[str, Any]:
+    """MSB-OB stack hard-deleted; OTE comes from chart fibonacci in scanner."""
+    return {"direction": "neutral"}
 from engine.range_lock import build_range_lock_context
 from engine.scanner import SMCTScanner
 from engine.trend_matrix import build_trend_matrix_proxy
@@ -111,14 +111,14 @@ def replay(
         ict = build_ict_ob_context(klines_1h)
         chart_1h = build_chart_context(klines_1h)
         msb["fibonacci"] = chart_1h.get("fibonacci", {})
-        msb["classic_market"] = chart_1h.get("classic_market", {})
-        ict["killzone"] = chart_1h.get("killzone", {})
+        # classic_market hard-deleted
         matrix = build_trend_matrix_proxy(klines_1h)
         vp = build_volume_profile_context(klines_1h)
         aux = build_aux_filters_proxy(klines_1h, klines_4h)
         aux["volume_orderflow"] = chart_1h.get("volume_orderflow", {})
         aux["killzone"] = chart_1h.get("killzone", {})
-        direction_1h = "long" if msb["direction"] == "bull" else "short" if msb["direction"] == "bear" else "neutral"
+        fib_trend = str((chart_1h.get("fibonacci") or {}).get("trend", "neutral"))
+        direction_1h = "long" if fib_trend == "bull" else "short" if fib_trend == "bear" else "neutral"
         htf = scanner._htf_context(klines_4h, direction_1h)
         try:
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)

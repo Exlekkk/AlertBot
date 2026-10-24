@@ -3,9 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from engine.chart_indicators import build_chart_context
-from engine.ict_ob import build_ict_ob_context
 from engine.liquidity import build_liquidity_context
-from engine.msb_ob import build_msb_ob_context
 
 
 def _vote(scores: dict[str, float], side: str, weight: float) -> None:
@@ -45,29 +43,22 @@ def build_htf_bias_context(
     ict: dict[str, Any] | None = None,
     chart: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """4H bias from structure, liquidity and classical trend context.
+    """4H bias from liquidity sweep + fibonacci OTE context.
 
-    EMA crosses are deliberately absent.  The result is a background vote, not
-    a 4H entry signal, and 15m data is never accepted here.
+    EMA crosses, dual-log, classic swing, ICT structure and MSB-OB votes are
+    hard-deleted from this path. Background vote only; never a 4H entry signal.
     """
 
     if not klines_4h:
         return {"h4_direction": "range", "relation": "neutral", "text": "4H 震荡", "h4_strength": 0.0}
     liquidity = liquidity or build_liquidity_context(klines_4h)
-    msb = msb or build_msb_ob_context(klines_4h, liquidity)
-    ict = ict or build_ict_ob_context(klines_4h)
+    msb = msb or {"direction": "neutral"}
+    ict = ict or {}
     chart = chart or build_chart_context(klines_4h)
+    _ = (msb, ict)
 
     scores = {"bull": 0.0, "bear": 0.0}
     evidence: list[str] = []
-    ict_direction = str(ict.get("structure_direction", "neutral"))
-    if ict_direction in scores:
-        _vote(scores, ict_direction, 3.0)
-        evidence.append(f"ict_structure_{ict_direction}")
-    msb_direction = str(msb.get("direction", "neutral"))
-    if msb_direction in scores:
-        _vote(scores, msb_direction, 2.0)
-        evidence.append(f"msb_{msb_direction}")
 
     fibonacci = chart.get("fibonacci", {})
     fib_direction = str(fibonacci.get("trend", "neutral"))
@@ -75,25 +66,15 @@ def build_htf_bias_context(
         _vote(scores, fib_direction, 1.5)
         evidence.append(f"fibonacci_{fib_direction}")
 
-    regression = chart.get("dual_log_regression", {})
-    regression_direction = str(regression.get("alignment", "neutral"))
-    if regression_direction in scores:
-        _vote(scores, regression_direction, 1.25)
-        evidence.append(f"log_channel_{regression_direction}")
-
-    classic = chart.get("classic_market", {})
-    dow_direction = str(classic.get("dow_direction", "neutral"))
-    if dow_direction in scores:
-        _vote(scores, dow_direction, 1.75)
-        evidence.append(f"dow_{dow_direction}")
-
-    if liquidity.get("recent_sweep_valid"):
-        if liquidity.get("sweep_type") == "sellside" and liquidity.get("reclaim_or_reject") == "reclaim":
+    # H4 bias: evidence / sweep_hunter path only — no legacy liq +3.5 fields.
+    sweep_ctx = liquidity.get("sweep_hunter") if isinstance(liquidity.get("sweep_hunter"), dict) else {}
+    if sweep_ctx.get("swept") and sweep_ctx.get("recent_sweep_valid"):
+        if sweep_ctx.get("side") == "sell_side" and sweep_ctx.get("reclaim_or_reject") == "reclaim":
             _vote(scores, "bull", 1.5)
-            evidence.append("sellside_sweep_reclaim")
-        elif liquidity.get("sweep_type") == "buyside" and liquidity.get("reclaim_or_reject") == "reject":
+            evidence.append("sweep_sell_side_reclaim")
+        elif sweep_ctx.get("side") == "buy_side" and sweep_ctx.get("reclaim_or_reject") == "reject":
             _vote(scores, "bear", 1.5)
-            evidence.append("buyside_sweep_reject")
+            evidence.append("sweep_buy_side_reject")
 
     difference = scores["bull"] - scores["bear"]
     if difference >= 2.0:
@@ -111,8 +92,8 @@ def build_htf_bias_context(
         "bias_scores": scores,
         "bias_evidence": evidence,
         "premium_discount": fibonacci.get("premium_discount", "unknown"),
-        "market_cycle": classic.get("cycle", "unknown"),
-        "source": "smc_ict_dow_log_regression",
+        "market_cycle": "unknown",
+        "source": "fibonacci_liquidity_bias",
     }
     context["relation"] = relation_to_htf(context, direction_1h)
     return context

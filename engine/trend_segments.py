@@ -60,6 +60,33 @@ def decide_trend_segment(
     trend_state = trend_state or {}
     ict = ict or {}
     cfg = TREND_ENGINE_CONFIG["score"]
+    # ICT/MSB structure-shift path hard-deleted. Formal alerts come from
+    # key_zones + evidence (IFVG / sweep / auto_range / delta / RAR / OTE).
+    # Keep this function as a no-alert shell for scanner API compatibility.
+    if not ict and str(msb.get("direction", "neutral")) == "neutral" and not msb.get("structure_zone"):
+        price = float(aux.get("price", 0.0) or 0.0)
+        decision = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "alert_type": "NO_TRADE_RANGE",
+            "direction": "neutral",
+            "price": price,
+            "score": 0,
+            "score_breakdown": {"penalty_reason": "ict_msb_stack_deleted"},
+            "htf_context": htf_ctx.get("text", "4H 背景中性"),
+            "htf_relation": htf_ctx.get("relation", "neutral"),
+            "zone": (price, price),
+            "zone_low": price,
+            "zone_high": price,
+            "zone_source": "none",
+            "invalid_level": price,
+            "should_alert": False,
+            "suppress_reason": "ict_msb_stack_deleted",
+            "state_version": "DELETED",
+            "momentum_desc": str(aux.get("momentum_desc", "")),
+            "temperature_desc": str(aux.get("temperature_desc", "")),
+        }
+        return attach_vp_fields(decision, vp or {}, [])
 
     ict_direction = str(ict.get("structure_direction", "neutral"))
     ict_event = str(ict.get("structure_event", "none"))
@@ -88,7 +115,9 @@ def decide_trend_segment(
     liq_score = 12 if has_sweep else 2
     msb_score = int(msb.get("quality", 0))
     expected_matrix_direction = "bull" if direction == "long" else "bear" if direction == "short" else "neutral"
-    matrix_score = 6 if direction != "neutral" and matrix.get("matrix_direction") == expected_matrix_direction else 0
+    # Dual-log matrix peeled: never add channel alignment points on this path.
+    _ = matrix
+    matrix_score = 0
     ict_score = 8 if fresh_ict_structure and ict_direction == expected_matrix_direction else 3 if ict_direction == expected_matrix_direction else 0
     momentum_desc = str(aux.get("momentum_desc", "动能 一般"))
     temperature_desc = str(aux.get("temperature_desc", "热度 中性"))

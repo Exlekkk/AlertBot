@@ -196,159 +196,6 @@ def build_fibonacci_ote_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_log_regression_channel(
-    klines: list[dict[str, Any]],
-    length: int,
-    width: float,
-    bins: int,
-    extension_bars: int,
-) -> dict[str, Any]:
-    if len(klines) < length:
-        return {"available": False, "length": length, "direction": "neutral"}
-
-    window = klines[-length:]
-    reversed_bars = list(reversed(window))
-    x_values = [float(i + 1) for i in range(length)]
-    y_values = [math.log(max(_f(bar.get("close")), 1e-10)) for bar in reversed_bars]
-    sum_x = sum(x_values)
-    sum_y = sum(y_values)
-    sum_x2 = sum(value * value for value in x_values)
-    sum_xy = sum(x * y for x, y in zip(x_values, y_values))
-    denominator = length * sum_x2 - sum_x * sum_x
-    slope = (length * sum_xy - sum_x * sum_y) / denominator if denominator else 0.0
-    intercept = (sum_y - slope * sum_x) / length
-
-    closes = [_f(bar.get("close")) for bar in window]
-    deviation = _std(closes)
-    reg_start = math.exp(intercept + slope * length)
-    reg_end = math.exp(intercept)
-    half_width = deviation * float(width)
-    upper_end = reg_end + half_width
-    lower_end = reg_end - half_width
-    close = closes[-1]
-    normalized_position = (close - reg_end) / max(half_width, 1e-9)
-
-    buy_volume = sum(_f(bar.get("volume")) for bar in window if _f(bar.get("close")) > _f(bar.get("open")))
-    sell_volume = sum(_f(bar.get("volume")) for bar in window if _f(bar.get("close")) < _f(bar.get("open")))
-    total_volume = buy_volume + sell_volume
-    delta_pct = (buy_volume - sell_volume) / total_volume * 100.0 if total_volume else 0.0
-
-    bin_volumes = [0.0] * max(1, int(bins))
-    for offset, bar in enumerate(reversed_bars):
-        historical_mid = math.exp(intercept + slope * offset)
-        historical_low = historical_mid - half_width
-        historical_high = historical_mid + half_width
-        bar_close = _f(bar.get("close"))
-        if historical_low <= bar_close <= historical_high and historical_high > historical_low:
-            step = (historical_high - historical_low) / len(bin_volumes)
-            index = int(math.floor((bar_close - historical_low) / step))
-            index = min(max(index, 0), len(bin_volumes) - 1)
-            bin_volumes[index] += _f(bar.get("volume"))
-    poc_index = max(range(len(bin_volumes)), key=bin_volumes.__getitem__) if any(bin_volumes) else None
-    poc_current = None
-    if poc_index is not None:
-        step = (upper_end - lower_end) / len(bin_volumes)
-        poc_current = lower_end + (poc_index + 0.5) * step
-
-    forward_mid = math.exp(intercept - slope * int(extension_bars))
-    return {
-        "available": True,
-        "source": "bigbeluga_pine_reimplementation",
-        "length": length,
-        "direction": "bull" if reg_end > reg_start else "bear" if reg_end < reg_start else "neutral",
-        "slope_log": slope,
-        "forward_return_pct": (forward_mid / reg_end - 1.0) if reg_end else 0.0,
-        "mid": round(reg_end, 2),
-        "upper": round(upper_end, 2),
-        "lower": round(lower_end, 2),
-        "forward_mid": round(forward_mid, 2),
-        "normalized_position": round(normalized_position, 4),
-        "position": "above" if close > upper_end else "below" if close < lower_end else "inside",
-        "buy_volume_proxy": buy_volume,
-        "sell_volume_proxy": sell_volume,
-        "delta_pct_proxy": round(delta_pct, 3),
-        "poc": round(poc_current, 2) if poc_current is not None else None,
-    }
-
-
-def build_dual_log_regression_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
-    cfg = CHART_CONFIG["dual_log_regression"]
-    macro = build_log_regression_channel(
-        klines,
-        int(cfg["macro_length"]),
-        float(cfg["macro_width"]),
-        int(cfg["macro_bins"]),
-        int(cfg["macro_extension_bars"]),
-    )
-    short = build_log_regression_channel(
-        klines,
-        int(cfg["short_length"]),
-        float(cfg["short_width"]),
-        int(cfg["short_bins"]),
-        int(cfg["short_extension_bars"]),
-    )
-    directions = [item.get("direction") for item in (macro, short) if item.get("available")]
-    if directions and all(direction == "bull" for direction in directions):
-        alignment = "bull"
-    elif directions and all(direction == "bear" for direction in directions):
-        alignment = "bear"
-    else:
-        alignment = "mixed" if directions else "neutral"
-    return {"source": "bigbeluga_pine_reimplementation", "macro": macro, "short": short, "alignment": alignment}
-
-
-def build_classic_market_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
-    """Dow-style swing structure, volume confirmation and market-cycle phase."""
-
-    if len(klines) < 20:
-        return {"available": False, "dow_direction": "neutral", "cycle": "unknown"}
-    highs = [_f(bar.get("high")) for bar in klines]
-    lows = [_f(bar.get("low")) for bar in klines]
-    high_points = _pivot_indices(highs, 5, 5, True)
-    low_points = _pivot_indices(lows, 5, 5, False)
-    last_highs = [item[2] for item in high_points[-2:]]
-    last_lows = [item[2] for item in low_points[-2:]]
-    if len(last_highs) == 2 and len(last_lows) == 2 and last_highs[-1] > last_highs[-2] and last_lows[-1] > last_lows[-2]:
-        dow_direction = "bull"
-        structure = "higher_high_higher_low"
-    elif len(last_highs) == 2 and len(last_lows) == 2 and last_highs[-1] < last_highs[-2] and last_lows[-1] < last_lows[-2]:
-        dow_direction = "bear"
-        structure = "lower_high_lower_low"
-    else:
-        dow_direction = "neutral"
-        structure = "mixed_swings"
-
-    regression = build_dual_log_regression_context(klines)
-    fibonacci = build_fibonacci_ote_context(klines)
-    volume = build_volume_orderflow_proxy(klines)
-    alignment = regression.get("alignment", "neutral")
-    location = fibonacci.get("premium_discount", "unknown")
-    if dow_direction == "bull" and alignment in {"bull", "mixed"}:
-        cycle = "reaccumulation" if location == "discount" else "markup"
-    elif dow_direction == "bear" and alignment in {"bear", "mixed"}:
-        cycle = "distribution" if location == "premium" else "markdown"
-    elif alignment == "bull" and volume.get("signed_cvd_proxy", 0.0) >= 0:
-        cycle = "early_markup"
-    elif alignment == "bear" and volume.get("signed_cvd_proxy", 0.0) <= 0:
-        cycle = "early_markdown"
-    else:
-        cycle = "range_transition"
-
-    return {
-        "available": True,
-        "source": "dow_volume_price_market_cycle",
-        "dow_direction": dow_direction,
-        "structure": structure,
-        "last_swing_highs": [round(value, 2) for value in last_highs],
-        "last_swing_lows": [round(value, 2) for value in last_lows],
-        "cycle": cycle,
-        "volume_confirmation": bool(
-            (dow_direction == "bull" and volume.get("signed_cvd_proxy", 0.0) > 0)
-            or (dow_direction == "bear" and volume.get("signed_cvd_proxy", 0.0) < 0)
-        ),
-    }
-
-
 def build_high_volume_pivot_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
     cfg = CHART_CONFIG["high_volume_pivots"]
     res_len = int(cfg["resistance_length"])
@@ -665,11 +512,10 @@ def build_chart_context(
 ) -> dict[str, Any]:
     if not klines:
         return {"available": False}
+    # dual-log / classic-swing / ICT-MSB hard-deleted from chart context.
     return {
         "available": True,
         "fibonacci": build_fibonacci_ote_context(klines),
-        "dual_log_regression": build_dual_log_regression_context(klines),
-        "classic_market": build_classic_market_context(klines),
         "high_volume_pivots": build_high_volume_pivot_context(klines),
         "fvg_volume_profile": build_fvg_volume_profile_context(klines, lower_klines),
         "volume_orderflow": build_volume_orderflow_proxy(klines),

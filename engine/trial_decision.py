@@ -48,16 +48,10 @@ def _box_context(
     range_lock: dict[str, Any],
     ict: dict[str, Any],
 ) -> tuple[bool, float | None, float | None, float | None, str]:
-    active = bool(range_lock.get("active", False)) or bool(ict.get("coexist", False))
+    # Range box comes from auto_range / range_lock only (ICT coexist deleted).
+    active = bool(range_lock.get("active", False))
     box_low = _f(range_lock.get("box_low"), float("nan"))
     box_high = _f(range_lock.get("box_high"), float("nan"))
-
-    if math.isnan(box_low) or math.isnan(box_high) or box_high <= box_low:
-        bull = _zone(ict.get("bullish_nearest"))
-        bear = _zone(ict.get("bearish_nearest"))
-        if bull and bear:
-            box_low = min(bull[0], bear[0])
-            box_high = max(bull[1], bear[1])
 
     if math.isnan(box_low) or math.isnan(box_high) or box_high <= box_low:
         return active, None, None, None, "unknown"
@@ -87,6 +81,7 @@ def build_trial_context(
     vp: dict[str, Any] | None = None,
     range_lock: dict[str, Any] | None = None,
     ict: dict[str, Any] | None = None,
+    evidence_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build weighted 1H direction context for formal trial decisions.
 
@@ -101,91 +96,31 @@ def build_trial_context(
     vp = vp or {}
     range_lock = range_lock or {}
     ict = ict or {}
+    evidence_bundle = evidence_bundle if isinstance(evidence_bundle, dict) else {}
 
     scores = {"long": 0.0, "short": 0.0}
     evidence = {"long": [], "short": []}
 
-    ict_exact_bonus = 0.5 if bool(ict.get("is_exact", False)) else 0.0
-    if ict.get("bullish_active"):
-        _append_score(scores, evidence, "long", 1.5 + ict_exact_bonus, "ict_plus_ob_active")
-    if ict.get("bearish_active"):
-        _append_score(scores, evidence, "short", 1.5 + ict_exact_bonus, "ict_minus_ob_active")
-
-    bull_dist = ict.get("bullish_distance_atr")
-    bear_dist = ict.get("bearish_distance_atr")
-    if bull_dist is not None and _f(bull_dist, 99.0) <= 0.35:
-        _append_score(scores, evidence, "long", 2.0, "near_ict_plus_ob")
-    if bear_dist is not None and _f(bear_dist, 99.0) <= 0.35:
-        _append_score(scores, evidence, "short", 2.0, "near_ict_minus_ob")
-
-    ict_structure_direction = str(ict.get("structure_direction", "neutral"))
-    ict_structure_event = str(ict.get("structure_event", "none"))
-    ict_structure_age = ict.get("structure_event_age")
-    if ict_structure_direction == "bull":
-        _append_score(scores, evidence, "long", 1.0, "ict_structure_bull")
-    elif ict_structure_direction == "bear":
-        _append_score(scores, evidence, "short", 1.0, "ict_structure_bear")
-    if ict_structure_age is not None and _f(ict_structure_age, 99.0) <= 4:
-        if ict_structure_event == "bullish_mss":
-            _append_score(scores, evidence, "long", 2.5, "fresh_bullish_mss")
-        elif ict_structure_event == "bearish_mss":
-            _append_score(scores, evidence, "short", 2.5, "fresh_bearish_mss")
-        elif ict_structure_event == "bullish_bos":
-            _append_score(scores, evidence, "long", 1.5, "fresh_bullish_bos")
-        elif ict_structure_event == "bearish_bos":
-            _append_score(scores, evidence, "short", 1.5, "fresh_bearish_bos")
-
-    if ict.get("bullish_fvg"):
-        _append_score(scores, evidence, "long", 1.0, "active_ict_bull_fvg")
-    if ict.get("bearish_fvg"):
-        _append_score(scores, evidence, "short", 1.0, "active_ict_bear_fvg")
-    # A broken bullish OB is a bearish breaker; a broken bearish OB is a
-    # bullish breaker.  Keep breaker polarity separate from its origin label.
-    if ict.get("bullish_breakers"):
-        _append_score(scores, evidence, "short", 1.0, "bearish_breaker_context")
-    if ict.get("bearish_breakers"):
-        _append_score(scores, evidence, "long", 1.0, "bullish_breaker_context")
-    premium_discount = str(ict.get("premium_discount", "unknown"))
-    if premium_discount == "discount":
-        _append_score(scores, evidence, "long", 0.5, "ict_discount_location")
-        _append_score(scores, evidence, "short", -0.25, "short_in_discount")
-    elif premium_discount == "premium":
-        _append_score(scores, evidence, "short", 0.5, "ict_premium_location")
-        _append_score(scores, evidence, "long", -0.25, "long_in_premium")
-
-    if bool(liq.get("recent_sweep_valid")):
-        if liq.get("sweep_type") == "sellside" and liq.get("reclaim_or_reject") == "reclaim":
-            _append_score(scores, evidence, "long", 3.5, "sellside_sweep_reclaim")
-        elif liq.get("sweep_type") == "buyside" and liq.get("reclaim_or_reject") == "reject":
-            _append_score(scores, evidence, "short", 3.5, "buyside_sweep_reject")
-
-    msb_direction = str(msb.get("direction", "neutral"))
-    if msb_direction == "bull":
-        _append_score(scores, evidence, "long", 2.5, "msb_bull")
-    elif msb_direction == "bear":
-        _append_score(scores, evidence, "short", 2.5, "msb_bear")
-
-    fvg_direction = str(msb.get("active_fvg_direction", "none"))
-    if fvg_direction == "bull":
-        _append_score(scores, evidence, "long", 1.25, "bull_fvg_context")
-    elif fvg_direction == "bear":
-        _append_score(scores, evidence, "short", 1.25, "bear_fvg_context")
+    # Old ICT Concepts + MSB-OB decision weights/builders are hard-deleted.
+    # Keep OTE (fibonacci) as entry-location only; IFVG / auto_range / sweep /
+    # delta_profile / RAR carry structure weight via the evidence bundle below.
+    _ = ict  # accepted for API compat; never scored
+    ict_structure_event = "none"
+    ict_structure_age = None
 
     matrix_direction = str(matrix.get("matrix_direction", "neutral"))
     matrix_source = str(matrix.get("source", "legacy"))
-    if matrix_direction == "bull":
-        _append_score(scores, evidence, "long", 1.0, "log_regression_bull" if matrix_source == "dual_log_regression" else "matrix_bull")
-    elif matrix_direction == "bear":
-        _append_score(scores, evidence, "short", 1.0, "log_regression_bear" if matrix_source == "dual_log_regression" else "matrix_bear")
-
-    classic = matrix.get("classic_market", {}) if isinstance(matrix.get("classic_market"), dict) else {}
-    dow_direction = str(classic.get("dow_direction", "neutral"))
-    if dow_direction == "bull":
-        _append_score(scores, evidence, "long", 1.0, "dow_hh_hl")
-    elif dow_direction == "bear":
-        _append_score(scores, evidence, "short", 1.0, "dow_lh_ll")
+    # Dual-log / classic-swing channel weights deleted (not scored).
+    _ = (matrix_direction, matrix_source)
 
     fibonacci = msb.get("fibonacci", {}) if isinstance(msb.get("fibonacci"), dict) else {}
+    premium_discount = str(fibonacci.get("premium_discount", "unknown"))
+    if premium_discount == "discount":
+        _append_score(scores, evidence, "long", 0.5, "ote_discount_location")
+        _append_score(scores, evidence, "short", -0.25, "short_in_discount")
+    elif premium_discount == "premium":
+        _append_score(scores, evidence, "short", 0.5, "ote_premium_location")
+        _append_score(scores, evidence, "long", -0.25, "long_in_premium")
     fib_direction = str(fibonacci.get("trend", "neutral"))
     if fib_direction == "bull":
         _append_score(scores, evidence, "long", 0.75, "fibonacci_bull_swing")
@@ -196,67 +131,42 @@ def build_trial_context(
         if fibonacci.get("in_ote"):
             _append_score(scores, evidence, "short", 1.25, "bearish_ote_location")
 
-    if vp.get("reclaimed_val"):
-        _append_score(scores, evidence, "long", 1.5, "value_reclaimed")
-    if vp.get("rejected_vah"):
-        _append_score(scores, evidence, "short", 1.5, "value_rejected")
-    if vp.get("accepted_below_value"):
-        _append_score(scores, evidence, "long", -1.5, "accepted_below_value")
-        _append_score(scores, evidence, "short", 0.75, "accepted_below_value")
-    if vp.get("accepted_above_value"):
-        _append_score(scores, evidence, "short", -1.5, "accepted_above_value")
-        _append_score(scores, evidence, "long", 0.75, "accepted_above_value")
-
-    fvg_profile = vp.get("fvg_profile", {}) if isinstance(vp.get("fvg_profile"), dict) else {}
-    nearest_fvg = fvg_profile.get("nearest") if isinstance(fvg_profile.get("nearest"), dict) else None
-    if nearest_fvg:
-        fvg_side = str(nearest_fvg.get("direction", "none"))
-        distance = _f(nearest_fvg.get("distance"), 99.0) / atr
-        if distance <= 0.35 and fvg_side == "bull":
-            _append_score(scores, evidence, "long", 1.0, "near_bull_fvg_volume_poc")
-        elif distance <= 0.35 and fvg_side == "bear":
-            _append_score(scores, evidence, "short", 1.0, "near_bear_fvg_volume_poc")
-
-    volume_pivots = vp.get("high_volume_pivots", {}) if isinstance(vp.get("high_volume_pivots"), dict) else {}
-    support = volume_pivots.get("support") if isinstance(volume_pivots.get("support"), dict) else None
-    resistance = volume_pivots.get("resistance") if isinstance(volume_pivots.get("resistance"), dict) else None
-    if support and _distance_to_zone(close, support.get("zone")) is not None and _f(_distance_to_zone(close, support.get("zone")), 99.0) / atr <= 0.35:
-        side = "short" if support.get("broken") else "long"
-        _append_score(scores, evidence, side, 1.25, "flipped_volume_support" if support.get("broken") else "high_volume_support")
-    if resistance and _distance_to_zone(close, resistance.get("zone")) is not None and _f(_distance_to_zone(close, resistance.get("zone")), 99.0) / atr <= 0.35:
-        side = "long" if resistance.get("broken") else "short"
-        _append_score(scores, evidence, side, 1.25, "flipped_volume_resistance" if resistance.get("broken") else "high_volume_resistance")
+    # Old VP main-path scoring (reclaimed_val / vah / fvg_profile /
+    # high_volume_pivots) removed. Profile weight comes only from evidence
+    # delta_profile (or vp.delta_profile merge) below.
 
     rar_slope = _f(aux.get("rar_slope"))
-    inertia_slope = _f(aux.get("inertia_slope"))
+    # Inertial fully peeled from trial scoring and phase detection.
+    _ = aux.get("inertia_slope")
     if rar_slope >= 0.35:
         _append_score(scores, evidence, "long", 1.0, "rar_turn_up")
     elif rar_slope <= -0.35:
         _append_score(scores, evidence, "short", 1.0, "rar_turn_down")
-    if inertia_slope >= 0.35:
-        _append_score(scores, evidence, "long", 1.0, "inertial_turn_up")
-    elif inertia_slope <= -0.35:
-        _append_score(scores, evidence, "short", 1.0, "inertial_turn_down")
-    if aux.get("inertia_turn_up"):
-        _append_score(scores, evidence, "long", 1.5, "inertial_red_to_green")
-    elif aux.get("inertia_turn_down"):
-        _append_score(scores, evidence, "short", 1.5, "inertial_green_to_red")
     if aux.get("rar_above_trigger") and rar_slope >= 0:
         _append_score(scores, evidence, "long", 0.5, "rar_above_trigger")
     elif not aux.get("rar_above_trigger", True) and rar_slope <= 0:
         _append_score(scores, evidence, "short", 0.5, "rar_below_trigger")
 
     momentum = str(aux.get("momentum_desc", ""))
-    if "偏强" in momentum or "买盘" in momentum or ("修复" in momentum and rar_slope + inertia_slope > 0):
+    if "偏强" in momentum or "买盘" in momentum or ("修复" in momentum and rar_slope > 0):
         _append_score(scores, evidence, "long", 1.5, "momentum_supports_long")
     if "偏弱" in momentum or "卖压" in momentum or "转弱" in momentum:
         _append_score(scores, evidence, "short", 1.5, "momentum_supports_short")
 
-    temperature = str(aux.get("temperature_desc", ""))
-    if "过热" in temperature:
-        _append_score(scores, evidence, "long", -0.5, "overheated")
-    elif "过冷" in temperature:
-        _append_score(scores, evidence, "short", -0.5, "overcold")
+    # 1H formation/TAI temperature peeled; core-levels filter is soft lean only.
+    # Prefer scanner evidence_bundle; fall back to aux side-channel.
+    core = evidence_bundle.get("core_levels_filter") if isinstance(evidence_bundle.get("core_levels_filter"), dict) else {}
+    if not core:
+        core = aux.get("core_levels_filter") if isinstance(aux.get("core_levels_filter"), dict) else {}
+    if core.get("allowed") and core.get("filter_only", True):
+        if core.get("midline_event") == "reclaim_above_50":
+            _append_score(scores, evidence, "long", 0.5, "core_levels_reclaim_50")
+        elif core.get("midline_event") == "loss_below_50":
+            _append_score(scores, evidence, "short", 0.5, "core_levels_loss_50")
+        elif core.get("lean") == "bull" and not core.get("squeeze"):
+            _append_score(scores, evidence, "long", 0.25, "core_levels_bull_lean")
+        elif core.get("lean") == "bear" and not core.get("squeeze"):
+            _append_score(scores, evidence, "short", 0.25, "core_levels_bear_lean")
 
     volume_flow = aux.get("volume_orderflow", {}) if isinstance(aux.get("volume_orderflow"), dict) else {}
     if volume_flow.get("downside_stop_run"):
@@ -279,6 +189,74 @@ def build_trial_context(
     elif h4 == "bear" or "偏空" in htf_text:
         _append_score(scores, evidence, "short", 0.75, "h4_bear_background")
 
+    # --- Candle-approx evidence: prefer scanner evidence_bundle; side-channels are fallback ---
+    auto_range = evidence_bundle.get("auto_range") if isinstance(evidence_bundle.get("auto_range"), dict) else {}
+    if not auto_range:
+        auto_range = range_lock.get("auto_range") if isinstance(range_lock.get("auto_range"), dict) else {}
+    last_range_event = auto_range.get("last_event")
+    if last_range_event == "deviation_down":
+        _append_score(scores, evidence, "long", 1.5, "range_reclaim_after_break_down")
+    elif last_range_event == "deviation_up":
+        _append_score(scores, evidence, "short", 1.5, "range_reclaim_after_break_up")
+    # pending_break is status-only (exposed on auto_range); never adds direction score.
+    _ = auto_range.get("pending_break")
+
+    # Sweep weight: evidence.sweep only (liq.sweep_hunter is the merge target
+    # of sweep_hunter). Legacy liq sellside/buyside +3.5 path hard-deleted.
+    sweep_ctx = evidence_bundle.get("sweep") if isinstance(evidence_bundle.get("sweep"), dict) else {}
+    if not sweep_ctx:
+        sweep_ctx = liq.get("sweep_hunter") if isinstance(liq.get("sweep_hunter"), dict) else {}
+    if sweep_ctx.get("swept") and sweep_ctx.get("recent_sweep_valid"):
+        if sweep_ctx.get("side") == "sell_side" and sweep_ctx.get("reclaim_or_reject") == "reclaim":
+            _append_score(scores, evidence, "long", 2.0, "sweep_sell_side_reclaim")
+        elif sweep_ctx.get("side") == "buy_side" and sweep_ctx.get("reclaim_or_reject") == "reject":
+            _append_score(scores, evidence, "short", 2.0, "sweep_buy_side_reject")
+
+    delta = evidence_bundle.get("delta_profile") if isinstance(evidence_bundle.get("delta_profile"), dict) else {}
+    if not delta:
+        delta = vp.get("delta_profile") if isinstance(vp.get("delta_profile"), dict) else {}
+    # Read bias only from delta_profile — never raw vp.vah/val/node fields.
+    node_bias = str(delta.get("node_bias") or "neutral")
+    va_pos = str(delta.get("value_area_pos") or "inside")
+    if node_bias == "bull" and va_pos in {"inside", "above"}:
+        _append_score(scores, evidence, "long", 1.0, "profile_node_bull")
+    elif node_bias == "bear" and va_pos in {"inside", "below"}:
+        _append_score(scores, evidence, "short", 1.0, "profile_node_bear")
+
+    # Prefer evidence.ifvg (scanner canonical); fall back to range_lock.imbalance
+    imbalance = evidence_bundle.get("ifvg") if isinstance(evidence_bundle.get("ifvg"), dict) else {}
+    if not imbalance:
+        imbalance = range_lock.get("imbalance") if isinstance(range_lock.get("imbalance"), dict) else {}
+    nearest_imb = imbalance.get("nearest_active") if isinstance(imbalance.get("nearest_active"), dict) else None
+    if nearest_imb and nearest_imb.get("inverted") and not nearest_imb.get("invalidated"):
+        # inverted gap: direction 1 (bullish origin) acting as resistance after invert → short lean
+        if int(nearest_imb.get("direction") or 0) == 1:
+            _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
+        elif int(nearest_imb.get("direction") or 0) == -1:
+            _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
+
+    # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
+    # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
+    # core_levels remains soft filter-only weight, never structure confluence.
+    _confluence_tokens = {
+        "long": (
+            "range_reclaim_after_break_down",
+            "sweep_sell_side_reclaim",
+            "profile_node_bull",
+            "imbalance_inverted_support",
+        ),
+        "short": (
+            "range_reclaim_after_break_up",
+            "sweep_buy_side_reject",
+            "profile_node_bear",
+            "imbalance_inverted_resistance",
+        ),
+    }
+    for _side, _tokens in _confluence_tokens.items():
+        _hits = sum(1 for token in _tokens if any(token in r for r in evidence[_side]))
+        if _hits >= 2:
+            _append_score(scores, evidence, _side, 0.75, "evidence_confluence")
+
     range_active, box_low, box_high, box_ratio, box_position = _box_context(close, range_lock, ict)
     if range_active and box_position == "lower_edge":
         _append_score(scores, evidence, "long", 1.5, "range_lower_location")
@@ -299,9 +277,9 @@ def build_trial_context(
     if range_active:
         delta = scores["long"] - scores["short"]
         phase = "range_bullish" if delta >= 2.0 else "range_bearish" if delta <= -2.0 else "range_neutral"
-    elif price_impulse <= -0.75 and rar_slope + inertia_slope > 0:
+    elif price_impulse <= -0.75 and rar_slope > 0:
         phase = "selloff_repair"
-    elif price_impulse >= 0.75 and rar_slope + inertia_slope < 0:
+    elif price_impulse >= 0.75 and rar_slope < 0:
         phase = "rebound_pressure"
     elif scores["long"] > scores["short"]:
         phase = "trend_up"
@@ -318,13 +296,17 @@ def build_trial_context(
         "box_ratio": box_ratio,
         "box_position": box_position,
         "range_cluster": str(range_lock.get("cluster", "")),
-        "accepted_breakout": str(range_lock.get("accepted_breakout", "none")),
-        "ict_ob_coexist": bool(ict.get("coexist", False)),
-        "ict_ob_source": str(ict.get("source", "none")),
-        "ict_bullish_active": bool(ict.get("bullish_active", False)),
-        "ict_bearish_active": bool(ict.get("bearish_active", False)),
-        "ict_bullish_distance_atr": ict.get("bullish_distance_atr"),
-        "ict_bearish_distance_atr": ict.get("bearish_distance_atr"),
+        "accepted_breakout": str(
+            range_lock.get("accepted_breakout")
+            or auto_range.get("accepted_breakout")
+            or "none"
+        ),
+        "ict_ob_coexist": False,
+        "ict_ob_source": "deleted",
+        "ict_bullish_active": False,
+        "ict_bearish_active": False,
+        "ict_bullish_distance_atr": None,
+        "ict_bearish_distance_atr": None,
         "ict_structure_event": ict_structure_event,
         "ict_structure_event_age": ict_structure_age,
         "liquidity_bars_since": liq.get("bars_since_sweep"),
@@ -335,9 +317,10 @@ def build_trial_context(
         "orderflow_source": str(volume_flow.get("source", "none")),
         "is_true_orderflow": bool(volume_flow.get("is_true_orderflow", False)),
         "chart_framework_active": bool(
-            str(ict.get("source", "none")) in {"luxalgo_pine_reimplementation", "explicit_feed"}
-            or str(matrix.get("source", "none")) == "dual_log_regression"
-            or bool(volume_flow)
+            bool(auto_range) or bool(sweep_ctx) or bool(delta) or bool(imbalance) or bool(volume_flow)
+        ),
+        "evidence_bundle_keys": sorted(
+            k for k, v in evidence_bundle.items() if isinstance(v, dict) and v
         ),
         "scores": scores,
         "evidence": evidence,
@@ -421,18 +404,13 @@ def assess_trial_candidate(
         reaction_score += 0.75
         reasons.append("upper_wick_reaction:+0.75")
 
-    if (side == "long" and zone_source == "ict_plus_ob") or (side == "short" and zone_source == "ict_minus_ob"):
-        reaction_score += 1.5
-        reasons.append("matching_ict_ob:+1.50")
-    elif zone_source in {"fvg_zone", "fvg_volume_profile"}:
-        reaction_score += 0.75
-        reasons.append("matching_fvg:+0.75")
+    if zone_source in {"ifvg_zone", "imbalance_zone"}:
+        reaction_score += 1.25
+        reasons.append("matching_ifvg:+1.25")
     elif zone_source == "fibonacci_ote":
         reaction_score += 1.0
         reasons.append("matching_ote:+1.00")
-    elif zone_source in {"high_volume_support", "high_volume_resistance"}:
-        reaction_score += 0.75
-        reasons.append("matching_volume_pivot:+0.75")
+    # Old fvg_volume_profile / high_volume_* zone reaction bonuses removed.
 
     score += reaction_score
     direction_advantage = score - opposite_score
@@ -479,36 +457,32 @@ def assess_trial_candidate(
     else:
         reward_risk = None
 
+    reason_blob = " ".join(reasons)
     matching_fresh_event = (
-        (side == "long" and "sellside_sweep_reclaim" in " ".join(reasons))
-        or (side == "short" and "buyside_sweep_reject" in " ".join(reasons))
+        (side == "long" and "sweep_sell_side_reclaim" in reason_blob)
+        or (side == "short" and "sweep_buy_side_reject" in reason_blob)
         or breakout_matches
     )
-    bull_dist = trial_context.get("ict_bullish_distance_atr")
-    bear_dist = trial_context.get("ict_bearish_distance_atr")
     reason_text = " ".join(reasons)
-    fresh_structure_matches = (
-        side == "long"
-        and any(token in reason_text for token in ("fresh_bullish_mss", "fresh_bullish_bos"))
-    ) or (
-        side == "short"
-        and any(token in reason_text for token in ("fresh_bearish_mss", "fresh_bearish_bos"))
-    )
+    evidence_keys = list(trial_context.get("evidence_bundle_keys") or [])
+    # MSS/BOS from deleted ICT stack no longer qualify as fresh structure.
+    fresh_structure_matches = False
     rar_aligned = (side == "long" and "rar_turn_up" in reason_text) or (side == "short" and "rar_turn_down" in reason_text)
-    inertial_aligned = (
-        side == "long" and ("inertial_turn_up" in reason_text or "inertial_red_to_green" in reason_text)
-    ) or (
-        side == "short" and ("inertial_turn_down" in reason_text or "inertial_green_to_red" in reason_text)
+    # core_levels_* is soft filter score only — excluded from catalyst alignment.
+    evidence_aux_aligned = any(
+        token in reason_text
+        for token in (
+            "sweep_sell_side_reclaim" if side == "long" else "sweep_buy_side_reject",
+            "range_reclaim_after_break_down" if side == "long" else "range_reclaim_after_break_up",
+            "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
+            "profile_node_bull" if side == "long" else "profile_node_bear",
+            "evidence_confluence",
+        )
     )
-    matching_distance = bull_dist if side == "long" else bear_dist
-    near_matching_ict_ob = matching_distance is not None and _f(matching_distance, 99.0) <= 0.35
     structure_aligned = any(
         token in reason_text
         for token in (
-            "msb_bull" if side == "long" else "msb_bear",
-            "ict_structure_bull" if side == "long" else "ict_structure_bear",
             "fibonacci_bull_swing" if side == "long" else "fibonacci_bear_swing",
-            "log_regression_bull" if side == "long" else "log_regression_bear",
         )
     )
     volume_catalyst = any(
@@ -519,16 +493,38 @@ def assess_trial_candidate(
             "sell_absorption_proxy" if side == "long" else "buy_absorption_proxy",
         )
     )
+    # Gate: directional catalyst needs evidence/RAR/volume/OTE-IFVG reaction —
+    # not deleted ICT/MSB proximity and not core_levels soft filter alone.
     auxiliary_reversal = (
-        near_matching_ict_ob and rar_aligned and inertial_aligned
+        structure_aligned and (rar_aligned or evidence_aux_aligned)
     ) or (
-        structure_aligned
-        and (
-            (rar_aligned and inertial_aligned)
-            or (near_matching_ict_ob and (rar_aligned or inertial_aligned))
-        )
+        rar_aligned and evidence_aux_aligned
     )
-    directional_catalyst = bool(matching_fresh_event or fresh_structure_matches or volume_catalyst or auxiliary_reversal)
+    momentum_aligned = (
+        (side == "long" and "momentum_supports_long" in reason_text)
+        or (side == "short" and "momentum_supports_short" in reason_text)
+    )
+    poi_reaction = alert_type in formal_reactions and zone_source in {
+        "ifvg_zone",
+        "imbalance_zone",
+        "fibonacci_ote",
+    }
+    poi_catalyst = bool(poi_reaction and (rar_aligned or momentum_aligned or evidence_aux_aligned))
+    # RAR (or momentum) plus a non-empty evidence bundle is enough — replaces
+    # deleted ICT-proximity catalyst without letting empty-evidence mass-fire.
+    evidence_rar_catalyst = bool(
+        evidence_keys
+        and (rar_aligned or momentum_aligned)
+        and any(k in evidence_keys for k in ("ifvg", "sweep", "auto_range", "delta_profile"))
+    )
+    directional_catalyst = bool(
+        matching_fresh_event
+        or fresh_structure_matches
+        or volume_catalyst
+        or auxiliary_reversal
+        or poi_catalyst
+        or evidence_rar_catalyst
+    )
     # The pending-confirmation engine separately requires a real post-trial
     # push out of the parent zone.  That push is new directional information;
     # demanding another sweep/MSS on the same candle would silently disable
@@ -543,30 +539,16 @@ def assess_trial_candidate(
         and not matching_fresh_event
     ):
         hard_blocks.append("missed_early_window")
-    if (
-        side == "short"
-        and trial_context.get("ict_bullish_active")
-        and not trial_context.get("ict_bearish_active")
-        and bull_dist is not None
-        and _f(bull_dist, 99.0) <= 0.20
-        and not matching_fresh_event
-    ):
-        hard_blocks.append("short_into_active_ict_plus_ob")
-    if (
-        side == "long"
-        and trial_context.get("ict_bearish_active")
-        and not trial_context.get("ict_bullish_active")
-        and bear_dist is not None
-        and _f(bear_dist, 99.0) <= 0.20
-        and not matching_fresh_event
-    ):
-        hard_blocks.append("long_into_active_ict_minus_ob")
-
-    if trial_context.get("ict_ob_coexist") and not effective_directional_catalyst:
-        hard_blocks.append("ict_coexist_without_fresh_directional_evidence")
-
+    # Formal alerts require a directional catalyst when the candle-evidence
+    # framework is active. Evidence-empty / weak bars cannot pass on OTE soft
+    # location alone (formal_without_directional_catalyst).
     if trial_context.get("chart_framework_active") and not effective_directional_catalyst:
         hard_blocks.append("formal_without_directional_catalyst")
+    # Empty evidence bundle cannot mass-fire on soft location alone; require a
+    # directional catalyst (sweep/IFVG/OTE+RAR/volume). Deleted ICT/MSB scores
+    # no longer satisfy this gate.
+    if not evidence_keys and not effective_directional_catalyst:
+        hard_blocks.append("formal_without_evidence")
 
     if opposite_score - score >= float(cfg.get("opposite_conflict_margin", 2.5)):
         hard_blocks.append("opposite_structure_dominates")

@@ -8,14 +8,15 @@ from engine.chart_indicators import build_chart_context
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
 from engine.framework import build_htf_bias_context
-from engine.ict_ob import build_ict_ob_context
 from engine.liquidity import build_liquidity_context
 from engine.key_zones import decide_key_zone_observation
 from engine.late_filter import apply_late_filter
 from engine.market_data import BinanceMarketDataClient
-from engine.msb_ob import build_msb_ob_context
 from engine.runtime_state import RuntimeStateStore
 from engine.range_lock import build_range_lock_context
+from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
+from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
+from engine.ifvg import build_ifvg_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message
@@ -86,12 +87,10 @@ class SMCTScanner:
             klines_4h = self._fetch_enriched("4h")
             klines_1h = self._fetch_enriched("1h")
             liq = build_liquidity_context(klines_1h)
-            msb = build_msb_ob_context(klines_1h, liq)
-            ict = build_ict_ob_context(klines_1h)
             chart_1h = build_chart_context(klines_1h)
-            msb["fibonacci"] = chart_1h.get("fibonacci", {})
-            msb["classic_market"] = chart_1h.get("classic_market", {})
-            ict["killzone"] = chart_1h.get("killzone", {})
+            # ICT/MSB builders hard-deleted. msb shell carries OTE/fibonacci only.
+            msb = {"direction": "neutral", "fibonacci": chart_1h.get("fibonacci", {})}
+            ict: dict = {}
             matrix = build_trend_matrix_proxy(klines_1h)
             vp = build_volume_profile_context(klines_1h)
             aux = build_aux_filters_proxy(klines_1h, klines_4h)
@@ -99,12 +98,11 @@ class SMCTScanner:
             aux["killzone"] = chart_1h.get("killzone", {})
             aux["fibonacci"] = chart_1h.get("fibonacci", {})
             liq_4h = build_liquidity_context(klines_4h)
-            msb_4h = build_msb_ob_context(klines_4h, liq_4h)
-            ict_4h = build_ict_ob_context(klines_4h)
             chart_4h = build_chart_context(klines_4h)
-            direction_1h_source = str(ict.get("structure_direction", "neutral"))
-            if direction_1h_source not in {"bull", "bear"}:
-                direction_1h_source = str(msb.get("direction", "neutral"))
+            msb_4h = {"direction": "neutral", "fibonacci": chart_4h.get("fibonacci", {})}
+            ict_4h: dict = {}
+            fib_trend = str((chart_1h.get("fibonacci") or {}).get("trend", "neutral"))
+            direction_1h_source = fib_trend if fib_trend in {"bull", "bear"} else "neutral"
             htf = self._htf_context(
                 klines_4h,
                 "long" if direction_1h_source == "bull" else "short" if direction_1h_source == "bear" else "neutral",
@@ -113,7 +111,21 @@ class SMCTScanner:
                 ict=ict_4h,
                 chart=chart_4h,
             )
+            # Evidence helpers (candle approx); merge into legacy liq/vp fields
+            sweep = build_sweep_context(klines_1h)
+            liq = merge_sweep_into_liquidity(liq, sweep)
+            delta_profile = build_delta_profile_context(klines_1h)
+            vp = merge_delta_into_vp(vp, delta_profile)
+            ifvg = build_ifvg_context(klines_1h, timeframe="1h")
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
+            range_lock["imbalance"] = ifvg  # legacy side-channel; trial prefers evidence.ifvg
+            evidence_bundle = {
+                "auto_range": range_lock.get("auto_range"),
+                "sweep": sweep,
+                "delta_profile": delta_profile,
+                "ifvg": ifvg,
+                "core_levels_filter": aux.get("core_levels_filter"),
+            }
             trend_state = load_trend_state(self.symbol, "1h")
             decision = decide_trend_segment(self.symbol, "1h", htf, liq, msb, matrix, aux, trend_state=trend_state, vp=vp, ict=ict)
 
@@ -134,6 +146,7 @@ class SMCTScanner:
                         vp=vp,
                         range_lock=range_lock,
                         ict=ict,
+                        evidence_bundle=evidence_bundle,
                     )
                     if observation.get("observation_update") is not None and not observation.get("should_alert"):
                         save_observation_state(self.symbol, "1h", observation["observation_update"])
@@ -153,6 +166,7 @@ class SMCTScanner:
                 # A late/invalid secondary confirmation is terminal.  Clear its
                 # pending state even though no Telegram message is sent.
                 save_observation_state(self.symbol, "1h", decision["observation_update"])
+            decision["evidence"] = evidence_bundle
             decision["signature"] = make_snapshot_key(decision)
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 

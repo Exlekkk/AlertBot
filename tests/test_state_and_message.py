@@ -5,6 +5,25 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 
+def _ifvg_evidence(zone, *, bull: bool = True) -> dict:
+    """Build evidence.ifvg for tests after MSB/ICT hard-delete."""
+    low, high = min(zone), max(zone)
+    return {
+        "ifvg": {
+            "nearest_active": {
+                "top": high,
+                "bottom": low,
+                "direction": 1 if bull else -1,
+                "inverted": False,
+                "invalidated": False,
+            },
+            "zones": [],
+            "approx": True,
+        }
+    }
+
+
+
 def _heat_profile(budget: str = "normal") -> dict:
     return {
         "tai_heat_15m": "warm",
@@ -17,123 +36,6 @@ def _heat_profile(budget: str = "normal") -> dict:
         "tai_rising_1h": True,
     }
 
-
-class SignalConfidenceTests(unittest.TestCase):
-    def test_a_confidence_only_high_when_clean(self):
-        from engine.signals import _signal_confidence
-
-        clean = _signal_confidence(
-            "A_LONG",
-            "trend_drive_long",
-            6,
-            "confirm_long",
-            ["structure", "decision_zone", "ema_supportive", "momo_1h"],
-            _heat_profile("normal"),
-            "bull",
-        )
-        weak = _signal_confidence(
-            "A_LONG",
-            "trend_drive_long",
-            3,
-            "repairing_long",
-            ["decision_zone"],
-            _heat_profile("restricted"),
-            "lean_bull",
-        )
-
-        self.assertGreaterEqual(clean, 80)
-        self.assertLess(weak, clean)
-        self.assertLessEqual(clean, 88)
-
-    def test_b_confidence_not_artificially_high(self):
-        from engine.signals import _signal_confidence
-
-        b_value = _signal_confidence(
-            "B_PULLBACK_SHORT",
-            "repair_short",
-            4,
-            "repairing_short",
-            ["decision_zone", "trigger_repair"],
-            _heat_profile("normal"),
-            "bear",
-        )
-
-        self.assertGreaterEqual(b_value, 58)
-        self.assertLessEqual(b_value, 82)
-
-    def test_c_confidence_stays_low_to_mid(self):
-        from engine.signals import _signal_confidence
-
-        c_value = _signal_confidence(
-            "C_LEFT_LONG",
-            "probe_long",
-            3,
-            "probing_long",
-            ["decision_zone", "early_warning"],
-            _heat_profile("normal"),
-            "neutral",
-        )
-
-        self.assertGreaterEqual(c_value, 50)
-        self.assertLessEqual(c_value, 70)
-
-    def test_counter_trend_a_gets_pulled_down(self):
-        from engine.signals import _signal_confidence
-
-        normal = _signal_confidence(
-            "A_SHORT",
-            "trend_drive_short",
-            4,
-            "confirm_short",
-            ["structure", "decision_zone"],
-            _heat_profile("normal"),
-            "bear",
-        )
-        counter = _signal_confidence(
-            "A_SHORT",
-            "trend_drive_short",
-            4,
-            "confirm_short",
-            ["structure", "decision_zone"],
-            _heat_profile("normal"),
-            "lean_bull",
-        )
-
-        self.assertLess(counter, normal)
-
-    def test_low_heat_budget_reduces_confidence(self):
-        from engine.signals import _signal_confidence
-
-        normal = _signal_confidence(
-            "B_PULLBACK_LONG",
-            "repair_long",
-            5,
-            "repairing_long",
-            ["decision_zone", "trigger_repair", "momo_15m"],
-            _heat_profile("normal"),
-            "bull",
-        )
-        restricted = _signal_confidence(
-            "B_PULLBACK_LONG",
-            "repair_long",
-            5,
-            "repairing_long",
-            ["decision_zone", "trigger_repair", "momo_15m"],
-            _heat_profile("restricted"),
-            "bull",
-        )
-        frozen = _signal_confidence(
-            "B_PULLBACK_LONG",
-            "repair_long",
-            5,
-            "repairing_long",
-            ["decision_zone", "trigger_repair", "momo_15m"],
-            _heat_profile("frozen"),
-            "bull",
-        )
-
-        self.assertLess(restricted, normal)
-        self.assertLess(frozen, restricted)
 
 
 class XSignalCompatibilityTests(unittest.TestCase):
@@ -268,7 +170,6 @@ class TelegramSendTests(unittest.TestCase):
         with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
              patch("engine.scanner.build_liquidity_context", return_value=liq), \
-             patch("engine.scanner.build_msb_ob_context", return_value=msb), \
              patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "bull"}), \
              patch("engine.scanner.build_aux_filters_proxy", return_value={"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 111.0}), \
              patch("engine.scanner.load_trend_state", return_value={"direction": "neutral", "has_snapshot": False}), \
@@ -524,7 +425,6 @@ class ScannerPipelineTests(unittest.TestCase):
         with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
              patch("engine.scanner.build_liquidity_context", return_value={"sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False, "prev_low": 90.0, "prev_high": 110.0}), \
-             patch("engine.scanner.build_msb_ob_context", return_value={"direction": "neutral", "leg_type": "SHORT", "quality": 0, "structure_zone": (99.0, 101.0), "order_block_zone": (98.0, 102.0), "mid_observe_zone": (99.5, 100.5), "metrics": {"atr_move": 0, "range_ratio": 0, "body_quality": 0}}), \
              patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "neutral"}), \
              patch("engine.scanner.build_aux_filters_proxy", return_value={"momentum_desc": "动能 一般", "temperature_desc": "热度 中性", "price": 100.0}), \
              patch("engine.scanner.load_trend_state", return_value={"direction": "neutral", "has_snapshot": False}):
@@ -671,7 +571,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(decision["should_alert"])
         self.assertEqual(decision["alert_type"], "FAST_PULLBACK_OBSERVE")
         self.assertEqual(decision["direction"], "long")
-        self.assertEqual(decision["zone_source"], "fvg_zone")
+        self.assertEqual(decision["zone_source"], "ifvg_zone")
 
     def test_key_zone_cooldown_suppresses_only_unchanged_inside_zone(self):
         decide, klines, htf, liq, msb, matrix, aux = self._pullback_inputs()
@@ -868,6 +768,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             msb,
             {},
             {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 中性", "price": 9990, "rar_slope": -1.0},
+            evidence_bundle=_ifvg_evidence((10000, 10120), bull=False),
             observation_state={"inside_zone": False},
         )
 
@@ -923,6 +824,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             msb,
             {},
             {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
+            evidence_bundle=_ifvg_evidence((9950, 10020), bull=True),
             observation_state={"inside_zone": False},
         )
 
@@ -1056,21 +958,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "structure_zone": (9850, 10050),
             "order_block_zone": (9850, 10050),
             "mid_observe_zone": (9850, 10050),
-            "active_fvg_zone": None,
-            "active_fvg_direction": "none",
-            "active_fvg_age": None,
+            "active_fvg_zone": (9700.0, 9850.0),
+            "active_fvg_direction": "bull",
+            "active_fvg_age": 1,
             "metrics": {},
-        }
-        ict = {
-            "source": "explicit_feed",
-            "is_exact": True,
-            "bullish_active": True,
-            "bearish_active": True,
-            "coexist": True,
-            "bullish_nearest": (9700.0, 9850.0),
-            "bearish_nearest": (10100.0, 10200.0),
-            "bullish_distance_atr": 0.0,
-            "bearish_distance_atr": 2.8,
+            "fibonacci": {},
         }
         decision = decide_key_zone_observation(
             "BTCUSDT",
@@ -1092,7 +984,7 @@ class KeyZoneObservationTests(unittest.TestCase):
             },
             observation_state={"inside_zone": False},
             range_lock={"active": True, "cluster": "box-b", "box_low": 9700.0, "box_high": 10200.0},
-            ict=ict,
+            evidence_bundle=_ifvg_evidence((9700.0, 9850.0), bull=True),
         )
 
         self.assertTrue(decision["should_alert"])
@@ -1186,22 +1078,20 @@ class AuxFilterCalibrationTests(unittest.TestCase):
             "atr": atr,
         }
 
-    def test_tai_uses_visible_p20_p40_p60_p80_bands(self):
+    def test_1h_aux_peels_formation_temperature_and_exposes_core_levels(self):
         from engine.aux_filters import build_aux_filters_proxy
 
         klines = [self._bar(10000 + i, rar=45 + (i % 5), tai=19.8) for i in range(71)]
-
-        # 19.86 is between P40=19.7 and P60=19.9, so it is neutral,
-        # not cold/over-cold.  Below P20 is the only over-cold region.
         klines.append(self._bar(10080, rar=48, tai=19.86))
         aux = build_aux_filters_proxy(klines, klines[-4:])
 
+        # Formation/participation shadow is 15m-only; 1H aux stays neutral heat.
         self.assertEqual(aux["temperature_desc"], "热度 中性")
-        self.assertEqual(aux["tai_percentile"], 0.50)
-
-        klines[-1] = self._bar(10080, rar=48, tai=19.49)
-        aux_cold = build_aux_filters_proxy(klines, klines[-4:])
-        self.assertEqual(aux_cold["temperature_desc"], "热度 过冷")
+        self.assertIsNone(aux["tai_percentile"])
+        self.assertFalse(aux.get("formation_shadow_1h"))
+        self.assertIn("core_levels_filter", aux)
+        self.assertTrue(aux["core_levels_filter"].get("filter_only"))
+        self.assertFalse(aux["core_levels_filter"].get("should_alert"))
 
     def test_momentum_detects_sell_pressure_release_from_price_and_rar_slope(self):
         from engine.aux_filters import build_aux_filters_proxy
@@ -1244,18 +1134,24 @@ class NoMacdAndTrueTaiTests(unittest.TestCase):
         aux = build_aux_filters_proxy(klines, klines[-4:])
 
         self.assertNotIn("macd", aux)
-        self.assertIn("tai_value", aux)
-        self.assertIn("tai_p20", aux)
-        self.assertEqual(aux["temperature_desc"], "热度 过热")
+        self.assertEqual(aux["temperature_desc"], "热度 中性")
+        self.assertEqual(aux["inertia_source"], "peeled")
 
-    def test_tai_uses_dollar_volume_percentile_bands_when_tv_fields_absent(self):
-        from engine.aux_filters import build_aux_filters_proxy
+    def test_formation_shadow_uses_dollar_volume_percentile_bands_on_15m(self):
+        from engine.formation_shadow import build_formation_shadow
 
         klines = [self._tai_bar(10000.0, 1000.0 + i * 10.0) for i in range(300)]
-        aux = build_aux_filters_proxy(klines, klines[-4:])
+        shadow = build_formation_shadow(klines, timeframe="15m")
 
-        self.assertGreater(aux["tai_value"], aux["tai_p80"])
-        self.assertEqual(aux["temperature_desc"], "热度 过热")
+        self.assertEqual(shadow["reason"], "ok")
+        self.assertTrue(shadow["shadow_only"])
+        self.assertFalse(shadow["should_alert"])
+        self.assertGreater(shadow["value"], shadow["p80"])
+        self.assertEqual(shadow["regime"], "very_warm")
+
+        blocked = build_formation_shadow(klines, timeframe="1h")
+        self.assertFalse(blocked["allowed"])
+        self.assertEqual(blocked["reason"], "timeframe_not_allowed")
 
     def test_sweep_alone_without_fvg_or_structure_context_does_not_observe_range_edge(self):
         from engine.key_zones import decide_key_zone_observation
@@ -1531,87 +1427,8 @@ class V139LayeredDecisionTests(unittest.TestCase):
             "metrics": {},
         }
 
-    def test_exact_ict_plus_minus_fields_are_separate_and_can_coexist(self):
-        from engine.ict_ob import build_ict_ob_context
 
-        bars = [self._bar(10000, 10050, 9950, 10000) for _ in range(20)]
-        bars[-1].update(
-            {
-                "ict_plus_ob_low": 9750.0,
-                "ict_plus_ob_high": 9900.0,
-                "ict_minus_ob_low": 10100.0,
-                "ict_minus_ob_high": 10250.0,
-            }
-        )
-        context = build_ict_ob_context(bars)
 
-        self.assertTrue(context["is_exact"])
-        self.assertEqual(context["source"], "explicit_feed")
-        self.assertTrue(context["bullish_active"])
-        self.assertTrue(context["bearish_active"])
-        self.assertTrue(context["coexist"])
-        self.assertEqual(context["bullish_nearest"], (9750.0, 9900.0))
-        self.assertEqual(context["bearish_nearest"], (10100.0, 10250.0))
-
-    def test_ict_coexistence_creates_box_state_without_msb_aliasing(self):
-        from engine.range_lock import build_range_lock_context
-
-        bars = [self._bar(10000, 10500, 9500, 10000) for _ in range(18)]
-        context = build_range_lock_context(
-            bars,
-            {"text": "4H 偏多", "relation": "aligned"},
-            self._neutral_liq(),
-            {"direction": "bull", "leg_type": "LONG", "quality": 90},
-            {"matrix_direction": "bull"},
-            {},
-            {"inside_value_area": False},
-            ict={"coexist": True, "source": "explicit_feed"},
-        )
-
-        self.assertTrue(context["active"])
-        self.assertTrue(context["ict_ob_conflict"])
-        self.assertEqual(context["accepted_breakout"], "none")
-
-    def test_short_into_active_plus_ob_is_blocked(self):
-        from engine.trial_decision import assess_trial_candidate, build_trial_context
-
-        bars = [self._bar(10000, 10060, 9940, 10000) for _ in range(24)]
-        latest = self._bar(10020, 10080, 9950, 9980)
-        bars.append(latest)
-        msb = self._bull_fvg_msb()
-        msb["active_fvg_direction"] = "bear"
-        context = build_trial_context(
-            bars,
-            {"text": "4H 震荡", "relation": "neutral"},
-            self._neutral_liq(),
-            msb,
-            {"matrix_direction": "bear"},
-            {"momentum_desc": "短线动能转弱", "rar_slope": -2.0, "inertia_slope": -2.0},
-            range_lock={"active": False, "box_low": 9700.0, "box_high": 10300.0},
-            ict={
-                "source": "explicit_feed",
-                "is_exact": True,
-                "bullish_active": True,
-                "bearish_active": False,
-                "coexist": False,
-                "bullish_distance_atr": 0.0,
-                "bearish_distance_atr": None,
-            },
-        )
-        assessment = assess_trial_candidate(
-            "short",
-            "UPPER_KEY_ZONE_REJECTION",
-            (10020.0, 10080.0),
-            10080.0,
-            latest,
-            10000.0,
-            "fvg_zone",
-            "rejected_below",
-            context,
-        )
-
-        self.assertFalse(assessment["allow_formal"])
-        self.assertIn("short_into_active_ict_plus_ob", assessment["hard_blocks"])
 
     def test_late_long_at_reference_box_upper_edge_is_blocked(self):
         from engine.trial_decision import assess_trial_candidate, build_trial_context
@@ -1636,7 +1453,7 @@ class V139LayeredDecisionTests(unittest.TestCase):
             9950.0,
             latest,
             10000.0,
-            "fvg_zone",
+            "ifvg_zone",
             "reclaimed_above",
             context,
         )
@@ -1768,21 +1585,21 @@ class V139LayeredDecisionTests(unittest.TestCase):
         self.assertGreaterEqual(decision["secondary_progress_atr"], 0.22)
         self.assertFalse(decision["observation_update"]["pending_confirm"])
 
-    def test_inertial_pine_reimplementation_is_present_and_explicit_values_are_preserved(self):
+    def test_enrich_klines_does_not_write_inertia_fields(self):
         from engine.indicators import enrich_klines
 
         bars = []
         for i, close in enumerate([100, 99, 98, 97, 96, 95, 96, 98, 101, 104, 106, 108, 109, 110, 111, 112, 113, 114, 115, 116]):
             bars.append({"open": close - 0.5, "high": close + 1, "low": close - 1, "close": close, "volume": 1000 + i})
         enriched = enrich_klines(bars)
-        self.assertEqual(enriched[-1]["inertia_source"], "luxalgo_pine_reimplementation")
-        self.assertTrue(any(bar["inertia_turn_up"] for bar in enriched))
+        for key in ("inertia", "inertia_signal", "inertia_green", "inertia_turn_up", "inertia_source"):
+            self.assertNotIn(key, enriched[-1])
 
+        # Even explicit inbound inertia is stripped — enrich must not re-emit it.
         bars[-1].update({"inertia": 12.0, "inertia_signal": 15.0, "inertia_turn_up": True})
-        explicit = enrich_klines(bars)
-        self.assertEqual(explicit[-1]["inertia_source"], "explicit_feed")
-        self.assertEqual(explicit[-1]["inertia"], 12.0)
-        self.assertTrue(explicit[-1]["inertia_turn_up"])
+        stripped = enrich_klines(bars)
+        for key in ("inertia", "inertia_signal", "inertia_turn_up", "inertia_source"):
+            self.assertNotIn(key, stripped[-1])
 
     def test_trend_message_removes_duplicate_major_sections(self):
         from engine.trend_messages import _dedupe_major_sections, format_trend_message
@@ -1842,8 +1659,6 @@ class V139LayeredDecisionTests(unittest.TestCase):
         with patch.object(SMCTScanner, "_fetch_enriched", return_value=bars), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
              patch("engine.scanner.build_liquidity_context", return_value=self._neutral_liq()), \
-             patch("engine.scanner.build_msb_ob_context", return_value=self._bull_fvg_msb()), \
-             patch("engine.scanner.build_ict_ob_context", return_value={}), \
              patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "neutral"}), \
              patch("engine.scanner.build_volume_profile_context", return_value={}), \
              patch("engine.scanner.build_aux_filters_proxy", return_value={"price": 10000.0}), \
