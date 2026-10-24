@@ -163,6 +163,15 @@ class FormatTestMessageTests(unittest.TestCase):
         self.assertTrue(msg.startswith(TEST_FORMAT_PREFIX))
         self.assertIn("📈 BTC 1H 试多观察【测试】📈", msg)
         self.assertIn("📉 BTC 1H 试空观察【测试】📉", msg)
+        # L lock: one line ──────── between 试多 and 试空, blank line before and after.
+        from engine.trend_messages import TEST_FORMAT_SIDE_SEPARATOR
+        self.assertEqual(TEST_FORMAT_SIDE_SEPARATOR, "────────")
+        self.assertIn(f"\n\n{TEST_FORMAT_SIDE_SEPARATOR}\n\n", msg)
+        long_idx = msg.index("📈 BTC 1H 试多观察【测试】📈")
+        sep_idx = msg.index(f"\n\n{TEST_FORMAT_SIDE_SEPARATOR}\n\n")
+        short_idx = msg.index("📉 BTC 1H 试空观察【测试】📉")
+        self.assertLess(long_idx, sep_idx)
+        self.assertLess(sep_idx, short_idx)
         self.assertIn("🧭 4H 偏多", msg)
         self.assertIn("🧭 4H 偏空", msg)
         self.assertIn("📍 开单建议", msg)
@@ -218,6 +227,7 @@ class TelegramUpdateTestCommandTests(unittest.TestCase):
         self.assertTrue(sent_text.startswith("🧪 播报格式测试（非实盘信号）"))
         self.assertIn("试多观察【测试】", sent_text)
         self.assertIn("试空观察【测试】", sent_text)
+        self.assertIn("\n\n────────\n\n", sent_text)
 
     def test_test_foreign_chat_ignored(self):
         from services.ops_status import process_telegram_update

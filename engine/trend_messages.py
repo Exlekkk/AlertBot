@@ -624,10 +624,14 @@ def format_sample_trial_alert(*, side: str) -> str:
     return _sanitize(_dedupe_major_sections(text))
 
 
+TEST_FORMAT_SIDE_SEPARATOR = "────────"
+
+
 def build_format_test_message() -> str:
-    """Full /test reply: required prefix + 试多样例 + 试空样例. No state / no send path."""
+    """Full /test reply: required prefix + 试多样例 + separator + 试空样例. No state / no send path."""
     return (
         f"{TEST_FORMAT_PREFIX}\n\n"
         f"{format_sample_trial_alert(side='long')}\n\n"
+        f"{TEST_FORMAT_SIDE_SEPARATOR}\n\n"
         f"{format_sample_trial_alert(side='short')}"
     )
