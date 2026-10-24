@@ -23,6 +23,7 @@ class RuntimeStateStore:
             "last_summary": {},
             "last_sent_signal": {},
             "last_webhook": {},
+            "last_error_alert": {},
         }
         self._load()
 
