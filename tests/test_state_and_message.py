@@ -1266,7 +1266,7 @@ class FifteenMinutePrealertTests(unittest.TestCase):
 
         self.assertTrue(decision["should_alert"])
         self.assertEqual(decision["alert_type"], "PREALERT_SHORT")
-        self.assertEqual(decision["title"], "📍 BTC 15m 做空📉预警")
+        self.assertEqual(decision["title"], "📍 BTC 15m 做空🔴预警")
 
     def test_15m_prealert_silent_without_nearby_zone_reaction(self):
         from engine.prealert_15m import evaluate_15m_prealert
@@ -1304,7 +1304,7 @@ class AlertNatureCleanupTests(unittest.TestCase):
 
         msg = format_prealert_message(
             {
-                "title": "📍 BTC 15m 做空📉预警",
+                "title": "📍 BTC 15m 做空🔴预警",
                 "direction": "short",
                 "zone": (100.0, 110.0),
                 "htf_context": "4H 震荡",
@@ -1314,12 +1314,12 @@ class AlertNatureCleanupTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(msg.startswith("📍 BTC 15m 做空📉预警"))
-        self.assertIn("15m 出现可能的做空📉位置。", msg)
+        self.assertTrue(msg.startswith("📍 BTC 15m 做空🔴预警"))
+        self.assertIn("15m 出现可能的做空🔴位置。", msg)
         self.assertIn("这不是 1H 正式单", msg)
         self.assertIn("仅作为入场位置提醒", msg)
-        self.assertNotIn("🟢", msg)
-        self.assertNotIn("🔴", msg)
+        self.assertNotIn("做多📈", msg)
+        self.assertNotIn("做空📉", msg)
         self.assertNotIn("空头确认", msg)
         self.assertNotIn("✅ 结论", msg)
 

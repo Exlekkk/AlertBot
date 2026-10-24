@@ -989,7 +989,7 @@ def evaluate_15m_prealert(
                 "timeframe": "15m",
                 "alert_type": "PREALERT_SHORT" if side == "short" else "PREALERT_LONG",
                 "direction": side,
-                "title": "📍 BTC 15m 做空📉预警" if side == "short" else "📍 BTC 15m 做多📈预警",
+                "title": "📍 BTC 15m 做空🔴预警" if side == "short" else "📍 BTC 15m 做多🟢预警",
                 "price": round(entry, 2),
                 "zone": zone,
                 "zone_low": zone[0],

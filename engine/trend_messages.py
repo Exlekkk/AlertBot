@@ -406,21 +406,21 @@ def format_prealert_message(d: dict) -> str:
     """
 
     direction = str(d.get("direction", "neutral"))
-    title = str(d.get("title") or ("📍 BTC 15m 做空📉预警" if direction == "short" else "📍 BTC 15m 做多📈预警"))
+    title = str(d.get("title") or ("📍 BTC 15m 做空🔴预警" if direction == "short" else "📍 BTC 15m 做多🟢预警"))
     invalid = float(d.get("invalid_level", 0.0) or 0.0)
 
     if direction == "short":
-        status = "15m 出现可能的做空📉位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
+        status = "15m 出现可能的做空🔴位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
         zone_note = "关注反抽是否继续受压。"
         risk = (
-            f"若价格重新站回 {invalid:.2f}，本次 15m 做空📉预警失效。\n"
+            f"若价格重新站回 {invalid:.2f}，本次 15m 做空🔴预警失效。\n"
             "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
         )
     elif direction == "long":
-        status = "15m 出现可能的做多📈位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
+        status = "15m 出现可能的做多🟢位置。\n这不是 1H 正式单，只用于提醒看盘确认。"
         zone_note = "关注回踩是否继续承接。"
         risk = (
-            f"若价格重新跌破 {invalid:.2f}，本次 15m 做多📈预警失效。\n"
+            f"若价格重新跌破 {invalid:.2f}，本次 15m 做多🟢预警失效。\n"
             "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
         )
     else:
@@ -660,8 +660,8 @@ WEAK_REMINDER_FORBIDDEN = (
 
 def _sample_weak_reminder_title(*, side: str) -> str:
     if side == "long":
-        return "📍 BTC 15m 做多📈位置提醒【测试】"
-    return "📍 BTC 15m 做空📉位置提醒【测试】"
+        return "📍 BTC 15m 做多🟢位置提醒【测试】"
+    return "📍 BTC 15m 做空🔴位置提醒【测试】"
 
 
 def format_sample_weak_reminder(*, side: str) -> str:
@@ -680,7 +680,7 @@ def format_sample_weak_reminder(*, side: str) -> str:
     zone_line = f"区间 {float(zone[0]):.2f} - {float(zone[1]):.2f}。"
     if side == "long":
         body = (
-            "15m 出现可能的做多📈位置。\n"
+            "15m 出现可能的做多🟢位置。\n"
             "这不是 1H 正式观察，只提醒看盘。\n\n"
             f"{zone_line}\n"
             f"跌破 {invalid:.2f} → 本提醒失效。\n"
@@ -688,7 +688,7 @@ def format_sample_weak_reminder(*, side: str) -> str:
         )
     else:
         body = (
-            "15m 出现可能的做空📉位置。\n"
+            "15m 出现可能的做空🔴位置。\n"
             "这不是 1H 正式观察，只提醒看盘。\n\n"
             f"{zone_line}\n"
             f"站回 {invalid:.2f} → 本提醒失效。\n"

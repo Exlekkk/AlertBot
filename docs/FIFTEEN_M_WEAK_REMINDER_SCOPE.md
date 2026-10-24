@@ -11,14 +11,14 @@ Formal path unchanged: **closed 1H only**.
 
 ## L-locked copy (2026-10-24; side emoji 2026-10-25)
 
-Short, **single** leading 📍. Side marker: `做多📈` / `做空📉` (titles and body). No formal dual-emoji heads (`📈 … 📈`). No 试多/试空. No 止盈目标. No `开单建议` / `关注点` / `结论` section headers.
+Short, **single** leading 📍. Side marker: `做多🟢` / `做空🔴` (titles and body; not 📈/📉 after 做多/做空). No formal dual-emoji heads (`📈 … 📈`). No 试多/试空. No 止盈目标. No `开单建议` / `关注点` / `结论` section headers.
 
-### Short (做空📉)
+### Short (做空🔴)
 
 ```
-📍 BTC 15m 做空📉位置提醒
+📍 BTC 15m 做空🔴位置提醒
 
-15m 出现可能的做空📉位置。
+15m 出现可能的做空🔴位置。
 这不是 1H 正式观察，只提醒看盘。
 
 区间 xxxxx.xx - xxxxx.xx。
@@ -26,9 +26,9 @@ Short, **single** leading 📍. Side marker: `做多📈` / `做空📉` (titles
 最终以 1H / 4H 为准。
 ```
 
-### Long (做多📈)
+### Long (做多🟢)
 
-Same skeleton; swap 做空📉→做多📈, 站回→跌破 for the invalidation line.
+Same skeleton; swap 做空🔴→做多🟢, 站回→跌破 for the invalidation line.
 
 ### Forbidden in TG body/title
 
@@ -87,7 +87,7 @@ Suggested env (names provisional): `SMCT_15M_WEAK_REMINDER_ENABLED`, optional `S
 
 ## L locks (2026-10-24 final)
 
-1. Titles exactly: `📍 BTC 15m 做多📈位置提醒` / `📍 BTC 15m 做空📉位置提醒` (no 「预警」, no `⚡`; side emoji after 做多/做空 only — still single leading 📍, no dual formal wrap)
+1. Titles exactly: `📍 BTC 15m 做多🟢位置提醒` / `📍 BTC 15m 做空🔴位置提醒` (no 「预警」, no `⚡`; 做多🟢/做空🔴 only — still single leading 📍, no dual formal wrap)
 2. Body = prior template (zone + 跌破/站回 invalidation + not-1H-formal disclaimer); forbid 试多/试空/开单建议/关注点/结论
 3. Chat: **same business group** (no separate topic required)
 4. Keep `min_lead_to_1h_close_min=30` (anti-rush into 1H close)
