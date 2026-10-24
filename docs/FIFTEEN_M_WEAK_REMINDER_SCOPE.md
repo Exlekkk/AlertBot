@@ -61,9 +61,15 @@ Same skeleton; swap 做空→做多, 站回→跌破 for the invalidation line.
 
 1. **This doc** (copy + gates locked).  
 2. **Phase 1 — shadow**: systemd/cron run shadow; calibrate false positives; no TG.  
-3. **Phase 2 — TG**: format L-locked template; own dedupe store; env default off; enable after Phase 1 OK.
+3. **Phase 2 — TG**: format L-locked template on the **same** candidates; own dedupe store; env default off; **shadow keeps running**; enable TG only after resident shadow is healthy.
 
 Suggested env (names provisional): `SMCT_15M_WEAK_REMINDER_ENABLED`, optional `SMCT_15M_WEAK_REMINDER_CHAT_ID`, optional `SMCT_15M_WEAK_MIN_SCORE`.
+
+## Shadow continuity (user + L 2026-10-24)
+
+- **Shadow never stops** when TG weak reminders turn on. Phase 2 only adds an env-gated outbound formatter on the **same** `evaluate_15m_prealert` candidates.
+- Shadow log path remains the calibration / backtest record (`would_send` / suppress), even while TG is enabled.
+- Host note: live `15m_shadow.log` last lines are ~2026-05 — **restore a resident shadow process first** (systemd/cron + `--shadow`) before enabling `SMCT_15M_WEAK_REMINDER_ENABLED=1`.
 
 ## Non-goals
 
