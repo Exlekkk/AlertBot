@@ -56,7 +56,7 @@ def _telegram_get_updates(token: str, offset: int | None, timeout: int) -> list[
 
 
 def _ops_poll_loop() -> None:
-    """Long-poll Bot API getUpdates for /check (no Telegram webhook required)."""
+    """Long-poll Bot API getUpdates for /check and /test (no Telegram webhook required)."""
     token = TELEGRAM_BOT_TOKEN
     if not token:
         logger.warning("ops_poll_disabled reason=missing_bot_token")
@@ -141,7 +141,7 @@ def health():
 
 @app.post("/telegram/updates")
 async def telegram_updates(request: Request):
-    """Optional Bot API webhook path for /check (alternative to getUpdates poll)."""
+    """Optional Bot API webhook path for /check and /test (alternative to getUpdates poll)."""
     update = await request.json()
     if not isinstance(update, dict):
         raise HTTPException(status_code=400, detail="invalid update")
