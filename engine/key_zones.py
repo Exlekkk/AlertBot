@@ -391,6 +391,84 @@ def _ordered_zone(zone: tuple[float, float]) -> tuple[float, float]:
     return (round(min(low, high), 2), round(max(low, high), 2))
 
 
+def _pick_take_profit_zone(
+    *,
+    entry_side: str,
+    entry_zone: tuple[float, float],
+    liq: dict[str, Any],
+    atr: float,
+    evidence_bundle: dict[str, Any] | None = None,
+    fibonacci: dict[str, Any] | None = None,
+) -> tuple[float, float]:
+    """Opposite structure band for 止盈目标 (numbers only on TG).
+
+    Preference: opposite IFVG from evidence → liquidity prev_high/prev_low pad
+    → fibonacci extension band → entry-zone width projection.
+    """
+    entry = _ordered_zone(entry_zone)
+    width = max(entry[1] - entry[0], float(atr) * 0.25, 1e-9)
+    evidence = evidence_bundle if isinstance(evidence_bundle, dict) else {}
+    ifvg = evidence.get("ifvg") if isinstance(evidence.get("ifvg"), dict) else {}
+    candidates: list[tuple[float, float, float]] = []
+    zones = list(ifvg.get("zones") or [])
+    nearest = ifvg.get("nearest_active")
+    if isinstance(nearest, dict):
+        zones = [nearest] + zones
+    for item in zones:
+        if not isinstance(item, dict):
+            continue
+        if item.get("invalidated") or item.get("mitigated"):
+            continue
+        top = item.get("top")
+        bottom = item.get("bottom")
+        if top is None or bottom is None:
+            continue
+        lo, hi = min(float(bottom), float(top)), max(float(bottom), float(top))
+        # Skip the entry IFVG itself (overlap with entry).
+        if hi >= entry[0] - 1e-9 and lo <= entry[1] + 1e-9:
+            overlap = min(hi, entry[1]) - max(lo, entry[0])
+            if overlap / max(hi - lo, 1e-9) >= 0.5:
+                continue
+        if entry_side == "lower" and lo >= entry[1] - 1e-9:
+            candidates.append((lo - entry[1], lo, hi))
+        elif entry_side == "upper" and hi <= entry[0] + 1e-9:
+            candidates.append((entry[0] - hi, lo, hi))
+    if candidates:
+        candidates.sort(key=lambda row: row[0])
+        _, lo, hi = candidates[0]
+        return _ordered_zone((lo, hi))
+
+    pad = max(float(atr) * 0.15, width * 0.35)
+    if entry_side == "lower":
+        lvl = float(liq.get("prev_high", entry[1] + 2.0 * width))
+        if lvl > entry[1]:
+            return _ordered_zone((lvl - pad, lvl + pad * 0.25))
+    else:
+        lvl = float(liq.get("prev_low", entry[0] - 2.0 * width))
+        if lvl < entry[0]:
+            return _ordered_zone((lvl - pad * 0.25, lvl + pad))
+
+    fib = fibonacci if isinstance(fibonacci, dict) else {}
+    targets = fib.get("extension_targets") if isinstance(fib.get("extension_targets"), dict) else {}
+    if targets:
+        vals = sorted(float(v) for v in targets.values())
+        if entry_side == "lower":
+            vals = [v for v in vals if v > entry[1]]
+        else:
+            vals = [v for v in vals if v < entry[0]]
+        if len(vals) >= 2:
+            return _ordered_zone((vals[0], vals[1]))
+        if len(vals) == 1:
+            half = width * 0.35
+            return _ordered_zone((vals[0] - half, vals[0] + half))
+
+    if entry_side == "lower":
+        return _ordered_zone((entry[1] + width, entry[1] + 2.0 * width))
+    return _ordered_zone((entry[0] - 2.0 * width, entry[0] - width))
+
+
+
+
 def _ict_entry_boundary(
     full_zone: tuple[float, float],
     side: str,
@@ -992,6 +1070,16 @@ def decide_key_zone_observation(
     else:
         update["pending_confirm"] = False
 
+    fibonacci = msb.get("fibonacci", {}) if isinstance(msb.get("fibonacci"), dict) else {}
+    take_profit_zone = _pick_take_profit_zone(
+        entry_side=side,
+        entry_zone=zone,
+        liq=liq,
+        atr=atr,
+        evidence_bundle=evidence_bundle if isinstance(evidence_bundle, dict) else {},
+        fibonacci=fibonacci,
+    )
+
     decision = {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -1015,6 +1103,7 @@ def decide_key_zone_observation(
         "zone_low": zone[0],
         "zone_high": zone[1],
         "zone": zone,
+        "take_profit_zone": take_profit_zone,
         "invalid_level": round(invalid_level, 2),
         "should_alert": should_alert,
         "suppress_reason": suppress_reason,

@@ -12,6 +12,10 @@ BANNED = [
     "SMC",
     "ICT",
     "ABCX",
+    "FVG",
+    "IFVG",
+    "Heatmap",
+    "热力图",
     "流动性",
     "订单块",
     "CHOCH",
@@ -141,6 +145,9 @@ MAJOR_SECTION_HEADERS = {
     "⚠️ 风险位：",
     "⚠️ 风险点：",
     "✅ 结论：",
+    "✅ 结论",
+    "📍 开单建议",
+    "👁 关注点",
 }
 
 
@@ -234,7 +241,136 @@ def _clean_temperature(desc: str) -> str:
     return mapping.get(desc, desc if desc.endswith("。") else f"{desc}。")
 
 
+def _framework_line(htf: str, *, side: str) -> str:
+    """Framework row is the section title itself (L lock: 🧭 4H 偏多/偏空/中性)."""
+    text = str(htf or "")
+    if "偏多" in text:
+        return "🧭 4H 偏多"
+    if "偏空" in text:
+        return "🧭 4H 偏空"
+    if any(token in text for token in ("中性", "震荡", "不足", "背景")):
+        return "🧭 4H 中性"
+    return "🧭 4H 偏多" if side == "long" else "🧭 4H 偏空"
+
+
+def _take_profit_zone(d: dict, *, side: str) -> tuple[float, float]:
+    """Structure-extension TP range for TG copy (numbers only; no brand words).
+
+    Preference order:
+    1) decision.take_profit_zone / tp_zone (wired by key_zones)
+    2) opposite IFVG zones from evidence.ifvg
+    3) range_lock opposite box edge band
+    4) fibonacci extension_targets band
+    5) entry-zone width projected in profit direction
+    """
+    for key in ("take_profit_zone", "tp_zone"):
+        raw = d.get(key)
+        if raw and len(raw) >= 2:
+            a, b = float(raw[0]), float(raw[1])
+            return (round(min(a, b), 2), round(max(a, b), 2))
+
+    zone = d.get("zone") or (d.get("zone_low"), d.get("zone_high"))
+    zl, zh = float(zone[0]), float(zone[1])
+    zl, zh = min(zl, zh), max(zl, zh)
+    width = max(zh - zl, 1e-9)
+
+    evidence = d.get("evidence") if isinstance(d.get("evidence"), dict) else {}
+    ifvg = evidence.get("ifvg") if isinstance(evidence.get("ifvg"), dict) else {}
+    candidates: list[tuple[float, float, float]] = []
+    zones = list(ifvg.get("zones") or [])
+    nearest = ifvg.get("nearest_active")
+    if isinstance(nearest, dict):
+        zones = [nearest] + zones
+    for item in zones:
+        if not isinstance(item, dict):
+            continue
+        if item.get("invalidated") or item.get("mitigated"):
+            continue
+        top = item.get("top")
+        bottom = item.get("bottom")
+        if top is None or bottom is None:
+            continue
+        lo, hi = min(float(bottom), float(top)), max(float(bottom), float(top))
+        if side == "long" and lo >= zh - 1e-9:
+            candidates.append((lo - zh, lo, hi))
+        elif side == "short" and hi <= zl + 1e-9:
+            candidates.append((zl - hi, lo, hi))
+    if candidates:
+        candidates.sort(key=lambda row: row[0])
+        _, lo, hi = candidates[0]
+        return (round(lo, 2), round(hi, 2))
+
+    box_lo = d.get("range_lock_box_low")
+    box_hi = d.get("range_lock_box_high")
+    if box_lo is not None and box_hi is not None:
+        blo, bhi = float(box_lo), float(box_hi)
+        blo, bhi = min(blo, bhi), max(blo, bhi)
+        pad = max((bhi - blo) * 0.15, width * 0.5)
+        if side == "long" and bhi > zh:
+            return (round(max(zh, bhi - pad), 2), round(bhi, 2))
+        if side == "short" and blo < zl:
+            return (round(blo, 2), round(min(zl, blo + pad), 2))
+
+    fib = None
+    for src in (
+        evidence.get("fibonacci"),
+        d.get("fibonacci"),
+        (d.get("msb") or {}).get("fibonacci") if isinstance(d.get("msb"), dict) else None,
+    ):
+        if isinstance(src, dict) and src.get("extension_targets"):
+            fib = src
+            break
+    if fib:
+        vals = sorted(float(v) for v in fib["extension_targets"].values())
+        if side == "long":
+            vals = [v for v in vals if v > zh]
+        else:
+            vals = [v for v in vals if v < zl]
+        if len(vals) >= 2:
+            return (round(vals[0], 2), round(vals[1], 2))
+        if len(vals) == 1:
+            v = vals[0]
+            half = width * 0.35
+            return (round(v - half, 2), round(v + half, 2))
+
+    if side == "long":
+        return (round(zh + width, 2), round(zh + 2.0 * width, 2))
+    return (round(zl - 2.0 * width, 2), round(zl - width, 2))
+
+
+def _take_profit_text(d: dict, *, side: str) -> str:
+    lo, hi = _take_profit_zone(d, side=side)
+    return f"{lo:.2f} - {hi:.2f}"
+
+
+def _trial_probe_sections(d: dict, *, side: str) -> str:
+    """AMST-aligned 试多/试空 TG copy (L 2026-10-24 lock). Indicators unchanged."""
+    invalid = float(d["invalid_level"])
+    htf = str(d.get("htf_context") or ("4H 偏多" if side == "long" else "4H 偏空"))
+    zone = _zone_text(d)
+    tp = _take_profit_text(d, side=side)
+    framework = _framework_line(htf, side=side)
+    if side == "long":
+        attention = f"跌破 {invalid:.2f} → 本观察作废，等新结构。"
+        conclusion = "具备试多观察条件。严格按关注点管理。"
+    else:
+        attention = f"站回 {invalid:.2f} → 本观察作废，等新结构。"
+        conclusion = "具备试空观察条件。严格按关注点管理。"
+    return (
+        f"{framework}\n\n"
+        "📍 开单建议\n"
+        f"区间 {zone}。\n"
+        f"止盈目标 {tp}。\n\n"
+        "👁 关注点\n"
+        f"{attention}\n\n"
+        "✅ 结论\n"
+        f"{conclusion}"
+    )
+
+
 def _common_sections(d: dict, risk_line: str, conclusion: str) -> str:
+    # Legacy full layout (structure-shift / non-trial). Trial probes use
+    # _trial_probe_sections instead.
     return (
         "🎯 关注区间：\n"
         f"{_zone_text(d)}\n"
@@ -323,20 +459,7 @@ def _single_observation_sections(d: dict, title: str, detail: str, zone_note: st
 def _format_lower_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type in {"LOWER_KEY_ZONE_RECLAIM", "EARLY_LONG_TRIAL"}:
-        title = _long_probe_title()
-        if alert_type == "EARLY_LONG_TRIAL":
-            detail = "下方关键区已出现早期承接和修复迹象。\n当前出现试多观察条件，但结构仍在选择方向。"
-            conclusion = "具备早期试多观察条件。\n不追高，严格以风险位控制。"
-        else:
-            detail = "价格测试下方关键区后快速收回。\n当前出现试多观察条件。"
-            conclusion = "具备试多观察条件。\n严格以风险位控制。"
-        risk_line = f"若重新跌破 {float(d['invalid_level']):.2f}，下方结构可能再次转弱。"
-        return (
-            f"{title}\n\n"
-            "📌 状态：\n"
-            f"{detail}\n\n"
-            + _common_sections(d, risk_line, conclusion)
-        )
+        return f"{_long_probe_title()}\n\n" + _trial_probe_sections(d, side="long")
 
     if alert_type == "FAST_PULLBACK_OBSERVE":
         detail = "价格快速回踩下方关键区。\n当前仅属于观察提醒，尚未形成试多条件。"
@@ -365,20 +488,7 @@ def _format_lower_observation(d: dict) -> str:
 def _format_upper_observation(d: dict) -> str:
     alert_type = str(d.get("alert_type", ""))
     if alert_type in {"UPPER_KEY_ZONE_REJECTION", "EARLY_SHORT_TRIAL"}:
-        title = _short_probe_title()
-        if alert_type == "EARLY_SHORT_TRIAL":
-            detail = "上方关键区已出现早期承压和转弱迹象。\n当前出现试空观察条件，但结构仍在选择方向。"
-            conclusion = "具备早期试空观察条件。\n不追空，严格以风险位控制。"
-        else:
-            detail = "价格触及上方关键区后快速回落。\n当前出现试空观察条件。"
-            conclusion = "具备试空观察条件。\n严格以风险位控制。"
-        risk_line = f"若有效站回 {float(d['invalid_level']):.2f}，上方结构可能重新修复。"
-        return (
-            f"{title}\n\n"
-            "📌 状态：\n"
-            f"{detail}\n\n"
-            + _common_sections(d, risk_line, conclusion)
-        )
+        return f"{_short_probe_title()}\n\n" + _trial_probe_sections(d, side="short")
 
     if alert_type == "FAST_REBOUND_OBSERVE":
         detail = "价格快速反抽上方关键区。\n当前仅属于观察提醒，尚未形成试空条件。"
@@ -440,29 +550,9 @@ def format_trend_message(d: dict) -> str:
     elif alert_type in UPPER_OBSERVATION_ALERTS:
         text = _format_upper_observation(d)
     elif direction == "long" and alert_type == "BULLISH_CONTINUATION":
-        text = (
-            _long_probe_title() + "\n\n"
-            "📌 状态：\n"
-            "1H 多头结构仍在延续。\n"
-            "价格正在测试趋势中段关键区。\n\n"
-            + _common_sections(
-                d,
-                f"若跌破 {float(d['invalid_level']):.2f}，短线多头结构失败。",
-                "不追高。\n观察中段关键区能否继续承接。",
-            )
-        )
+        text = _long_probe_title() + "\n\n" + _trial_probe_sections(d, side="long")
     elif direction == "short" and alert_type == "BEARISH_CONTINUATION":
-        text = (
-            _short_probe_title() + "\n\n"
-            "📌 状态：\n"
-            "1H 空头结构仍在延续。\n"
-            "价格正在测试趋势中段关键区。\n\n"
-            + _common_sections(
-                d,
-                f"若重新站回 {float(d['invalid_level']):.2f}，短线空头结构失败。",
-                "不追空。\n观察反抽关注区间后的承压反应。",
-            )
-        )
+        text = _short_probe_title() + "\n\n" + _trial_probe_sections(d, side="short")
     elif direction == "long":
         text = (
             _long_confirm_title() + "\n\n"
