@@ -146,8 +146,8 @@ MAJOR_SECTION_HEADERS = {
     "⚠️ 风险点：",
     "✅ 结论：",
     "✅ 结论",
-    "📍 开单建议",
-    "👁 关注点",
+    "📍 开单建议 📍",
+    "📌 关注点",
 }
 
 
@@ -358,10 +358,10 @@ def _trial_probe_sections(d: dict, *, side: str) -> str:
         conclusion = "具备试空观察条件。严格按关注点管理。"
     return (
         f"{framework}\n\n"
-        "📍 开单建议\n"
+        "📍 开单建议 📍\n"
         f"区间 {zone}。\n"
         f"止盈目标 {tp}。\n\n"
-        "👁 关注点\n"
+        "📌 关注点\n"
         f"{attention}\n\n"
         "✅ 结论\n"
         f"{conclusion}"
