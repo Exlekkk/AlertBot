@@ -379,29 +379,49 @@ class MessageTests(unittest.TestCase):
 
         msg = format_trend_message(self._decision("long", "BULLISH_CONTINUATION"))
         self.assertTrue(msg.startswith("📈 BTC 1H 试多观察 📈"))
-        self.assertIn("多头结构仍在延续", msg)
-        self.assertIn("趋势中段关键区", msg)
+        self.assertIn("🧭 4H 偏多", msg)
+        self.assertNotIn("🗺 框架", msg)
+        self.assertIn("📍 开单建议", msg)
+        self.assertIn("区间 100.00 - 110.00。", msg)
+        self.assertIn("止盈目标 120.00 - 130.00。", msg)
+        self.assertNotIn("不追价。", msg)
+        self.assertNotIn("1H 定方向与区位", msg)
+        self.assertIn("👁 关注点", msg)
+        self.assertIn("跌破 99.00 → 本观察作废，等新结构。", msg)
+        self.assertIn("严格按关注点管理。", msg)
+        self.assertNotIn("动能与热度", msg)
+        self.assertNotIn("守住风险位", msg)
 
     def test_banned_terms_no_leak(self):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("long", "BULLISH_STRUCTURE_SHIFT"))
-        for term in ["liquidity", "MSB", "OB", "SMC", "ICT", "RAR", "TAI", "流动性", "订单块"]:
+        for term in ["liquidity", "MSB", "OB", "SMC", "ICT", "RAR", "TAI", "FVG", "IFVG", "Heatmap", "热力图", "流动性", "订单块"]:
             self.assertNotIn(term.lower(), msg.lower())
 
     def test_zone_note_is_short_and_without_usage_label(self):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("long", "LOWER_KEY_ZONE_RECLAIM"))
-        self.assertIn("100.00 - 110.00\n下方承接观察区，回踩不破才有确认价值。", msg)
+        self.assertIn("区间 100.00 - 110.00。", msg)
+        self.assertIn("止盈目标 120.00 - 130.00。", msg)
+        self.assertIn("📍 开单建议", msg)
+        self.assertIn("👁 关注点", msg)
         self.assertNotIn("用途：", msg)
+        self.assertNotIn("下方承接观察区", msg)
 
     def test_upper_rejection_zone_note(self):
         from engine.trend_messages import format_trend_message
 
         msg = format_trend_message(self._decision("short", "UPPER_KEY_ZONE_REJECTION"))
-        self.assertIn("100.00 - 110.00\n上方承压观察区，反抽不破才有确认价值。", msg)
+        self.assertIn("区间 100.00 - 110.00。", msg)
+        self.assertIn("止盈目标 80.00 - 90.00。", msg)
+        self.assertIn("🧭 4H 偏空", msg)
+        self.assertNotIn("不追空。", msg)
+        self.assertNotIn("1H 定方向与区位", msg)
+        self.assertIn("站回 111.00 → 本观察作废，等新结构。", msg)
         self.assertNotIn("用途：", msg)
+        self.assertNotIn("上方承压观察区", msg)
 
 
 class ScannerPipelineTests(unittest.TestCase):
@@ -780,8 +800,14 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(msg.startswith("📉"))
         self.assertIn("BTC 1H 试空观察", msg)
         self.assertIn("试空观察条件", msg)
-        self.assertIn("⚡ 动能与热度", msg)
+        self.assertIn("📍 开单建议", msg)
+        self.assertIn("止盈目标", msg)
+        self.assertIn("🧭 4H", msg)
+        self.assertIn("👁 关注点", msg)
         self.assertIn("✅ 结论", msg)
+        self.assertNotIn("动能与热度", msg)
+        self.assertNotIn("不追空", msg)
+        self.assertIn("take_profit_zone", decision)
 
     def test_lower_zone_reclaim_message(self):
         from engine.key_zones import decide_key_zone_observation
@@ -835,7 +861,9 @@ class KeyZoneObservationTests(unittest.TestCase):
         msg = format_trend_message(decision)
         self.assertTrue(msg.startswith("📈"))
         self.assertIn("BTC 1H 试多观察", msg)
-        self.assertIn("⚡ 动能与热度", msg)
+        self.assertIn("📍 开单建议", msg)
+        self.assertIn("👁 关注点", msg)
+        self.assertNotIn("动能与热度", msg)
 
     def test_formal_lower_reclaim_creates_pending_confirmation(self):
         from engine.key_zones import decide_key_zone_observation
@@ -1620,8 +1648,12 @@ class V139LayeredDecisionTests(unittest.TestCase):
                 "invalid_level": 9940.0,
             }
         )
-        self.assertEqual(message.count("⚠️ 风险位："), 1)
-        self.assertEqual(message.count("✅ 结论："), 1)
+        self.assertEqual(message.count("👁 关注点"), 1)
+        self.assertEqual(message.count("✅ 结论"), 1)
+        self.assertEqual(message.count("📍 开单建议"), 1)
+        self.assertNotIn("⚠️ 风险位", message)
+        self.assertNotIn("动能与热度", message)
+        self.assertIn("严格按关注点管理。", message)
 
     def test_failed_observation_delivery_does_not_open_pending_state(self):
         from engine.scanner import SMCTScanner
