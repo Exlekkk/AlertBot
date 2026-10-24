@@ -6,7 +6,7 @@ Neutral overview of how this bot runs. No strategy playbook.
 
 1. Fetch closed exchange klines (4H / 1H; 15m only on shadow paths).
 2. Build feature contexts (structure proxies, range state, liquidity/volume approximations).
-3. Decide whether a formal 1H alert or a key-zone observation should fire.
+3. Decide whether a formal 1H alert should fire (observation / key-zone paths are not outbound).
 4. Apply cooldown / dedupe, then send on the configured notification channel if allowed.
 5. Persist runtime + signal state as JSON (atomic writes).
 
