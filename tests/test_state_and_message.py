@@ -386,7 +386,7 @@ class MessageTests(unittest.TestCase):
         self.assertIn("止盈目标 120.00 - 130.00。", msg)
         self.assertNotIn("不追价。", msg)
         self.assertNotIn("1H 定方向与区位", msg)
-        self.assertIn("⚠️ 关注点", msg)
+        self.assertIn("📌 关注点", msg)
         self.assertIn("跌破 99.00 → 本观察作废，等新结构。", msg)
         self.assertIn("严格按关注点管理。", msg)
         self.assertNotIn("动能与热度", msg)
@@ -406,7 +406,7 @@ class MessageTests(unittest.TestCase):
         self.assertIn("区间 100.00 - 110.00。", msg)
         self.assertIn("止盈目标 120.00 - 130.00。", msg)
         self.assertIn("📍 开单建议 📍", msg)
-        self.assertIn("⚠️ 关注点", msg)
+        self.assertIn("📌 关注点", msg)
         self.assertNotIn("用途：", msg)
         self.assertNotIn("下方承接观察区", msg)
 
@@ -803,7 +803,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertIn("📍 开单建议 📍", msg)
         self.assertIn("止盈目标", msg)
         self.assertIn("🧭 4H", msg)
-        self.assertIn("⚠️ 关注点", msg)
+        self.assertIn("📌 关注点", msg)
         self.assertIn("✅ 结论", msg)
         self.assertNotIn("动能与热度", msg)
         self.assertNotIn("不追空", msg)
@@ -862,7 +862,7 @@ class KeyZoneObservationTests(unittest.TestCase):
         self.assertTrue(msg.startswith("📈"))
         self.assertIn("BTC 1H 试多观察", msg)
         self.assertIn("📍 开单建议 📍", msg)
-        self.assertIn("⚠️ 关注点", msg)
+        self.assertIn("📌 关注点", msg)
         self.assertNotIn("动能与热度", msg)
 
     def test_formal_lower_reclaim_creates_pending_confirmation(self):
@@ -1648,7 +1648,7 @@ class V139LayeredDecisionTests(unittest.TestCase):
                 "invalid_level": 9940.0,
             }
         )
-        self.assertEqual(message.count("⚠️ 关注点"), 1)
+        self.assertEqual(message.count("📌 关注点"), 1)
         self.assertEqual(message.count("✅ 结论"), 1)
         self.assertEqual(message.count("📍 开单建议 📍"), 1)
         self.assertNotIn("⚠️ 风险位", message)

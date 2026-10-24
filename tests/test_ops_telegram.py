@@ -176,7 +176,7 @@ class FormatTestMessageTests(unittest.TestCase):
         self.assertIn("🧭 4H 偏空", msg)
         self.assertIn("📍 开单建议 📍", msg)
         self.assertIn("止盈目标", msg)
-        self.assertIn("⚠️ 关注点", msg)
+        self.assertIn("📌 关注点", msg)
         self.assertIn("✅ 结论", msg)
         self.assertIn("跌破", msg)
         self.assertIn("站回", msg)
