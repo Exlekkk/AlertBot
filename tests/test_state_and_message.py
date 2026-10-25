@@ -381,7 +381,7 @@ class MessageTests(unittest.TestCase):
         self.assertTrue(msg.startswith("📈 BTC 1H 试多观察 📈"))
         self.assertIn("🧭 4H 偏多", msg)
         self.assertRegex(msg, r"触发时间 \d{4}-\d{2}-\d{2} \d{2}:\d{2}")
-        self.assertIn("🧭 4H 偏多 丨 触发时间", msg)
+        self.assertIn("🧭 4H 偏多丨触发时间", msg)
         self.assertIn("\n\n📍 开单建议 📍", msg)
         self.assertNotIn("🗺 框架", msg)
         self.assertIn("📍 开单建议 📍", msg)
