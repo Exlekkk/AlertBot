@@ -376,8 +376,7 @@ def _trial_probe_sections(d: dict, *, side: str) -> str:
         attention = f"站回 {invalid:.2f} → 本观察作废，等新结构。"
         conclusion = "具备试空观察条件。严格按关注点管理。"
     return (
-        f"{framework}\n\n"
-        f"{_trigger_time_line(d)}\n\n"
+        f"{framework}　　{_trigger_time_line(d)}\n\n"
         "📍 开单建议 📍\n"
         f"区间 {zone}。\n"
         f"止盈目标 {tp}。\n\n"
