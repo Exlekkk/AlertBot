@@ -3,7 +3,7 @@
 Status: **Draft PR#32 — merge waits for L final pass + user awake**.  
 Rollback tip: **`ceb42f1`** (main before this Draft).  
 Does **not** change 1H formal trial titles (`EARLY_LONG_TRIAL` / `EARLY_SHORT_TRIAL`) or open TG by default.  
-**No** `smct-volume-weak-shadow.service` in this PR (unit deferred until after merge + user awake).
+Resident unit: `systemd/smct-volume-weak-shadow.service` (log-only; TG env still default off).
 
 ## L locks (2026-10-25)
 
@@ -63,7 +63,7 @@ Wired in `engine/volume_weak.py` + `scripts/run_volume_weak_shadow.py` defaults.
 | Same-side cooldown | **4** × 15m bars | Per side |
 | Opposite-side cooldown | **2** × 15m bars | Flip-flop dampen |
 | Side from | Forming 15m body (`close` vs `open`) | Neutral/flat → no alert |
-| Shadow log | `logs/volume_weak_shadow.log` | Script only; **no systemd unit in this PR** |
+| Shadow log | `logs/volume_weak_shadow.log` | Via `smct-volume-weak-shadow` unit |
 | TG | `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED=0` | Enable only after merge + shadow calm |
 
 Env: `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED` (optional later chat id).
@@ -95,8 +95,8 @@ vol≈{vol}  ratio≈{ratio}
 
 ## Phased delivery
 
-1. **This Draft (PR#32)** — Auto Range demotion + volume-weak code/shadow + L-locked frequency/copy; TG env default off; **no systemd unit**.  
-2. **After user awake + merge** — optional `smct-volume-weak-shadow.service` + calibrate shadow.  
+1. **PR#32** — Auto Range demotion + volume-weak code/shadow + L-locked frequency/copy + resident shadow unit; TG env default off.  
+2. **Calibrate** — watch `volume_weak_shadow.log` before enabling TG.  
 3. **Later** — TG enable after shadow healthy.
 
 ## Non-goals
@@ -105,7 +105,6 @@ vol≈{vol}  ratio≈{ratio}
 - Changing closed-1H formal policy / 试多/试空 templates  
 - Enabling TG in the same cut without env default off  
 - Mutating 1H cooldown or observation pending from volume weak  
-- Shipping `smct-volume-weak-shadow.service` in this PR  
 - Merging / deploying / urging pull while user sleeps  
 
 ## Test plan

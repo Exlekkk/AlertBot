@@ -12,6 +12,7 @@ Ops-only. Do **not** cover production from a Draft PR.
 | `docs/ci-workflow.example.yml` | Example CI workflow (promote when `workflow` scope available) |
 | `systemd/smct-scanner.service` | Example scanner unit file |
 | `systemd/smct-15m-shadow.service` | 15m shadow log-only unit (Phase 1; no TG) |
+| `systemd/smct-volume-weak-shadow.service` | Unclosed volume weak shadow log-only (TG env default off) |
 | `engine/` | Runtime decision / filter code |
 | `legacy_quarantine/` | Dead helpers; do not run as entrypoints |
 | `docs/ARCHITECTURE.md` | Runtime overview |
@@ -64,13 +65,14 @@ Do not paste production tokens, destinations, or webhook secrets into git, CI lo
 
 ## systemd (high level)
 
-Example units: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service`.
+Example units: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service`, `systemd/smct-volume-weak-shadow.service`.
 
 Host units commonly used in production:
 
 - `smct-scanner`
 - `smct-alert`
 - `smct-webhook`
+- `smct-volume-weak-shadow` — unclosed volume weak shadow log-only (`scripts/run_volume_weak_shadow.py --shadow`); TG `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED` stays off until calibrated.
 - `smct-15m-shadow` — 15m shadow log-only (`scripts/run_15m_shadow.py --shadow`); enable/restart with the other units when restoring resident shadow. Does **not** require enabling TG weak reminders (`SMCT_15M_WEAK_REMINDER_ENABLED` stays off for Phase 1).
 
 - Working directory and `ExecStart` point at the host install (example: `/opt/smct-alert`).

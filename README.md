@@ -81,7 +81,7 @@ Notification-channel credentials and webhook secrets stay in the host env file o
 
 ## systemd
 
-Production expects four units (host names may match these examples):
+Production expects five units (host names may match these examples):
 
 | Unit | Role |
 |------|------|
@@ -89,15 +89,16 @@ Production expects four units (host names may match these examples):
 | `smct-alert` | App process (shared `app:app` with webhook on many hosts) |
 | `smct-webhook` | Webhook / HTTP surface |
 | `smct-15m-shadow` | 15m shadow log-only (`scripts/run_15m_shadow.py --shadow`); must stay running even if later TG weak reminders enable |
+| `smct-volume-weak-shadow` | Unclosed volume weak shadow log-only (`scripts/run_volume_weak_shadow.py --shadow`); TG env default off |
 
-Example unit files in-repo: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service` (WorkingDirectory `/opt/smct-alert`, venv interpreter in `ExecStart`).
+Example unit files in-repo: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service`, `systemd/smct-volume-weak-shadow.service` (WorkingDirectory `/opt/smct-alert`, venv interpreter in `ExecStart`).
 
 After install or unit edits:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart smct-alert smct-scanner smct-webhook smct-15m-shadow
-sudo systemctl is-active smct-alert smct-scanner smct-webhook smct-15m-shadow
+sudo systemctl restart smct-alert smct-scanner smct-webhook smct-15m-shadow smct-volume-weak-shadow
+sudo systemctl is-active smct-alert smct-scanner smct-webhook smct-15m-shadow smct-volume-weak-shadow
 ```
 
 Prefer `Restart=always`; investigate crash loops via journal before force-restarting.
