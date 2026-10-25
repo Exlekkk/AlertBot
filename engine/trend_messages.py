@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
 BANNED = [
     "liquidity",
     "MSB",
@@ -343,6 +348,20 @@ def _take_profit_text(d: dict, *, side: str) -> str:
     return f"{lo:.2f} - {hi:.2f}"
 
 
+
+def _trigger_time_line(d: dict | None = None) -> str:
+    """TG send wall-clock in Asia/Shanghai (L lock). Not bar close.
+
+    Optional ``trigger_time`` on the decision overrides for /test samples and CI.
+    """
+    raw = ""
+    if isinstance(d, dict):
+        raw = str(d.get("trigger_time") or "").strip()
+    if not raw:
+        raw = datetime.now(_SHANGHAI).strftime("%Y-%m-%d %H:%M")
+    return f"⏱ 触发时间 {raw}"
+
+
 def _trial_probe_sections(d: dict, *, side: str) -> str:
     """AMST-aligned 试多/试空 TG copy (L 2026-10-24 lock). Indicators unchanged."""
     invalid = float(d["invalid_level"])
@@ -357,7 +376,8 @@ def _trial_probe_sections(d: dict, *, side: str) -> str:
         attention = f"站回 {invalid:.2f} → 本观察作废，等新结构。"
         conclusion = "具备试空观察条件。严格按关注点管理。"
     return (
-        f"{framework}\n\n"
+        f"{framework}\n"
+        f"{_trigger_time_line(d)}\n\n"
         "📍 开单建议 📍\n"
         f"区间 {zone}。\n"
         f"止盈目标 {tp}。\n\n"
@@ -598,12 +618,14 @@ _SAMPLE_TRIAL_LONG = {
     "invalid_level": 94850.0,
     "htf_context": "4H 偏多",
     "take_profit_zone": (96000.0, 96500.0),
+    "trigger_time": "2026-10-25 14:00",
 }
 _SAMPLE_TRIAL_SHORT = {
     "zone": (97000.0, 97200.0),
     "invalid_level": 97350.0,
     "htf_context": "4H 偏空",
     "take_profit_zone": (95800.0, 96200.0),
+    "trigger_time": "2026-10-25 14:00",
 }
 
 TEST_FORMAT_PREFIX = "🧪 播报格式测试（非实盘信号）"
