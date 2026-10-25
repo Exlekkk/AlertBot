@@ -45,3 +45,6 @@ SMCT_REPO_ROOT = os.getenv("SMCT_REPO_ROOT", "").strip()
 WEBHOOK_PERSIST_SECONDS = int(os.getenv("WEBHOOK_PERSIST_SECONDS", "300"))
 
 TREND_SNAPSHOT_STATE_FILE = os.getenv("TREND_SNAPSHOT_STATE_FILE", "/opt/smct-alert/state/trend_snapshot_state.json")
+
+# Unclosed abnormal-volume weak reminder (TG); default off — shadow/log does not need this.
+SMCT_ABNORMAL_VOLUME_WEAK_ENABLED = os.getenv("SMCT_ABNORMAL_VOLUME_WEAK_ENABLED", "0") == "1"

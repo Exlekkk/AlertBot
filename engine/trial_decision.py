@@ -193,13 +193,23 @@ def build_trial_context(
     auto_range = evidence_bundle.get("auto_range") if isinstance(evidence_bundle.get("auto_range"), dict) else {}
     if not auto_range:
         auto_range = range_lock.get("auto_range") if isinstance(range_lock.get("auto_range"), dict) else {}
+    # Auto Range event weight (L 2026-10-25): low-weight weak catalyst / stage
+    # annotation only. Confirmed deviation_* / breakout_* may annotate; never
+    # high-weight drive; pending_break never scores. Box location helpers stay
+    # separate (oscillation-box recognition).
+    AUTO_RANGE_EVENT_WEIGHT = 0.5  # demoted from 1.5
     last_range_event = auto_range.get("last_event")
-    if last_range_event == "deviation_down":
-        _append_score(scores, evidence, "long", 1.5, "range_reclaim_after_break_down")
-    elif last_range_event == "deviation_up":
-        _append_score(scores, evidence, "short", 1.5, "range_reclaim_after_break_up")
+    pending_break = auto_range.get("pending_break")
+    if last_range_event == "deviation_down" and not pending_break:
+        _append_score(scores, evidence, "long", AUTO_RANGE_EVENT_WEIGHT, "range_reclaim_after_break_down")
+    elif last_range_event == "deviation_up" and not pending_break:
+        _append_score(scores, evidence, "short", AUTO_RANGE_EVENT_WEIGHT, "range_reclaim_after_break_up")
+    elif last_range_event == "breakout_up" and not pending_break:
+        _append_score(scores, evidence, "long", AUTO_RANGE_EVENT_WEIGHT, "range_breakout_up_annotation")
+    elif last_range_event == "breakout_down" and not pending_break:
+        _append_score(scores, evidence, "short", AUTO_RANGE_EVENT_WEIGHT, "range_breakout_down_annotation")
     # pending_break is status-only (exposed on auto_range); never adds direction score.
-    _ = auto_range.get("pending_break")
+    _ = pending_break
 
     # Sweep weight: evidence.sweep only (liq.sweep_hunter is the merge target
     # of sweep_hunter). Legacy liq sellside/buyside +3.5 path hard-deleted.
@@ -241,12 +251,14 @@ def build_trial_context(
     _confluence_tokens = {
         "long": (
             "range_reclaim_after_break_down",
+            "range_breakout_up_annotation",
             "sweep_sell_side_reclaim",
             "profile_node_bull",
             "imbalance_inverted_support",
         ),
         "short": (
             "range_reclaim_after_break_up",
+            "range_breakout_down_annotation",
             "sweep_buy_side_reject",
             "profile_node_bear",
             "imbalance_inverted_resistance",
@@ -458,10 +470,12 @@ def assess_trial_candidate(
         reward_risk = None
 
     reason_blob = " ".join(reasons)
+    # Auto Range confirmed breakout no longer sole-drives matching_fresh_event
+    # (L: forbid high-weight / naked chase from Auto Range). accepted_breakout
+    # still used for range-edge hard-block exemptions above.
     matching_fresh_event = (
         (side == "long" and "sweep_sell_side_reclaim" in reason_blob)
         or (side == "short" and "sweep_buy_side_reject" in reason_blob)
-        or breakout_matches
     )
     reason_text = " ".join(reasons)
     evidence_keys = list(trial_context.get("evidence_bundle_keys") or [])
@@ -474,6 +488,7 @@ def assess_trial_candidate(
         for token in (
             "sweep_sell_side_reclaim" if side == "long" else "sweep_buy_side_reject",
             "range_reclaim_after_break_down" if side == "long" else "range_reclaim_after_break_up",
+            "range_breakout_up_annotation" if side == "long" else "range_breakout_down_annotation",
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "evidence_confluence",

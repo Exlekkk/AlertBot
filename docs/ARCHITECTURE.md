@@ -40,6 +40,11 @@ Legacy adapters may remain in parallel while trial weighting is migrated. Public
 - **1H** — formal alert layer.
 - **15m** — shadow only; must not rewrite 1H logic, titles, cooldowns, or live copy.
 
+## Auto Range + volume weak (see scope doc)
+
+- **Auto Range** (`engine/auto_range.py` via `range_lock`): primary role is oscillation **box** recognition. Confirmed `breakout_*` / `deviation_*` are **low-weight** annotations only (not high-weight sole-drive of formal 试多/试空). `pending_break` never scores. Details: `docs/AUTO_RANGE_AND_VOLUME_WEAK_SCOPE.md`.
+- **Unclosed abnormal-volume weak reminder** (`engine/volume_weak.py`): forming-bar volume path, isolated from formal 1H; TG gated by `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED` default `0`; shadow via `scripts/run_volume_weak_shadow.py`.
+
 ## Deploy
 
 Do not overwrite production from a Draft PR. See `docs/DEPLOY_CHECKLIST.md`.
