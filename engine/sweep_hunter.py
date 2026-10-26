@@ -87,7 +87,8 @@ def build_sweep_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if _is_pivot_low(lows, i, length):
             levels.append({"price": lows[i], "is_support": True, "born": i, "strength": max(0.0, min(1.0, vchg / 100.0)), "broken": False})
-        if _is_pivot_high(highs, i, length):
+        # A dual pivot creates the support level only, matching the chart branch.
+        elif _is_pivot_high(highs, i, length):
             levels.append({"price": highs[i], "is_support": False, "born": i, "strength": max(0.0, min(1.0, vchg / 100.0)), "broken": False})
 
     last_sweep: dict[str, Any] | None = None
