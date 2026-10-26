@@ -129,7 +129,9 @@ class IFVGInvertedActiveTests(unittest.TestCase):
         bars.append(_bar(10100, 10140, 10090, 10120, ts=42 * 3600000))  # gap
         # invert through underside
         bars.append(_bar(10050, 10060, 10000, 10010, ts=43 * 3600000))
-        bars.append(_bar(10010, 10020, 9950, 9980, ts=44 * 3600000))
+        # Prevent a new overlapping bearish gap: this case isolates a touch
+        # of the existing inverted zone, rather than replacement by a new one.
+        bars.append(_bar(10010, 10100, 9950, 9980, ts=44 * 3600000))
         # touch the inverted zone (reaction) without cancelling
         bars.append(_bar(10040, 10100, 10030, 10070, ts=45 * 3600000))
 

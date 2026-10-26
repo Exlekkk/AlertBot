@@ -61,70 +61,42 @@ def build_ifvg_context(
 
     raw: list[dict[str, Any]] = []
     for i in range(2, n):
-        gap_up = lows[i] - highs[i - 2]
-        mid_up = (lows[i] + highs[i - 2]) / 2.0 or 1.0
-        if gap_up > 0 and (gap_up / abs(mid_up)) >= min_frac:
-            raw.append({
-                "top": lows[i],
-                "bottom": highs[i - 2],
-                "direction": 1,
-                "inverted": False,
-                "mitigated": False,  # classic gap fill only (pre-invert)
-                "invalidated": False,
-                "start_bar": i,
-                "invert_bar": None,
-            })
-            continue
-        gap_dn = lows[i - 2] - highs[i]
-        mid_dn = (lows[i - 2] + highs[i]) / 2.0 or 1.0
-        if gap_dn > 0 and (gap_dn / abs(mid_dn)) >= min_frac:
-            raw.append({
-                "top": lows[i - 2],
-                "bottom": highs[i],
-                "direction": -1,
-                "inverted": False,
-                "mitigated": False,
-                "invalidated": False,
-                "start_bar": i,
-                "invert_bar": None,
-            })
+        # Process creation and lifecycle chronologically. A replaced zone must
+        # not be available to invert later in the replay.
+        threshold = abs(closes[i - 1]) * min_frac
+        new_zone = None
+        if lows[i] - highs[i - 2] > threshold:
+            new_zone = {"top": lows[i], "bottom": highs[i - 2], "direction": 1}
+        elif lows[i - 2] - highs[i] > threshold:
+            new_zone = {"top": lows[i - 2], "bottom": highs[i], "direction": -1}
+        if new_zone is not None:
+            for old in raw:
+                if old["invalidated"] or old["mitigated"]:
+                    continue
+                if (old["bottom"] <= new_zone["top"] <= old["top"]
+                        or old["bottom"] <= new_zone["bottom"] <= old["top"]):
+                    old["mitigated"] = True
+                    old["invalidated"] = True
+            raw.append({**new_zone, "inverted": False, "mitigated": False,
+                        "invalidated": False, "start_bar": i, "invert_bar": None})
 
-    for i in range(n):
         c = closes[i]
-        h, l = highs[i], lows[i]
         for z in raw:
             age = i - z["start_bar"]
-            if age <= 0:
+            if age <= 0 or z["invalidated"]:
                 continue
             if age > longevity:
                 z["invalidated"] = True
                 continue
             top, bot = z["top"], z["bottom"]
-
-            # Invert: opposing close fully through the gap
             if not z["inverted"]:
-                if z["direction"] == 1 and c < bot:
+                if (z["direction"] == 1 and c < bot) or (z["direction"] == -1 and c > top):
                     z["inverted"] = True
                     z["invert_bar"] = i
-                    # inversion supersedes classic fill semantics
-                    z["mitigated"] = False
-                elif z["direction"] == -1 and c > top:
-                    z["inverted"] = True
-                    z["invert_bar"] = i
-                    z["mitigated"] = False
-
-            if z["inverted"]:
-                # After invert: zone stays a reaction area. Touch ≠ classic mitigate.
-                # Invalidate only if price closes back through the far side (cancel).
-                if z["direction"] == 1 and c > top:
-                    # original bullish gap inverted to resistance; reclaim above cancels
-                    z["invalidated"] = True
-                elif z["direction"] == -1 and c < bot:
-                    z["invalidated"] = True
-            else:
-                # Classic gap: wick/close into zone = filled/mitigated
-                if not z["mitigated"] and h >= bot and l <= top:
-                    z["mitigated"] = True
+            elif (z["direction"] == 1 and c > top) or (z["direction"] == -1 and c < bot):
+                z["invalidated"] = True
+                z["mitigated"] = True
+            # A wick touch is a reaction, not retirement of a classic gap.
 
     if display_mode.lower().startswith("inv"):
         visible = [z for z in raw if z["inverted"]]
