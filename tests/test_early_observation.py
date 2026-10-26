@@ -207,7 +207,7 @@ class ScannerEarlyShadowTests(unittest.TestCase):
         scanner.symbol='BTCUSDT';scanner.logger=logging.getLogger('early-test')
         scanner.market_data=Mock()
         scanner.market_data.get_klines.side_effect=lambda symbol,interval,limit:fixture(interval)[2]
-        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ,{'SMCT_EARLY_OBSERVATION_STATE_FILE':str(Path(td)/'ledger.sqlite3')}), patch('engine.scanner.time.time',return_value=(STAMP+450_000)/1000), patch('engine.scanner.load_observation_state',return_value={}), patch('engine.scanner.send_telegram_message') as send, patch('engine.scanner.save_observation_state') as save:
+        with patch("engine.scanner.FREEZE_MODE_SEND_X_ONLY",False), tempfile.TemporaryDirectory() as td, patch.dict(os.environ,{'SMCT_EARLY_OBSERVATION_STATE_FILE':str(Path(td)/'ledger.sqlite3')}), patch('engine.scanner.time.time',return_value=(STAMP+450_000)/1000), patch('engine.scanner.load_observation_state',return_value={}), patch('engine.scanner.send_telegram_message') as send, patch('engine.scanner.save_observation_state') as save:
             payload=(closed,htf,liq,msb,matrix,aux,vp,rl,ev)
             shadow=scanner._run_early_observations(*payload,mode='shadow')
             self.assertEqual(shadow['sent'],0);send.assert_not_called();save.assert_not_called()
@@ -238,7 +238,7 @@ class ScannerEarlyShadowTests(unittest.TestCase):
         scanner=SMCTScanner.__new__(SMCTScanner)
         scanner.symbol='BTCUSDT';scanner.logger=logging.getLogger('early-test');scanner.market_data=Mock()
         scanner.market_data.get_klines.side_effect=lambda symbol,interval,limit:fixture(interval)[2]
-        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ,{'SMCT_EARLY_OBSERVATION_STATE_FILE':str(Path(td)/'ledger.sqlite3')}), patch('engine.scanner.time.time',return_value=(STAMP+450_000)/1000), patch('engine.scanner.load_observation_state',return_value={}), patch('engine.scanner.send_telegram_message',side_effect=TelegramSendError('timeout')) as send, patch('engine.scanner.save_observation_state') as save:
+        with patch("engine.scanner.FREEZE_MODE_SEND_X_ONLY",False), tempfile.TemporaryDirectory() as td, patch.dict(os.environ,{'SMCT_EARLY_OBSERVATION_STATE_FILE':str(Path(td)/'ledger.sqlite3')}), patch('engine.scanner.time.time',return_value=(STAMP+450_000)/1000), patch('engine.scanner.load_observation_state',return_value={}), patch('engine.scanner.send_telegram_message',side_effect=TelegramSendError('timeout')) as send, patch('engine.scanner.save_observation_state') as save:
             for _ in range(2):
                 r=scanner._run_early_observations(*fixture()[3:],mode='live')
                 self.assertEqual(r['sent'],0)

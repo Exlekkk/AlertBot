@@ -5,7 +5,7 @@ import os
 import time
 from typing import Any
 
-from config import BINANCE_SYMBOL, KLINE_LIMIT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
+from config import BINANCE_SYMBOL, FREEZE_MODE_SEND_X_ONLY, KLINE_LIMIT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
 from engine.aux_filters import build_aux_filters_proxy
 from engine.chart_indicators import build_chart_context
 from engine.cooldown import SignalStateStore
@@ -108,7 +108,12 @@ class SMCTScanner:
                     observation_state=load_observation_state(self.symbol, "1h") if timeframe == "1h" else {},
                 )
                 if d["should_alert"]:
-                    d["delivery_eligible"] = store.reserve(d, now_ms)
+                    if mode == "live" and FREEZE_MODE_SEND_X_ONLY:
+                        # Freeze must not consume an early reservation/cooldown.
+                        d["delivery_eligible"] = False
+                        d["delivery_outcome"] = "frozen"
+                    else:
+                        d["delivery_eligible"] = store.reserve(d, now_ms)
                     if d["delivery_eligible"]:
                         if mode == "shadow":
                             store.delivered(d)  # shadow ledger only
@@ -223,8 +228,11 @@ class SMCTScanner:
             # Early and qualified closed trials have separate delivery state.
             # Do not suppress a formal upgrade merely because its candle/area
             # matches an early observation; formal signatures dedupe this lane.
+            frozen_formal = FREEZE_MODE_SEND_X_ONLY and should_send_alert_copy(decision)
+            if not shadow and frozen_formal and decision["should_alert"]:
+                self.logger.info("alert_send_suppressed reason=freeze_mode alert_type=%s", decision.get("alert_type"))
             sent = 0
-            if not shadow and decision["should_alert"] and self.state_store.should_send(decision):
+            if not shadow and not frozen_formal and decision["should_alert"] and self.state_store.should_send(decision):
                 if not should_send_alert_copy(decision):
                     # Kill 关键区观察 / 确认 / 二次确认 copy; keep scoring paths intact.
                     self.logger.info(
