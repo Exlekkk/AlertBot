@@ -171,14 +171,12 @@ class EarlyLedgerTests(unittest.TestCase):
         self.assertTrue(self.store.reserve(m,STAMP+900_000))
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM delivery').fetchone()[0],2)
 
-    def test_only_delivered_matching_1h_close_is_deduped(self):
-        d=evaluate();self.store.reserve(d,STAMP)
-        self.assertFalse(self.store.already_observed_close(d,STAMP))
-        self.store.delivered(d)
-        self.assertTrue(self.store.already_observed_close(d,STAMP))
-        self.assertFalse(self.store.already_observed_close(d,STAMP+3_600_000))
-        d['direction']='short'
-        self.assertFalse(self.store.already_observed_close(d,STAMP))
+    def test_early_delivery_does_not_consume_formal_signature(self):
+        from engine.cooldown import SignalStateStore
+        d=evaluate();self.store.reserve(d,STAMP);self.store.delivered(d)
+        formal=SignalStateStore(state_file=str(Path(self.tmp.name)/'formal.json'))
+        self.assertTrue(formal.should_send(d))
+        self.assertFalse(formal.state_file.exists())
 
     def test_two_connections_cannot_reserve_same_event(self):
         other=EarlyObservationStore(self.path)
@@ -235,21 +233,6 @@ class ScannerEarlyShadowTests(unittest.TestCase):
             scanner.runtime_state.mark_scan.assert_not_called()
             scanner.runtime_state.mark_sent_signal.assert_not_called()
             self.assertFalse(Path(td,'ledger.sqlite3').exists())
-
-    def test_matching_first_close_does_not_resend_or_create_pending(self):
-        scanner=SMCTScanner.__new__(SMCTScanner)
-        scanner.symbol='BTCUSDT';scanner.logger=logging.getLogger('early-test')
-        scanner.runtime_state=Mock();scanner.state_store=Mock()
-        scanner._fetch_enriched=Mock(return_value=fixture()[3])
-        d=evaluate();d.update(forming=False,observation_update={'pending_confirm':True})
-        ledger=Mock();ledger.already_observed_close.return_value=True
-        scanner._early_store=Mock(return_value=ledger)
-        with patch.dict(os.environ,{'SMCT_EARLY_OBSERVATION_MODE':'live'}), patch('engine.scanner.load_trend_state',return_value={}), patch('engine.scanner.decide_trend_segment',return_value=d), patch('engine.scanner.send_telegram_message') as send, patch('engine.scanner.save_observation_state') as save:
-            result=scanner.run_once()
-            self.assertTrue(result['ok'],result)
-            self.assertEqual(result['sent'],0)
-            send.assert_not_called();save.assert_not_called()
-            scanner.state_store.mark_sent.assert_not_called()
 
     def test_uncertain_telegram_outcome_does_not_retry_or_create_pending(self):
         scanner=SMCTScanner.__new__(SMCTScanner)

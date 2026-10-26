@@ -220,20 +220,11 @@ class SMCTScanner:
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 
             mode = "shadow" if shadow else early_observation_mode()
-            already_observed = False
-            if mode == "live" and decision["should_alert"] and should_send_alert_copy(decision):
-                try:
-                    ledger = self._early_store(mode)
-                    try:
-                        already_observed = ledger.already_observed_close(decision, int(klines_1h[-1]["open_time"]))
-                    finally:
-                        ledger.close()
-                except Exception as ledger_exc:
-                    self.logger.warning("early_close_dedupe_unavailable error=%s", ledger_exc)
-                if already_observed:
-                    self.logger.info("alert_send_suppressed reason=already_observed_forming_close")
+            # Early and qualified closed trials have separate delivery state.
+            # Do not suppress a formal upgrade merely because its candle/area
+            # matches an early observation; formal signatures dedupe this lane.
             sent = 0
-            if not shadow and not already_observed and decision["should_alert"] and self.state_store.should_send(decision):
+            if not shadow and decision["should_alert"] and self.state_store.should_send(decision):
                 if not should_send_alert_copy(decision):
                     # Kill 关键区观察 / 确认 / 二次确认 copy; keep scoring paths intact.
                     self.logger.info(
