@@ -50,9 +50,11 @@ exactly-once delivery guarantee. Do not delete the ledger to retry blindly.
 
 Early sends do not write formal signal slots, observation pending state, trend
 snapshots or secondary-confirmation state. 1H reads closed observation cooldown
-context; 15m does not. A delivered 1H early observation suppresses the matching
-same-area first closed-candle copy. Later closed structures continue through
-normal formal rules. Closed eligible alerts take precedence over early delivery.
+context; 15m does not. A closed trial that independently passes the formal
+decision gates may upgrade an early observation, including in the same area
+and source candle. Early reservations dedupe the forming lane; formal snapshot
+signatures dedupe the closed lane. Only successful formal delivery creates its
+pending state. Closed eligible alerts take precedence over early delivery.
 Optional early-data/ledger errors are logged and do not stop closed scans.
 
 The previous standalone volume-weak and 15m shadow scripts are unchanged and
@@ -66,7 +68,7 @@ explicit mode switch to disable early sends. No server flags are changed by this
   on Windows. Temporary-directory permissions were corrected for the test run.
 - Added deterministic regressions for forming evidence, both source periods and
   sides, timing/floors, input immutability, safety gates, persistent dedupe,
-  first-close coalescing, uncertain sends and full-scanner silent Shadow.
+  qualified formal upgrades, uncertain sends and full-scanner silent Shadow.
 - Linux CI runs the complete suite, including the existing `fcntl` test.
 - Public-market standalone Shadow smoke: successful scan, no Telegram, both
   sources rejected because volume was below threshold. A snapshot cannot

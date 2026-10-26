@@ -57,11 +57,3 @@ class EarlyObservationStore:
         with self.db:
             self.db.execute("UPDATE delivery SET status='delivered' WHERE symbol=? AND timeframe=? AND side=? AND bar=?", (
                 d["symbol"], d["timeframe"], d["direction"], d["open_time"]))
-
-    def already_observed_close(self, d: dict, closed_open: int) -> bool:
-        """Suppress only the matching first 1H close after a delivered early
-        observation. Later closed structures retain their normal semantics.
-        """
-        row = self.db.execute("SELECT bar, low, high, status FROM delivery WHERE symbol=? AND timeframe='1h' AND side=?", (
-            d["symbol"], d["direction"])).fetchone()
-        return bool(row and row[0] == closed_open and row[3] == "delivered" and self._overlap(d["zone"], row[1], row[2]))
