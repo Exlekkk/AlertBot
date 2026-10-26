@@ -131,27 +131,33 @@ def build_fibonacci_ote_context(klines: list[dict[str, Any]]) -> dict[str, Any]:
     anchor_low: tuple[float, int] | None = None
     last_shift: tuple[str, int] | None = None
 
+    by_confirmation: dict[int, dict[str, tuple[float, int]]] = {}
     for confirm, kind, pivot, value in events:
-        if kind == "high":
-            previous_high = last_high
-            last_high = (value, pivot)
-            if previous_high and value > previous_high[0] and trend_state <= 0 and last_low:
-                trend_state = 1
-                anchor_low = last_low
-                anchor_high = last_high
-                last_shift = ("bullish_shift", confirm)
-            elif trend_state == 1 and anchor_high and value > anchor_high[0]:
-                anchor_high = last_high
-        else:
-            previous_low = last_low
-            last_low = (value, pivot)
-            if previous_low and value < previous_low[0] and trend_state >= 0 and last_high:
-                trend_state = -1
-                anchor_high = last_high
-                anchor_low = last_low
-                last_shift = ("bearish_shift", confirm)
-            elif trend_state == -1 and anchor_low and value < anchor_low[0]:
-                anchor_low = last_low
+        by_confirmation.setdefault(confirm, {})[kind] = (value, pivot)
+
+    for confirm, pivots in sorted(by_confirmation.items()):
+        # Both confirmed swings belong to this bar. Update them together before
+        # any shift chooses its opposite anchor; event order must not use stale
+        # lows/highs when an outside candle confirms both kinds of pivot.
+        if "high" in pivots:
+            previous_high, last_high = last_high, pivots["high"]
+        if "low" in pivots:
+            previous_low, last_low = last_low, pivots["low"]
+        bull_shift = bear_shift = False
+        if "high" in pivots and previous_high and last_high[0] > previous_high[0] and trend_state <= 0 and last_low:
+            bull_shift = True
+            trend_state = 1
+            anchor_low, anchor_high = last_low, last_high
+            last_shift = ("bullish_shift", confirm)
+        if "low" in pivots and previous_low and last_low[0] < previous_low[0] and trend_state >= 0 and last_high:
+            bear_shift = True
+            trend_state = -1
+            anchor_high, anchor_low = last_high, last_low
+            last_shift = ("bearish_shift", confirm)
+        if trend_state == 1 and not bull_shift and "high" in pivots and anchor_high and last_high[0] > anchor_high[0]:
+            anchor_high = last_high
+        if trend_state == -1 and not bear_shift and "low" in pivots and anchor_low and last_low[0] < anchor_low[0]:
+            anchor_low = last_low
 
     if not anchor_high or not anchor_low or anchor_high[0] <= anchor_low[0]:
         return {"available": False, "trend": "neutral", "levels": {}, "extension_targets": {}}
