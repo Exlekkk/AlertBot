@@ -375,6 +375,8 @@ def _trial_probe_sections(d: dict, *, side: str) -> str:
     else:
         attention = f"站回 {invalid:.2f} → 本观察作废，等新结构。"
         conclusion = "具备试空观察条件。严格按关注点管理。"
+    if d.get("forming"):
+        conclusion = "1H 未收盘异常放量，提前观察，待收盘确认。严格按关注点管理。"
     return (
         f"{framework} 丨 {_trigger_time_line(d)}\n\n"
         "📍 开单建议 📍\n"
@@ -449,6 +451,9 @@ def format_prealert_message(d: dict) -> str:
             f"若价格突破风险位 {invalid:.2f}，本次 15m 位置提醒失效。\n"
             "仅作为入场位置提醒，最终仍以 1H / 4H 结构判断为主。"
         )
+
+    if d.get("forming"):
+        status += "\n15m 未收盘异常放量，提前观察，待收盘确认。"
 
     text = (
         f"{title}\n\n"

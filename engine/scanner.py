@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import time
 from typing import Any
 
 from config import BINANCE_SYMBOL, KLINE_LIMIT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_LOG_FILE
@@ -7,6 +10,8 @@ from engine.aux_filters import build_aux_filters_proxy
 from engine.chart_indicators import build_chart_context
 from engine.cooldown import SignalStateStore
 from engine.indicators import enrich_klines
+from engine.early_observation import early_observation_mode, evaluate_early_observation
+from engine.early_observation_state import EarlyObservationStore
 from engine.framework import build_htf_bias_context
 from engine.liquidity import build_liquidity_context
 from engine.key_zones import decide_key_zone_observation
@@ -19,7 +24,7 @@ from engine.delta_profile import build_delta_profile_context, merge_delta_into_v
 from engine.ifvg import build_ifvg_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
-from engine.trend_messages import format_trend_message, should_send_alert_copy
+from engine.trend_messages import format_prealert_message, format_trend_message, should_send_alert_copy
 from engine.trend_segments import decide_trend_segment
 from engine.trend_snapshot import load_observation_state, load_trend_state, make_snapshot_key, save_observation_state, save_trend_state
 from services.logger import get_logger
@@ -82,7 +87,50 @@ class SMCTScanner:
     def healthcheck(self) -> dict[str, Any]:
         return self.health_check()
 
-    def run_once(self) -> dict[str, Any]:
+    def _early_store(self, mode: str) -> EarlyObservationStore:
+        path = os.getenv("SMCT_EARLY_OBSERVATION_STATE_FILE", "/opt/smct-alert/state/early_observation.sqlite3")
+        return EarlyObservationStore(path + (".shadow" if mode == "shadow" else ""))
+
+    def _run_early_observations(self, closed, htf, liq, msb, matrix, aux, vp, range_lock, evidence, *, mode):
+        if mode == "off":
+            return {"sent": 0, "decisions": []}
+        store = self._early_store(mode)
+        sent = 0
+        decisions = []
+        try:
+            # The 1H observation wins simultaneous same-area source candidates.
+            for timeframe in ("1h", "15m"):
+                raw = self.market_data.get_klines(self.symbol, interval=timeframe, limit=KLINE_LIMIT)
+                now_ms = int(time.time()*1000)
+                d = evaluate_early_observation(
+                    self.symbol, timeframe, raw, closed, htf, liq, msb, matrix,
+                    aux, vp, range_lock, evidence, now_ms=now_ms,
+                    observation_state=load_observation_state(self.symbol, "1h") if timeframe == "1h" else {},
+                )
+                if d["should_alert"]:
+                    d["delivery_eligible"] = store.reserve(d, now_ms)
+                    if d["delivery_eligible"]:
+                        if mode == "shadow":
+                            store.delivered(d)  # shadow ledger only
+                        else:
+                            msg = format_prealert_message(d) if timeframe == "15m" else format_trend_message(d)
+                            try:
+                                send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, msg)
+                            except TelegramSendError:
+                                # Unknown transport outcome: retain reservation;
+                                # never build formal pending state from this lane.
+                                d["delivery_outcome"] = "unknown_reserved"
+                            else:
+                                store.delivered(d)
+                                sent += 1
+                                d["delivery_outcome"] = "delivered"
+                self.logger.info("early_observation mode=%s payload=%s", mode, json.dumps(d, ensure_ascii=False))
+                decisions.append(d)
+        finally:
+            store.close()
+        return {"sent": sent, "decisions": decisions}
+
+    def run_once(self, *, shadow: bool = False) -> dict[str, Any]:
         try:
             klines_4h = self._fetch_enriched("4h")
             klines_1h = self._fetch_enriched("1h")
@@ -148,7 +196,7 @@ class SMCTScanner:
                         ict=ict,
                         evidence_bundle=evidence_bundle,
                     )
-                    if observation.get("observation_update") is not None and not observation.get("should_alert"):
+                    if observation.get("observation_update") is not None and not observation.get("should_alert") and not shadow:
                         save_observation_state(self.symbol, "1h", observation["observation_update"])
                     if observation.get("should_alert"):
                         decision = observation
@@ -165,13 +213,27 @@ class SMCTScanner:
             ):
                 # A late/invalid secondary confirmation is terminal.  Clear its
                 # pending state even though no Telegram message is sent.
-                save_observation_state(self.symbol, "1h", decision["observation_update"])
+                if not shadow:
+                    save_observation_state(self.symbol, "1h", decision["observation_update"])
             decision["evidence"] = evidence_bundle
             decision["signature"] = make_snapshot_key(decision)
             self.logger.info("trend_decision_debug symbol=%s payload=%s", self.symbol, decision)
 
+            mode = "shadow" if shadow else early_observation_mode()
+            already_observed = False
+            if mode == "live" and decision["should_alert"] and should_send_alert_copy(decision):
+                try:
+                    ledger = self._early_store(mode)
+                    try:
+                        already_observed = ledger.already_observed_close(decision, int(klines_1h[-1]["open_time"]))
+                    finally:
+                        ledger.close()
+                except Exception as ledger_exc:
+                    self.logger.warning("early_close_dedupe_unavailable error=%s", ledger_exc)
+                if already_observed:
+                    self.logger.info("alert_send_suppressed reason=already_observed_forming_close")
             sent = 0
-            if decision["should_alert"] and self.state_store.should_send(decision):
+            if not shadow and not already_observed and decision["should_alert"] and self.state_store.should_send(decision):
                 if not should_send_alert_copy(decision):
                     # Kill 关键区观察 / 确认 / 二次确认 copy; keep scoring paths intact.
                     self.logger.info(
@@ -200,16 +262,29 @@ class SMCTScanner:
                     except TelegramSendError:
                         pass
 
-            summary = {"decision": decision, "sent": sent}
-            self.runtime_state.mark_scan(ok=True, symbol=self.symbol, summary=summary)
+            early = {"sent": 0, "decisions": []}
+            if not (decision["should_alert"] and should_send_alert_copy(decision)):
+                try:
+                    early = self._run_early_observations(
+                        klines_1h, htf, liq, msb, matrix, aux, vp, range_lock, evidence_bundle, mode=mode)
+                except Exception as early_exc:
+                    # Optional data/ledger failure cannot block closed 1H scans.
+                    self.logger.warning("early_observation_failed error=%s", early_exc)
+                    early["error"] = str(early_exc)
+            sent += early["sent"]
+            summary = {"decision": decision, "sent": sent, "early_observation": early}
+            if not shadow:
+                self.runtime_state.mark_scan(ok=True, symbol=self.symbol, summary=summary)
             return {"ok": True, "symbol": self.symbol, "sent": sent, "summary": summary}
         except Exception as exc:
-            self.runtime_state.mark_scan(ok=False, symbol=self.symbol, summary={"error": str(exc)}, error=str(exc))
+            if not shadow:
+                self.runtime_state.mark_scan(ok=False, symbol=self.symbol, summary={"error": str(exc)}, error=str(exc))
             self.logger.exception("scanner_failed symbol=%s error=%s", self.symbol, exc)
             try:
                 from services.ops_status import notify_backend_error
 
-                notify_backend_error("scanner.run_once", str(exc), state=self.runtime_state)
+                if not shadow:
+                    notify_backend_error("scanner.run_once", str(exc), state=self.runtime_state)
             except Exception as notify_exc:
                 self.logger.warning("scanner_error_notify_failed error=%s", notify_exc)
             return {"ok": False, "symbol": self.symbol, "sent": 0, "error": str(exc)}

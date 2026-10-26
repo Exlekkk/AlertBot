@@ -397,10 +397,11 @@ def assess_trial_candidate(
         "SECONDARY_CONFIRM_UPPER",
     }
     secondary_confirmation = alert_type in {"SECONDARY_CONFIRM_LOWER", "SECONDARY_CONFIRM_UPPER"}
-    if alert_type in formal_reactions:
+    forming = bool(latest.get("forming"))
+    if alert_type in formal_reactions and not forming:
         reaction_score += 3.5
         reasons.append("confirmed_zone_reaction:+3.50")
-    elif interaction in {"reclaimed_above", "rejected_below"}:
+    elif interaction in {"reclaimed_above", "rejected_below"} and not forming:
         reaction_score += 2.5
         reasons.append("zone_accept_reject:+2.50")
 
@@ -448,15 +449,14 @@ def assess_trial_candidate(
     ):
         hard_blocks.append("late_chase")
 
-    accepted_breakout = str(trial_context.get("accepted_breakout", "none"))
-    breakout_matches = (side == "long" and accepted_breakout == "up") or (side == "short" and accepted_breakout == "down")
+    # Auto Range annotation never grants permission to bypass safety gates.
     box_position = str(trial_context.get("box_position", "unknown"))
     has_reference_box = trial_context.get("box_low") is not None and trial_context.get("box_high") is not None
-    if has_reference_box and not breakout_matches:
+    if has_reference_box:
         if (side == "long" and box_position == "upper_edge") or (side == "short" and box_position == "lower_edge"):
             hard_blocks.append("wrong_range_edge")
 
-    if trial_context.get("range_active") and not breakout_matches:
+    if trial_context.get("range_active"):
         box_low = trial_context.get("box_low")
         box_high = trial_context.get("box_high")
         if box_low is not None and box_high is not None and risk_distance > 0:
@@ -470,9 +470,7 @@ def assess_trial_candidate(
         reward_risk = None
 
     reason_blob = " ".join(reasons)
-    # Auto Range confirmed breakout no longer sole-drives matching_fresh_event
-    # (L: forbid high-weight / naked chase from Auto Range). accepted_breakout
-    # still used for range-edge hard-block exemptions above.
+    # Only independent closed-candle sweep evidence is a fresh event.
     matching_fresh_event = (
         (side == "long" and "sweep_sell_side_reclaim" in reason_blob)
         or (side == "short" and "sweep_buy_side_reject" in reason_blob)
@@ -508,6 +506,8 @@ def assess_trial_candidate(
             "sell_absorption_proxy" if side == "long" else "buy_absorption_proxy",
         )
     )
+    if forming and "forming_abnormal_volume:" in reason_text:
+        volume_catalyst = True
     # Gate: directional catalyst needs evidence/RAR/volume/OTE-IFVG reaction —
     # not deleted ICT/MSB proximity and not core_levels soft filter alone.
     auxiliary_reversal = (
@@ -584,8 +584,7 @@ def assess_trial_candidate(
         same_box = observation_state.get("last_formal_range_cluster") == trial_context.get("range_cluster")
     bars_since_flip = _bars_between(int(current_bar), observation_state.get("last_formal_open_time")) if current_bar is not None else None
     new_event_now = bool(
-        breakout_matches
-        or fresh_structure_matches
+        fresh_structure_matches
         or (
             matching_fresh_event
             and trial_context.get("liquidity_bars_since") is not None
@@ -612,7 +611,7 @@ def assess_trial_candidate(
         hard_blocks.append("same_box_opposite_flip_without_new_information")
 
     minimum = float(cfg.get("formal_min_score", 7.0))
-    if trial_context.get("range_active") and box_position == "middle" and not breakout_matches:
+    if trial_context.get("range_active") and box_position == "middle":
         minimum = float(cfg.get("range_mid_min_score", 10.0))
 
     allow_formal = (
