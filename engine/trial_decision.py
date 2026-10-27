@@ -188,6 +188,8 @@ def build_trial_context(
         _append_score(scores, evidence, "long", 0.75, "h4_bull_background")
     elif h4 == "bear" or "偏空" in htf_text:
         _append_score(scores, evidence, "short", 0.75, "h4_bear_background")
+    # TODO(L 2026-10-27): 4H 中性可出弱观察，但零门槛应收紧证据分（本刀优先选区闸；
+    # 中性背景不再赠分已隐含，后续可对 neutral 提高 formal_min / catalyst 要求）。
 
     # --- Candle-approx evidence: prefer scanner evidence_bundle; side-channels are fallback ---
     auto_range = evidence_bundle.get("auto_range") if isinstance(evidence_bundle.get("auto_range"), dict) else {}
