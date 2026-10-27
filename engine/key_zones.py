@@ -25,6 +25,43 @@ UPPER_ALERT_TYPES = {
 }
 
 
+
+def _auto_range_box_active(
+    evidence_bundle: dict[str, Any] | None = None,
+    range_lock: dict[str, Any] | None = None,
+) -> bool:
+    """True only when Auto Range / range_lock carries a real box.
+
+    L 代拍锁（#40）：无真实箱时禁止 orphan ``range_upper``/``range_lower`` 当正式主 POI。
+    inverted IFVG / OTE 必须自身触达后进选区，不得只靠 structural_context 给泛化上下沿开后门。
+    """
+
+    evidence_bundle = evidence_bundle if isinstance(evidence_bundle, dict) else {}
+    ar = evidence_bundle.get("auto_range") if isinstance(evidence_bundle.get("auto_range"), dict) else {}
+    if (
+        str(ar.get("state") or "none") not in {"", "none"}
+        and ar.get("high") is not None
+        and ar.get("low") is not None
+    ):
+        return True
+    range_lock = range_lock if isinstance(range_lock, dict) else {}
+    if (
+        bool(range_lock.get("active"))
+        and range_lock.get("box_low") is not None
+        and range_lock.get("box_high") is not None
+    ):
+        return True
+    # Nested auto_range on range_lock (compat).
+    nested = range_lock.get("auto_range") if isinstance(range_lock.get("auto_range"), dict) else {}
+    if (
+        str(nested.get("state") or "none") not in {"", "none"}
+        and nested.get("high") is not None
+        and nested.get("low") is not None
+    ):
+        return True
+    return False
+
+
 def _zone_hash(zone: tuple[float, float]) -> str:
     zl, zh = zone
     return hashlib.md5(f"{zl:.2f}-{zh:.2f}".encode()).hexdigest()[:10]
@@ -560,6 +597,7 @@ def _select_zone(
     ict: dict[str, Any] | None = None,
     vp: dict[str, Any] | None = None,
     evidence_bundle: dict[str, Any] | None = None,
+    range_lock: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cfg = TREND_ENGINE_CONFIG["key_zone"]
     latest = klines_1h[-1]
@@ -574,6 +612,7 @@ def _select_zone(
     _ = ict
     vp = vp or {}
     evidence_bundle = evidence_bundle if isinstance(evidence_bundle, dict) else {}
+    range_lock = range_lock if isinstance(range_lock, dict) else {}
 
     # Structural context without ICT/MSB: OTE, IFVG, volume-profile POIs, or sweep.
     fibonacci = msb.get("fibonacci", {}) if isinstance(msb.get("fibonacci"), dict) else {}
@@ -608,6 +647,9 @@ def _select_zone(
                     "source": "ifvg_zone",
                     "zone": zone,
                     "full_zone": full_zone,
+                    "inverted": inverted,
+                    # interaction recorded early; formal select still requires
+                    # _touches_* into hits (未见触达不得硬套 IFVG 主区).
                     "interaction": _zone_relation(latest, zone, pad),
                 }
             )
@@ -644,10 +686,11 @@ def _select_zone(
 
     # MSB-OB / ICT structure zones hard-deleted.
 
-    # Range edges are allowed only when there is a valid context behind them
-    # (recent sweep / FVG / structure).  This preserves useful range-boundary
-    # alerts without turning every high/low into a Telegram message.
-    if has_structural_context or not cfg.get("range_edge_requires_context", True):
+    # Range edges require a real Auto Range / range_lock box (L 代拍 #40).
+    # inverted IFVG / OTE 只能靠自身触达进 hits；附近有但未碰到 → 宁漏不发，
+    # 禁止再掉 orphan prev_high/prev_low，也禁止「看见 IFVG 就硬套」成主区。
+    _ = has_structural_context  # candidacy only; no longer unlocks range edges
+    if _auto_range_box_active(evidence_bundle, range_lock):
         prev_low = float(liq.get("prev_low", close))
         prev_high = float(liq.get("prev_high", close))
         range_pad = max(atr * cfg["range_edge_atr_mult"], close * cfg["touch_pct"])
@@ -674,16 +717,29 @@ def _select_zone(
     is_green = close > open_
 
     def _prefer_poi(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        poi = [
+        # L 代拍：inverted IFVG 须已在 hits（=价格触达）才许当主区；触达了优先 IFVG。
+        # 未触达不得硬套；无箱时禁止 orphan range 兜底。
+        inverted_ifvg = [
             z
             for z in hits
-            if z.get("source")
-            in {
-                "ifvg_zone",
-                "fibonacci_ote",
-            }
+            if z.get("source") == "ifvg_zone" and bool(z.get("inverted"))
         ]
-        return poi or hits
+        if inverted_ifvg:
+            return inverted_ifvg
+        ote = [z for z in hits if z.get("source") == "fibonacci_ote"]
+        if ote:
+            return ote
+        # Non-inverted ifvg_zone（legacy active_fvg 路径）仍可作结构 POI。
+        other_ifvg = [z for z in hits if z.get("source") == "ifvg_zone"]
+        if other_ifvg:
+            return other_ifvg
+        range_hits = [z for z in hits if str(z.get("source", "")).startswith("range_")]
+        if range_hits and _auto_range_box_active(evidence_bundle, range_lock):
+            return range_hits
+        # Orphan range-only hits（闸后不应出现）→ 不选。
+        if range_hits:
+            return []
+        return hits
 
     # If a bearish candle actually reaches a lower area, prefer the pullback /
     # support-test description over "upper-zone rejection".
@@ -809,7 +865,7 @@ def decide_key_zone_observation(
             range_lock,
         )
 
-    selected = _select_zone(klines_1h, liq, msb, ict=ict, vp=vp, evidence_bundle=evidence_bundle)
+    selected = _select_zone(klines_1h, liq, msb, ict=ict, vp=vp, evidence_bundle=evidence_bundle, range_lock=range_lock)
     if not selected:
         update = dict(observation_state)
         update.update({
@@ -987,8 +1043,11 @@ def decide_key_zone_observation(
     bars_since_range_lock_alert = _bars_between(current_bar, observation_state.get("range_lock_last_alert_open_time"))
     same_range_lock = range_lock_active and range_lock_cluster and range_lock_cluster == prev_range_lock_cluster
 
-    reentered = not was_inside or not same_cluster
-    if reentered:
+    # Only count a true outside→inside transition. Cluster-string drift while
+    # already inside (or minute-loop leave/re-touch with AR=none) must not inflate
+    # state_version (live tip saw reentry_count≈2803). same_cluster still gates
+    # suppress / cooldown below.
+    if not was_inside:
         reentry_count += 1
 
     suppress_reason = ""
