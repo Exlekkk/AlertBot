@@ -1,4 +1,4 @@
-"""Formal POI gate: orphan range edges without Auto Range box must not fire."""
+"""Formal POI gate (L 代拍 #40): 触达 inverted IFVG 才许主区；无箱禁 orphan range。"""
 from __future__ import annotations
 
 import unittest
@@ -98,7 +98,7 @@ class OrphanRangeEdgeGateTests(unittest.TestCase):
         self.assertIn(decision.get("zone_source"), {"none", "pending_revalidation"})
 
     def test_inverted_ifvg_touch_selects_ifvg_zone(self):
-        """Inverted IFVG in hit range → zone_source=ifvg_zone even when AR=none."""
+        """触达 inverted IFVG → zone_source=ifvg_zone（AR=none 也可；优先于 orphan range）。"""
         ifvg_zone = (10050.0, 10140.0)
         evidence = {
             "auto_range": {"state": "none", "high": None, "low": None},
@@ -141,6 +141,85 @@ class OrphanRangeEdgeGateTests(unittest.TestCase):
         # Formal short rejection path when candle rejected below IFVG.
         self.assertEqual(decision["direction"], "short")
         self.assertIn(decision["alert_type"], {"UPPER_KEY_ZONE_REJECTION", "UPPER_KEY_ZONE_TEST", "RANGE_UPPER_PROBE", "FAST_REBOUND_OBSERVE"})
+
+
+    def test_nearby_untouched_inverted_ifvg_does_not_fire(self):
+        """00:00 反例：旁边有 inverted IFVG 但本根未触达 → 不发。
+
+        禁止硬套 IFVG 成图1区间，也禁止掉进 orphan range_upper。
+        """
+        # Reject near prev_high≈10100；IFVG 远在上方 10280–10380，本根 high=10140 碰不到。
+        evidence = {
+            "auto_range": {"state": "none", "high": None, "low": None},
+            "ifvg": {
+                "nearest_active": {
+                    "top": 10380.0,
+                    "bottom": 10280.0,
+                    "direction": 1,
+                    "inverted": True,
+                    "invalidated": False,
+                },
+                "zones": [],
+                "approx": True,
+            },
+        }
+        selected = _select_zone(
+            _klines_reject_upper(),
+            _liq(),
+            _msb_empty(),
+            evidence_bundle=evidence,
+            range_lock={"active": False},
+        )
+        self.assertEqual(selected, {})
+
+        decision = decide_key_zone_observation(
+            "BTCUSDT",
+            "1h",
+            _klines_reject_upper(),
+            {"text": "4H 震荡", "relation": "neutral"},
+            _liq(),
+            _msb_empty(),
+            {},
+            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 中性"},
+            evidence_bundle=evidence,
+            observation_state={"inside_zone": False, "reentry_count": 0},
+            range_lock={"active": False},
+        )
+        self.assertFalse(decision["should_alert"])
+        self.assertNotEqual(decision.get("zone_source"), "ifvg_zone")
+        self.assertNotEqual(decision.get("zone_source"), "range_upper_zone")
+        self.assertIn(decision.get("zone_source"), {"none", "pending_revalidation"})
+
+    def test_touched_inverted_ifvg_beats_orphan_range_geometry(self):
+        """金标准：触达 inverted IFVG → 主区=IFVG（像图1 80968–81176），非 range_upper。"""
+        ifvg_zone = (10050.0, 10140.0)
+        evidence = {
+            "auto_range": {"state": "none", "high": None, "low": None},
+            "ifvg": {
+                "nearest_active": {
+                    "top": ifvg_zone[1],
+                    "bottom": ifvg_zone[0],
+                    "direction": 1,
+                    "inverted": True,
+                    "invalidated": False,
+                },
+                "zones": [],
+                "approx": True,
+            },
+        }
+        selected = _select_zone(
+            _klines_reject_upper(),
+            _liq(),  # prev_high=10100，若无闸会出 range_upper
+            _msb_empty(),
+            evidence_bundle=evidence,
+            range_lock={"active": False},
+        )
+        self.assertEqual(selected.get("source"), "ifvg_zone")
+        self.assertTrue(selected.get("inverted"))
+        zl, zh = selected["zone"]
+        self.assertAlmostEqual(zl, ifvg_zone[0], places=2)
+        self.assertAlmostEqual(zh, ifvg_zone[1], places=2)
+
 
 
 class ReentryCountTests(unittest.TestCase):

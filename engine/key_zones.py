@@ -32,9 +32,8 @@ def _auto_range_box_active(
 ) -> bool:
     """True only when Auto Range / range_lock carries a real box.
 
-    L 2026-10-27: orphan prev_high/prev_low range edges must not become formal
-    primary POI when auto_range.state is none. Structural IFVG/OTE unlocks those
-    POIs themselves; they must not silently license a generic range edge.
+    L 代拍锁（#40）：无真实箱时禁止 orphan ``range_upper``/``range_lower`` 当正式主 POI。
+    inverted IFVG / OTE 必须自身触达后进选区，不得只靠 structural_context 给泛化上下沿开后门。
     """
 
     evidence_bundle = evidence_bundle if isinstance(evidence_bundle, dict) else {}
@@ -648,6 +647,9 @@ def _select_zone(
                     "source": "ifvg_zone",
                     "zone": zone,
                     "full_zone": full_zone,
+                    "inverted": inverted,
+                    # interaction recorded early; formal select still requires
+                    # _touches_* into hits (未见触达不得硬套 IFVG 主区).
                     "interaction": _zone_relation(latest, zone, pad),
                 }
             )
@@ -684,9 +686,9 @@ def _select_zone(
 
     # MSB-OB / ICT structure zones hard-deleted.
 
-    # Range edges require a real Auto Range / range_lock box (L 2026-10-27).
-    # IFVG/OTE structural context must select those POIs themselves; they must
-    # not license orphan prev_high/prev_low edges when auto_range.state is none.
+    # Range edges require a real Auto Range / range_lock box (L 代拍 #40).
+    # inverted IFVG / OTE 只能靠自身触达进 hits；附近有但未碰到 → 宁漏不发，
+    # 禁止再掉 orphan prev_high/prev_low，也禁止「看见 IFVG 就硬套」成主区。
     _ = has_structural_context  # candidacy only; no longer unlocks range edges
     if _auto_range_box_active(evidence_bundle, range_lock):
         prev_low = float(liq.get("prev_low", close))
@@ -715,24 +717,27 @@ def _select_zone(
     is_green = close > open_
 
     def _prefer_poi(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # Formal primary POI: inverted/active IFVG or OTE. Range edges only when
-        # an Auto Range box licensed them into `zones` (see above).
-        poi = [
+        # L 代拍：inverted IFVG 须已在 hits（=价格触达）才许当主区；触达了优先 IFVG。
+        # 未触达不得硬套；无箱时禁止 orphan range 兜底。
+        inverted_ifvg = [
             z
             for z in hits
-            if z.get("source")
-            in {
-                "ifvg_zone",
-                "fibonacci_ote",
-            }
+            if z.get("source") == "ifvg_zone" and bool(z.get("inverted"))
         ]
-        if poi:
-            return poi
+        if inverted_ifvg:
+            return inverted_ifvg
+        ote = [z for z in hits if z.get("source") == "fibonacci_ote"]
+        if ote:
+            return ote
+        # Non-inverted ifvg_zone（legacy active_fvg 路径）仍可作结构 POI。
+        other_ifvg = [z for z in hits if z.get("source") == "ifvg_zone"]
+        if other_ifvg:
+            return other_ifvg
         range_hits = [z for z in hits if str(z.get("source", "")).startswith("range_")]
         if range_hits and _auto_range_box_active(evidence_bundle, range_lock):
             return range_hits
-        # Orphan range-only hits (should not appear after the gate) → no select.
-        if range_hits and not poi:
+        # Orphan range-only hits（闸后不应出现）→ 不选。
+        if range_hits:
             return []
         return hits
 
