@@ -239,6 +239,7 @@ TREND_ENGINE_CONFIG = {
         # location, invalid risk, stale/chased entries, or a clear opposite
         # structure advantage.
         "formal_min_score": 7.0,
+        "neutral_htf_formal_min_score": 8.5,
         "range_mid_min_score": 10.0,
         "early_trial_min_score": 8.0,
         "direction_advantage_min": 1.0,

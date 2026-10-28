@@ -105,11 +105,51 @@ def build_aux_filters_proxy(
     )
     core = build_core_levels_filter(klines_1h, timeframe="1h")
 
+    rar_spread = _safe_float(k1.get("rar_spread"), abs(rar_proxy - rar_trigger))
+    spreads = _series(klines_1h[-8:], "rar_spread", rar_spread)
+    if not spreads:
+        spreads = [rar_spread]
+    # trend_strong on bar == spread >= SMA15 of spread (precomputed on klines).
+    rar_trend_strong = bool(k1.get("rar_trend_strong"))
+    if "rar_trend_strong" not in k1 and len(spreads) >= 2:
+        # Fallback: compare latest spread vs mean of available window.
+        rar_trend_strong = spreads[-1] >= (_avg(spreads) if spreads else rar_spread)
+
+    if len(spreads) >= 2:
+        rar_spread_rising = spreads[-1] > spreads[-2]
+        rar_spread_falling = spreads[-1] < spreads[-2]
+    else:
+        rar_spread_rising = False
+        rar_spread_falling = False
+
+    # value vs trigger relative strength trajectory over recent bars.
+    values = _series(klines_1h[-8:], "rar_value", rar_proxy)
+    triggers = _series(klines_1h[-8:], "rar_trigger", rar_trigger)
+    if len(values) >= 1 and len(triggers) >= 1:
+        n = min(len(values), len(triggers))
+        deltas = [values[i] - triggers[i] for i in range(n)]
+    else:
+        deltas = [rar_proxy - rar_trigger]
+    rar_vs_trigger = deltas[-1]
+    if len(deltas) >= 2:
+        rar_vs_trigger_weakening = deltas[-1] < deltas[-2]
+        rar_vs_trigger_strengthening = deltas[-1] > deltas[-2]
+    else:
+        rar_vs_trigger_weakening = rar_vs_trigger < 0
+        rar_vs_trigger_strengthening = rar_vs_trigger > 0
+
     # Legacy inertia / formation fields kept inert for older readers.
     return {
         "rar_proxy": rar_proxy,
         "rar_trigger": rar_trigger,
         "rar_above_trigger": rar_proxy >= rar_trigger,
+        "rar_spread": rar_spread,
+        "rar_trend_strong": rar_trend_strong,
+        "rar_spread_rising": rar_spread_rising,
+        "rar_spread_falling": rar_spread_falling,
+        "rar_vs_trigger": rar_vs_trigger,
+        "rar_vs_trigger_weakening": rar_vs_trigger_weakening,
+        "rar_vs_trigger_strengthening": rar_vs_trigger_strengthening,
         "inertia": None,
         "inertia_signal": None,
         "inertia_green": False,
