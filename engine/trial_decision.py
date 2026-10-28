@@ -58,32 +58,49 @@ def _rar_bandwidth_expansion(aux: dict[str, Any], side: str) -> bool:
     return bool(aux.get("rar_vs_trigger_strengthening")) or bool(aux.get("rar_above_trigger"))
 
 
-def _rar_regime_permission(aux: dict[str, Any], side: str) -> bool:
-    """Formal trial needs turn signal or aligned bandwidth expansion."""
-    slope = _f(aux.get("rar_slope"))
-    if side == "short":
-        return slope <= -0.35 or _rar_bandwidth_expansion(aux, "short")
-    return slope >= 0.35 or _rar_bandwidth_expansion(aux, "long")
+def _rar_adverse_penalty(aux: dict[str, Any], side: str) -> float:
+    """High-weight reverse-RAR penalty (score path, never a hard_block veto).
 
-
-def _rar_regime_blocks(aux: dict[str, Any], side: str) -> bool:
-    """Hard gate: reverse RAR regime bans formal trial (priority over IFVG POI).
-
-    Short blocked when above_trigger + (slope still positive / bullish momentum),
-    or when permission (turn_down / bearish expansion) is missing.
-    Long is symmetric.
+    Short adverse requires above_trigger + positive slope (10/28 14:00 class);
+    long requires below_trigger + negative slope. Momentum alone never triggers.
+    Narrow band / steep slope deepen the drag; IFVG/structure may still resonate.
     """
     slope = _f(aux.get("rar_slope"))
     momentum = str(aux.get("momentum_desc", ""))
     bullish_mom = ("偏强" in momentum) or ("买盘" in momentum) or ("修复" in momentum)
     bearish_mom = ("偏弱" in momentum) or ("卖压" in momentum) or ("转弱" in momentum)
+    above = bool(aux.get("rar_above_trigger"))
+    # Only treat as "narrow" when spread fields were supplied; missing → not assumed narrow.
+    has_spread_meta = ("rar_trend_strong" in aux) or ("rar_spread" in aux)
+    narrow = has_spread_meta and not bool(aux.get("rar_trend_strong"))
+
     if side == "short":
-        if bool(aux.get("rar_above_trigger")) and (slope > 0 or bullish_mom):
-            return True
-        return not _rar_regime_permission(aux, "short")
-    if (not bool(aux.get("rar_above_trigger", True))) and (slope < 0 or bearish_mom):
-        return True
-    return not _rar_regime_permission(aux, "long")
+        if _rar_bandwidth_expansion(aux, "short") or slope <= -0.35:
+            return 0.0
+        if not (above and slope > 0):
+            return 0.0
+        penalty = -2.5
+        if slope >= 0.35:
+            penalty -= 1.5
+        if narrow:
+            penalty -= 1.5
+        if bullish_mom:
+            penalty -= 0.5
+        return penalty
+
+    if _rar_bandwidth_expansion(aux, "long") or slope >= 0.35:
+        return 0.0
+    below = not above
+    if not (below and slope < 0):
+        return 0.0
+    penalty = -2.5
+    if slope <= -0.35:
+        penalty -= 1.5
+    if narrow:
+        penalty -= 1.5
+    if bearish_mom:
+        penalty -= 0.5
+    return penalty
 
 
 
@@ -190,12 +207,18 @@ def build_trial_context(
         _append_score(scores, evidence, "long", 0.5, "rar_above_trigger")
     elif not aux.get("rar_above_trigger", True) and rar_slope <= 0:
         _append_score(scores, evidence, "short", 0.5, "rar_below_trigger")
-    # rar_spread / rar_trend_strong enter decision (not bookkeeping-only).
-    # Weight unchanged for turn/above_trigger; bandwidth is additive regime lean.
+    # rar_spread / rar_trend_strong enter decision (high-weight score / resonance).
+    # Aligned bandwidth adds; reverse regime subtracts heavily — no hard_block veto.
     if _rar_bandwidth_expansion(aux, "long"):
         _append_score(scores, evidence, "long", 0.75, "rar_bullish_bandwidth")
     if _rar_bandwidth_expansion(aux, "short"):
         _append_score(scores, evidence, "short", 0.75, "rar_bearish_bandwidth")
+    short_adverse = _rar_adverse_penalty(aux, "short")
+    if short_adverse:
+        _append_score(scores, evidence, "short", short_adverse, "rar_adverse_bull_regime")
+    long_adverse = _rar_adverse_penalty(aux, "long")
+    if long_adverse:
+        _append_score(scores, evidence, "long", long_adverse, "rar_adverse_bear_regime")
 
     momentum = str(aux.get("momentum_desc", ""))
     if "偏强" in momentum or "买盘" in momentum or ("修复" in momentum and rar_slope > 0):
@@ -298,8 +321,13 @@ def build_trial_context(
         # inverted gap: direction 1 (bullish origin) acting as resistance after invert → short lean
         if int(nearest_imb.get("direction") or 0) == 1:
             _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
+            # RAR↔IFVG 互通：同向 turn/bandwidth 共振加分（非一票否决关系）
+            if rar_slope <= -0.35 or _rar_bandwidth_expansion(aux, "short"):
+                _append_score(scores, evidence, "short", 0.75, "rar_ifvg_short_resonance")
         elif int(nearest_imb.get("direction") or 0) == -1:
             _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
+            if rar_slope >= 0.35 or _rar_bandwidth_expansion(aux, "long"):
+                _append_score(scores, evidence, "long", 0.75, "rar_ifvg_long_resonance")
 
     # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
     # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
@@ -633,12 +661,8 @@ def assess_trial_candidate(
     if not evidence_keys and not effective_directional_catalyst:
         hard_blocks.append("formal_without_evidence")
 
-    # RAR regime hard gate (L 2026-10-28): reverse RAR bans formal trial.
-    # IFVG POI may define zone + reaction score, but cannot override reverse RAR.
-    rar_aux = trial_context.get("rar_aux") if isinstance(trial_context.get("rar_aux"), dict) else {}
-    # Only enforce when rar_aux was populated (build_trial_context); bare fixtures omit it.
-    if rar_aux and _rar_regime_blocks(rar_aux, side):
-        hard_blocks.append("rar_regime_blocks_short" if side == "short" else "rar_regime_blocks_long")
+    # RAR reverse regime is score/resonance only — never rar_regime_blocks_* hard veto.
+    _ = trial_context.get("rar_aux")
 
     if opposite_score - score >= float(cfg.get("opposite_conflict_margin", 2.5)):
         hard_blocks.append("opposite_structure_dominates")
@@ -688,11 +712,9 @@ def assess_trial_candidate(
     minimum = float(cfg.get("formal_min_score", 7.0))
     if trial_context.get("range_active") and box_position == "middle":
         minimum = float(cfg.get("range_mid_min_score", 10.0))
-    # 4H 中性收紧：抬高 formal_min，并要求更强 directional catalyst（非仅 secondary）。
+    # 4H 中性收紧：只抬 formal_min，不再叠第二层 hard_block 死锁。
     if trial_context.get("h4_neutral"):
         minimum = max(minimum, float(cfg.get("neutral_htf_formal_min_score", 8.5)))
-        if not directional_catalyst:
-            hard_blocks.append("neutral_htf_without_directional_catalyst")
 
     allow_formal = (
         not hard_blocks
