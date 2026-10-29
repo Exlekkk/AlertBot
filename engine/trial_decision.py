@@ -317,17 +317,73 @@ def build_trial_context(
     if not imbalance:
         imbalance = range_lock.get("imbalance") if isinstance(range_lock.get("imbalance"), dict) else {}
     nearest_imb = imbalance.get("nearest_active") if isinstance(imbalance.get("nearest_active"), dict) else None
-    if nearest_imb and nearest_imb.get("inverted") and not nearest_imb.get("invalidated"):
-        # inverted gap: direction 1 (bullish origin) acting as resistance after invert → short lean
+    # Multi-IFVG: score resistance/support from an inverted zone the candle actually
+    # touched (wick), not only nearest-to-close — otherwise a post-reject close sitting
+    # inside lower IFVG steals the short lean from an upper supply reject.
+    touched_resistance = False
+    touched_support = False
+    pad_ifvg = max(atr * 0.15, abs(close) * 0.001)
+    high = _f(latest.get("high"), close)
+    low = _f(latest.get("low"), close)
+    for item in list(imbalance.get("zones") or []) + ([nearest_imb] if nearest_imb else []):
+        if not isinstance(item, dict) or item.get("invalidated") or not item.get("inverted"):
+            continue
+        top = item.get("top")
+        bottom = item.get("bottom")
+        if top is None or bottom is None:
+            continue
+        zl, zh = min(float(bottom), float(top)), max(float(bottom), float(top))
+        touched = high >= zl - pad_ifvg and low <= zh + pad_ifvg
+        if not touched:
+            continue
+        direction = int(item.get("direction") or 0)
+        if direction == 1:
+            touched_resistance = True
+        elif direction == -1:
+            touched_support = True
+    if not touched_resistance and not touched_support and nearest_imb and nearest_imb.get("inverted") and not nearest_imb.get("invalidated"):
+        # Untouched nearest still contributes soft lean (legacy), weaker than touch.
         if int(nearest_imb.get("direction") or 0) == 1:
-            _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
-            # RAR↔IFVG 互通：同向 turn/bandwidth 共振加分（非一票否决关系）
-            if rar_slope <= -0.35 or _rar_bandwidth_expansion(aux, "short"):
-                _append_score(scores, evidence, "short", 0.75, "rar_ifvg_short_resonance")
+            _append_score(scores, evidence, "short", 0.5, "imbalance_inverted_resistance_near")
         elif int(nearest_imb.get("direction") or 0) == -1:
-            _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
-            if rar_slope >= 0.35 or _rar_bandwidth_expansion(aux, "long"):
-                _append_score(scores, evidence, "long", 0.75, "rar_ifvg_long_resonance")
+            _append_score(scores, evidence, "long", 0.5, "imbalance_inverted_support_near")
+    if touched_resistance:
+        _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
+        if rar_slope <= -0.35 or _rar_bandwidth_expansion(aux, "short"):
+            _append_score(scores, evidence, "short", 0.75, "rar_ifvg_short_resonance")
+    if touched_support:
+        _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
+        if rar_slope >= 0.35 or _rar_bandwidth_expansion(aux, "long"):
+            _append_score(scores, evidence, "long", 0.75, "rar_ifvg_long_resonance")
+
+    # 15m 上方供给拒收 + 小 M 顶 → 正式空向互通（高权加分；可削弱但不取消反向 RAR）
+    structure_15m = evidence_bundle.get("structure_15m") if isinstance(evidence_bundle.get("structure_15m"), dict) else {}
+    m15_active = bool(structure_15m.get("active")) and bool(structure_15m.get("supply_reject")) and bool(
+        (structure_15m.get("small_m_top") or {}).get("active")
+    )
+    if m15_active:
+        _append_score(scores, evidence, "short", 3.5, "m15_supply_reject_m_top")
+        # Cap reverse-RAR drag when 15m M-top supply reject is present (互通, not hard veto).
+        # 10/28 14:00 反例无此结构 → 仍吃满 adverse。
+        short_blob = " ".join(evidence["short"])
+        if "rar_adverse_bull_regime" in short_blob:
+            # Remove prior adverse and re-apply capped.
+            capped = max(_rar_adverse_penalty(aux, "short"), -2.0)
+            # Strip old adverse entries and score
+            new_reasons = []
+            removed = 0.0
+            for r in evidence["short"]:
+                if r.startswith("rar_adverse_bull_regime:"):
+                    try:
+                        removed += float(r.split(":", 1)[1])
+                    except ValueError:
+                        removed += -4.5
+                else:
+                    new_reasons.append(r)
+            evidence["short"] = new_reasons
+            scores["short"] -= removed
+            if capped < 0:
+                _append_score(scores, evidence, "short", capped, "rar_adverse_bull_regime_capped")
 
     # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
     # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
@@ -346,6 +402,7 @@ def build_trial_context(
             "sweep_buy_side_reject",
             "profile_node_bear",
             "imbalance_inverted_resistance",
+            "m15_supply_reject_m_top",
         ),
     }
     for _side, _tokens in _confluence_tokens.items():
@@ -586,8 +643,11 @@ def assess_trial_candidate(
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "evidence_confluence",
+            # 15m 供给拒收+小M顶：正式空向催化剂（对称多向暂不单开）
+            "m15_supply_reject_m_top" if side == "short" else "m15_demand_reclaim_m_bottom",
         )
     )
+    m15_short_catalyst = side == "short" and "m15_supply_reject_m_top" in reason_text
     structure_aligned = any(
         token in reason_text
         for token in (
@@ -664,7 +724,12 @@ def assess_trial_candidate(
     # RAR reverse regime is score/resonance only — never rar_regime_blocks_* hard veto.
     _ = trial_context.get("rar_aux")
 
-    if opposite_score - score >= float(cfg.get("opposite_conflict_margin", 2.5)):
+    # 15m M-top supply reject + IFVG upper reaction: allow score/互通 to fight
+    # opposite lean without a dead veto (仍可用分数不够挡；非 rar hard_block).
+    opposite_margin = float(cfg.get("opposite_conflict_margin", 2.5))
+    if m15_short_catalyst and zone_source in {"ifvg_zone", "imbalance_zone"} and alert_type in formal_reactions:
+        opposite_margin = float(cfg.get("m15_opposite_conflict_margin", 5.0))
+    if opposite_score - score >= opposite_margin:
         hard_blocks.append("opposite_structure_dominates")
     current_formal_side = "lower" if side == "long" else "upper"
     previous_formal_side = str(observation_state.get("last_formal_side", ""))

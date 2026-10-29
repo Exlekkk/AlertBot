@@ -626,33 +626,50 @@ def _select_zone(
     # Structural context = OTE or IFVG only (evidence sweep is scored elsewhere).
     has_structural_context = has_ote or has_ifvg
 
+    # Multi-IFVG: consider all active inverted zones (and nearest fallback), not
+    # only nearest-to-close. Wick rejection into upper supply must not be stolen
+    # by a lower IFVG that happens to sit near the post-reject close (04:00 class).
+    ifvg_candidates: list[dict[str, Any]] = []
+    seen_keys: set[tuple[float, float, int]] = set()
+    raw_zones = list(ifvg.get("zones") or [])
     nearest_ifvg = ifvg.get("nearest_active") if isinstance(ifvg.get("nearest_active"), dict) else None
-    if nearest_ifvg and not nearest_ifvg.get("invalidated"):
-        top = nearest_ifvg.get("top")
-        bottom = nearest_ifvg.get("bottom")
-        if top is not None and bottom is not None:
-            full_zone = _ordered_zone((float(bottom), float(top)))
-            # direction 1 (bullish origin) inverted → resistance / upper;
-            # direction -1 inverted → support / lower. Non-inverted keeps origin side.
-            direction = int(nearest_ifvg.get("direction") or 0)
-            inverted = bool(nearest_ifvg.get("inverted"))
-            if inverted:
-                side = "upper" if direction == 1 else "lower"
-            else:
-                side = "lower" if direction == 1 else "upper"
-            zone = full_zone
-            zones.append(
-                {
-                    "side": side,
-                    "source": "ifvg_zone",
-                    "zone": zone,
-                    "full_zone": full_zone,
-                    "inverted": inverted,
-                    # interaction recorded early; formal select still requires
-                    # _touches_* into hits (未见触达不得硬套 IFVG 主区).
-                    "interaction": _zone_relation(latest, zone, pad),
-                }
-            )
+    if isinstance(nearest_ifvg, dict):
+        raw_zones = [nearest_ifvg] + raw_zones
+    for item in raw_zones:
+        if not isinstance(item, dict) or item.get("invalidated"):
+            continue
+        top = item.get("top")
+        bottom = item.get("bottom")
+        if top is None or bottom is None:
+            continue
+        direction = int(item.get("direction") or 0)
+        inverted = bool(item.get("inverted"))
+        # Prefer inverted POIs; allow non-inverted nearest only as legacy fallback.
+        if not inverted and item is not nearest_ifvg:
+            continue
+        key = (round(float(bottom), 2), round(float(top), 2), direction)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        full_zone = _ordered_zone((float(bottom), float(top)))
+        if inverted:
+            side = "upper" if direction == 1 else "lower"
+        else:
+            side = "lower" if direction == 1 else "upper"
+        zones.append(
+            {
+                "side": side,
+                "source": "ifvg_zone",
+                "zone": full_zone,
+                "full_zone": full_zone,
+                "inverted": inverted,
+                # interaction recorded early; formal select still requires
+                # _touches_* into hits (未见触达不得硬套 IFVG 主区).
+                "interaction": _zone_relation(latest, full_zone, pad),
+            }
+        )
+        ifvg_candidates.append(zones[-1])
+    _ = ifvg_candidates
 
     ote_zone = fibonacci.get("ote_zone")
     if ote_zone and fibonacci.get("trend") in {"bull", "bear"}:
@@ -741,19 +758,22 @@ def _select_zone(
             return []
         return hits
 
-    # If a bearish candle actually reaches a lower area, prefer the pullback /
-    # support-test description over "upper-zone rejection".
-    if is_red and lower_hits:
-        return _best_zone(_prefer_poi(lower_hits), close, "lower")
-    if is_green and upper_hits:
-        return _best_zone(_prefer_poi(upper_hits), close, "upper")
-
+    # Prefer clear accept/reject semantics over mere "inside nearest" when a
+    # red candle wick-rejects upper supply (or green reclaim of lower demand).
+    # Multi-IFVG: 上沿拒收优先于收盘附近的下沿 inside（04:00/~81759 反例）.
     rejected_upper = [z for z in upper_hits if z.get("interaction") == "rejected_below"]
     reclaimed_lower = [z for z in lower_hits if z.get("interaction") == "reclaimed_above"]
     if is_red and rejected_upper:
         return _best_zone(_prefer_poi(rejected_upper), close, "upper")
     if is_green and reclaimed_lower:
         return _best_zone(_prefer_poi(reclaimed_lower), close, "lower")
+
+    # Without a clean reject/reclaim, a red touch of lower support still reads
+    # as pullback/test; green touch of upper still reads as rebound/test.
+    if is_red and lower_hits:
+        return _best_zone(_prefer_poi(lower_hits), close, "lower")
+    if is_green and upper_hits:
+        return _best_zone(_prefer_poi(upper_hits), close, "upper")
 
     if lower_hits:
         return _best_zone(_prefer_poi(lower_hits), close, "lower")

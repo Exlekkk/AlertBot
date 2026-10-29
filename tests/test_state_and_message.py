@@ -184,7 +184,7 @@ class TelegramSendTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["sent"], 0)
-        self.assertEqual(sorted(fetch_calls), ["1h", "4h"])
+        self.assertEqual(sorted(fetch_calls), ["15m", "1h", "4h"])
         scanner.state_store.mark_sent.assert_not_called()
         scanner.runtime_state.mark_sent_signal.assert_not_called()
 
@@ -437,7 +437,7 @@ class ScannerPipelineTests(unittest.TestCase):
         ctx = scanner._htf_context([{"ema10": 2.0, "ema20": 1.0, "close": 100.0, "atr": 1.0}], "neutral")
         self.assertEqual(ctx["relation"], "neutral")
 
-    def test_scanner_only_fetches_4h_and_1h(self):
+    def test_scanner_fetches_4h_1h_and_15m(self):
         from engine.scanner import SMCTScanner
 
         calls: list[str] = []
@@ -458,7 +458,7 @@ class ScannerPipelineTests(unittest.TestCase):
             result = scanner.run_once()
 
         self.assertTrue(result["ok"])
-        self.assertEqual(sorted(calls), ["1h", "4h"])
+        self.assertEqual(sorted(calls), ["15m", "1h", "4h"])
 
 
 class StatePersistenceTests(unittest.TestCase):
