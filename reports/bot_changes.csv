@@ -1,0 +1,6 @@
+date_cst,pr,tip,rollback,summary_en,note_cn
+2026-10-28,41,1c06132e3144b46d60dc04d0a86e4614d096bc44,65a447e1eac4e91b6fca14c0f1811d8b34c2700a,feat: RAR high-weight score and resonance,RAR 高权计分/共振（去硬闸一票否决）；合入 main fefc93f
+2026-10-29,42,f97baeb1ce5d34668b5eba026098617b13d63c2d,fefc93f2c2df62a5fb8c55951f7beb0b304b529b,feat: 15m supply-reject M-top formal short,15m 供给拒收+小M顶进正式试空；合入 main b343966
+2026-10-30,43,e4296aca1efc81df646620e713ef30b2e146d315,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: #35 baseline plus M-top only,#35 基线+仅小M顶正式试空；tip-detach Draft 路径
+2026-10-30,44,22909372e3c25fee66fb6520932758f42f25ea44,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: Dow HH/HL/LH/LL on #43 tip,#43 tip + 道氏中低结构证据；当前 LIVE tip；回滚金锚 #35
+2026-10-30,45,db6a44af970cb45d3eadc3d875e5ff010bffee42,b343966aca8b20dd9867bec733f99390fe5c52dc,docs: add drafts archive,主页卫生 docs/drafts/；合入 main d95f27a；不上机
