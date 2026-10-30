@@ -358,6 +358,225 @@ def detect_near_pivot_level(
             return {"active": True, "price": round(price, 2), "index": idx}
     return None
 
+
+def label_dow_swings(
+    klines: list[dict],
+    *,
+    left: int = 2,
+    right: int = 2,
+    lookback: int = 120,
+) -> dict[str, Any]:
+    """Label 1H fractal swings as HH/HL/LH/LL (Dow).
+
+    Pivots reuse ``find_pivots`` (default left=right=2). First swing of each
+    side is tagged ``H`` / ``L`` (seed); subsequent highs are HH or LH, lows
+    HL or LL.
+    """
+
+    empty: dict[str, Any] = {
+        "swing_highs": [],
+        "swing_lows": [],
+        "trend": "none",
+        "last_hh": None,
+        "last_hl": None,
+        "last_lh": None,
+        "last_ll": None,
+    }
+    if len(klines) < left + right + 3:
+        return empty
+
+    pivot_highs, pivot_lows = find_pivots(klines, left=left, right=right)
+    window_start = max(0, len(klines) - lookback)
+    highs = [i for i in pivot_highs if i >= window_start]
+    lows = [i for i in pivot_lows if i >= window_start]
+
+    swing_highs: list[dict[str, Any]] = []
+    prev_high: float | None = None
+    for idx in highs:
+        price = float(klines[idx]["high"])
+        if prev_high is None:
+            label = "H"
+        else:
+            label = "HH" if price > prev_high else "LH"
+        swing_highs.append({"index": idx, "price": round(price, 2), "label": label})
+        prev_high = price
+
+    swing_lows: list[dict[str, Any]] = []
+    prev_low: float | None = None
+    for idx in lows:
+        price = float(klines[idx]["low"])
+        if prev_low is None:
+            label = "L"
+        else:
+            label = "HL" if price > prev_low else "LL"
+        swing_lows.append({"index": idx, "price": round(price, 2), "label": label})
+        prev_low = price
+
+    def _last(label: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for row in reversed(rows):
+            if row["label"] == label:
+                return row
+        return None
+
+    last_high = swing_highs[-1] if swing_highs else None
+    last_low = swing_lows[-1] if swing_lows else None
+    trend = "none"
+    if last_high and last_low:
+        if last_high["label"] == "HH" and last_low["label"] == "HL":
+            trend = "up"
+        elif last_high["label"] == "LH" and last_low["label"] == "LL":
+            trend = "down"
+
+    return {
+        "swing_highs": swing_highs,
+        "swing_lows": swing_lows,
+        "trend": trend,
+        "last_hh": _last("HH", swing_highs),
+        "last_hl": _last("HL", swing_lows),
+        "last_lh": _last("LH", swing_highs),
+        "last_ll": _last("LL", swing_lows),
+    }
+
+
+def build_dow_structure_context(
+    klines: list[dict],
+    *,
+    left: int = 2,
+    right: int = 2,
+    lookback: int = 120,
+    timeframe: str = "1h",
+    max_break_bars_ago: int = 2,
+) -> dict[str, Any]:
+    """1H Dow structure evidence for trial stack (not a hard gate alone).
+
+    - Trend: HH+HL = up, LH+LL = down.
+    - Turn evidence: 1H close breaks nearest HL → short; breaks nearest LH → long.
+    - Same-way BOS (break prior HH while up / prior LL while down, HL/LH intact)
+      is strengthen-only metadata — caller must not solo-formal on it.
+    """
+
+    base = label_dow_swings(klines, left=left, right=right, lookback=lookback)
+    out: dict[str, Any] = {
+        "approx": True,
+        "timeframe": timeframe,
+        **base,
+        "break_hl": None,
+        "break_lh": None,
+        "bos_same_way": None,
+        "active_short_evidence": False,
+        "active_long_evidence": False,
+        "reason": "insufficient_swings",
+    }
+    if len(klines) < left + right + 5:
+        return out
+
+    tol = _price_tolerance(klines)
+    last_index = len(klines) - 1
+    close = float(klines[last_index]["close"])
+
+    # L lock: break nearest HL → short; break nearest LH → long.
+    # Seed H/L are unlabeled baselines — do not treat as turn evidence.
+    nearest_support = None
+    for row in reversed(base["swing_lows"]):
+        if row["label"] == "HL":
+            nearest_support = row
+            break
+    nearest_resistance = None
+    for row in reversed(base["swing_highs"]):
+        if row["label"] == "LH":
+            nearest_resistance = row
+            break
+
+    if nearest_support is not None:
+        level = float(nearest_support["price"])
+        bars_ago = last_index - int(nearest_support["index"])
+        # Break counted on recent closes after the swing is confirmed.
+        if close < level - tol and bars_ago >= right:
+            # Find which bar first closed below (prefer last bar).
+            trigger = last_index
+            for j in range(last_index, max(int(nearest_support["index"]) + right, last_index - max_break_bars_ago) - 1, -1):
+                if float(klines[j]["close"]) < level - tol:
+                    trigger = j
+                    break
+            if last_index - trigger <= max_break_bars_ago:
+                out["break_hl"] = {
+                    "active": True,
+                    "side": "short",
+                    "level": round(level, 2),
+                    "swing_index": nearest_support["index"],
+                    "swing_label": nearest_support["label"],
+                    "trigger_index": trigger,
+                    "bars_ago": last_index - trigger,
+                    "close": round(close, 2),
+                }
+                out["active_short_evidence"] = True
+
+    if nearest_resistance is not None:
+        level = float(nearest_resistance["price"])
+        bars_ago = last_index - int(nearest_resistance["index"])
+        if close > level + tol and bars_ago >= right:
+            trigger = last_index
+            for j in range(last_index, max(int(nearest_resistance["index"]) + right, last_index - max_break_bars_ago) - 1, -1):
+                if float(klines[j]["close"]) > level + tol:
+                    trigger = j
+                    break
+            if last_index - trigger <= max_break_bars_ago:
+                out["break_lh"] = {
+                    "active": True,
+                    "side": "long",
+                    "level": round(level, 2),
+                    "swing_index": nearest_resistance["index"],
+                    "swing_label": nearest_resistance["label"],
+                    "trigger_index": trigger,
+                    "bars_ago": last_index - trigger,
+                    "close": round(close, 2),
+                }
+                out["active_long_evidence"] = True
+
+    # Same-way BOS: structure intact (no opposing break), break prior extreme.
+    trend = base["trend"]
+    if trend == "up" and not out["active_short_evidence"] and base["last_hh"] is not None:
+        hh = base["last_hh"]
+        level = float(hh["price"])
+        if close > level + tol and last_index - int(hh["index"]) >= right:
+            out["bos_same_way"] = {
+                "active": True,
+                "direction": "up",
+                "kind": "bos",
+                "level": round(level, 2),
+                "swing_index": hh["index"],
+                "bars_ago": 0,
+                "strengthen_only": True,
+            }
+    elif trend == "down" and not out["active_long_evidence"] and base["last_ll"] is not None:
+        ll = base["last_ll"]
+        level = float(ll["price"])
+        if close < level - tol and last_index - int(ll["index"]) >= right:
+            out["bos_same_way"] = {
+                "active": True,
+                "direction": "down",
+                "kind": "bos",
+                "level": round(level, 2),
+                "swing_index": ll["index"],
+                "bars_ago": 0,
+                "strengthen_only": True,
+            }
+
+    if out["active_short_evidence"]:
+        out["reason"] = "dow_break_hl"
+    elif out["active_long_evidence"]:
+        out["reason"] = "dow_break_lh"
+    elif out["bos_same_way"]:
+        out["reason"] = "dow_bos_same_way"
+    elif trend == "up":
+        out["reason"] = "dow_trend_up_hh_hl"
+    elif trend == "down":
+        out["reason"] = "dow_trend_down_lh_ll"
+    else:
+        out["reason"] = "dow_no_clear_trend"
+    return out
+
+
 def detect_small_m_top(
     klines: list[dict],
     *,

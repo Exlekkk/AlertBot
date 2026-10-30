@@ -17,7 +17,7 @@ from engine.range_lock import build_range_lock_context
 from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
 from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
 from engine.ifvg import build_ifvg_context
-from engine.structure import build_structure_15m_context
+from engine.structure import build_dow_structure_context, build_structure_15m_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message, should_send_alert_copy
@@ -145,12 +145,30 @@ class SMCTScanner:
                 structure_15m = {"approx": True, "timeframe": "15m", "active": False, "reason": "structure_15m_error"}
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
             range_lock["imbalance"] = ifvg  # legacy side-channel; trial prefers evidence.ifvg
+            # 1H Dow HH/HL/LH/LL (primary); 15m Dow is aux metadata only.
+            try:
+                structure_dow = build_dow_structure_context(klines_1h, timeframe="1h")
+                if klines_15m:
+                    structure_dow["aux_15m"] = build_dow_structure_context(
+                        klines_15m, timeframe="15m", left=2, right=2
+                    )
+            except Exception as exc_dow:
+                self.logger.warning("structure_dow_failed error=%s", exc_dow)
+                structure_dow = {
+                    "approx": True,
+                    "timeframe": "1h",
+                    "trend": "none",
+                    "active_short_evidence": False,
+                    "active_long_evidence": False,
+                    "reason": "structure_dow_error",
+                }
             evidence_bundle = {
                 "auto_range": range_lock.get("auto_range"),
                 "sweep": sweep,
                 "delta_profile": delta_profile,
                 "ifvg": ifvg,
                 "structure_15m": structure_15m,
+                "structure_dow": structure_dow,
                 "core_levels_filter": aux.get("core_levels_filter"),
             }
             trend_state = load_trend_state(self.symbol, "1h")

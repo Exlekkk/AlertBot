@@ -253,6 +253,22 @@ def build_trial_context(
     if m15_active:
         _append_score(scores, evidence, "short", 3.5, "m15_supply_reject_m_top")
 
+    # Dow HH/HL/LH/LL (1H primary): mid-low structure bonus — clearly below
+    # main POI/RAR/Liquidity/IFVG/POC, above Auto Range. Turn breaks may
+    # enter the stack only with Liquidity/IFVG/POC; same-way BOS strengthen-
+    # only. Dow alone must never push score across the formal line.
+    structure_dow = evidence_bundle.get("structure_dow") if isinstance(evidence_bundle.get("structure_dow"), dict) else {}
+    if structure_dow.get("active_short_evidence") and isinstance(structure_dow.get("break_hl"), dict):
+        _append_score(scores, evidence, "short", 0.75, "dow_break_hl")
+    if structure_dow.get("active_long_evidence") and isinstance(structure_dow.get("break_lh"), dict):
+        _append_score(scores, evidence, "long", 0.75, "dow_break_lh")
+    bos = structure_dow.get("bos_same_way") if isinstance(structure_dow.get("bos_same_way"), dict) else None
+    if bos and bos.get("active") and bos.get("strengthen_only"):
+        if bos.get("direction") == "up":
+            _append_score(scores, evidence, "long", 0.35, "dow_bos_same_way_up")
+        elif bos.get("direction") == "down":
+            _append_score(scores, evidence, "short", 0.35, "dow_bos_same_way_down")
+
     # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
     # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
     # core_levels remains soft filter-only weight, never structure confluence.
@@ -263,6 +279,7 @@ def build_trial_context(
             "sweep_sell_side_reclaim",
             "profile_node_bull",
             "imbalance_inverted_support",
+            "dow_break_lh",
         ),
         "short": (
             "range_reclaim_after_break_up",
@@ -271,6 +288,7 @@ def build_trial_context(
             "profile_node_bear",
             "imbalance_inverted_resistance",
             "m15_supply_reject_m_top",
+            "dow_break_hl",
         ),
     }
     for _side, _tokens in _confluence_tokens.items():
@@ -503,6 +521,8 @@ def assess_trial_candidate(
             "evidence_confluence",
             # 15m 供给拒收+小M顶：正式空向催化剂（对称多向暂不单开）
             "m15_supply_reject_m_top" if side == "short" else "m15_demand_reclaim_m_bottom",
+            # Dow turn: break HL→short / break LH→long (must still stack POI)
+            "dow_break_hl" if side == "short" else "dow_break_lh",
         )
     )
     m15_short_catalyst = side == "short" and "m15_supply_reject_m_top" in reason_text
@@ -630,6 +650,45 @@ def assess_trial_candidate(
     minimum = float(cfg.get("formal_min_score", 7.0))
     if trial_context.get("range_active") and box_position == "middle" and not breakout_matches:
         minimum = float(cfg.get("range_mid_min_score", 10.0))
+
+    # Dow mid-low only: strip Dow tags and re-check — Dow alone cannot cross formal.
+    _dow_tokens = (
+        "dow_break_hl",
+        "dow_break_lh",
+        "dow_bos_same_way_up",
+        "dow_bos_same_way_down",
+    )
+    _dow_present = any(tok in reason_text for tok in _dow_tokens)
+    if _dow_present:
+        _score_wo_dow = score
+        for r in reasons:
+            for tok in _dow_tokens:
+                if r.startswith(tok + ":") or r == tok:
+                    try:
+                        _score_wo_dow -= float(r.split(":", 1)[1])
+                    except (IndexError, ValueError):
+                        pass
+                    break
+        _poi_stack = zone_source in {"ifvg_zone", "imbalance_zone", "fibonacci_ote"} or any(
+            tok in reason_text
+            for tok in (
+                "sweep_sell_side_reclaim",
+                "sweep_buy_side_reject",
+                "imbalance_inverted_support",
+                "imbalance_inverted_resistance",
+                "profile_node_bull",
+                "profile_node_bear",
+                "rar_turn_up",
+                "rar_turn_down",
+            )
+        )
+        # No POI/Liquidity/RAR stack → Dow cannot formal.
+        if not _poi_stack:
+            hard_blocks.append("dow_requires_poi_or_liquidity_stack")
+        # Dow may add mid-low weight but must never be the tip that crosses
+        # formal_min — non-Dow score must already clear the line.
+        elif _score_wo_dow < minimum <= score:
+            hard_blocks.append("dow_alone_cannot_cross_formal")
 
     allow_formal = (
         not hard_blocks
