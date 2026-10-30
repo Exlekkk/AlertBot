@@ -11,3 +11,7 @@ Detailed writeups for knife / Draft PRs live in this folder.
 ## Naming
 
 Prefer `pr-<number>-<short-english-slug>.md` for merged knives, e.g. `pr-42-15m-supply-reject-m-top.md`.
+
+## Unified changelog
+
+Bot knife / deploy change log (short English + Chinese note) lives in [`reports/bot_changes.csv`](../../reports/bot_changes.csv). Keep long locks and acceptance notes in this folder; append one CSV row per knife going forward.
