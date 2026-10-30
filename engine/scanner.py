@@ -17,6 +17,7 @@ from engine.range_lock import build_range_lock_context
 from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
 from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
 from engine.ifvg import build_ifvg_context
+from engine.structure import build_structure_15m_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message, should_send_alert_copy
@@ -117,6 +118,31 @@ class SMCTScanner:
             delta_profile = build_delta_profile_context(klines_1h)
             vp = merge_delta_into_vp(vp, delta_profile)
             ifvg = build_ifvg_context(klines_1h, timeframe="1h")
+            # 15m structure for formal short path (supply reject + small M-top).
+            # Closed bars only; never forms 1H structure from raw 15m.
+            try:
+                klines_15m = self._fetch_enriched("15m")
+            except Exception as exc_15m:
+                self.logger.warning("klines_15m_fetch_failed error=%s", exc_15m)
+                klines_15m = []
+            supply_zones = []
+            for z in list((ifvg or {}).get("zones") or []):
+                if not isinstance(z, dict) or z.get("invalidated") or not z.get("inverted"):
+                    continue
+                if int(z.get("direction") or 0) != 1:
+                    continue
+                if z.get("top") is None or z.get("bottom") is None:
+                    continue
+                supply_zones.append((float(z["bottom"]), float(z["top"])))
+            try:
+                structure_15m = (
+                    build_structure_15m_context(klines_15m, supply_zones=supply_zones)
+                    if klines_15m
+                    else {"approx": True, "timeframe": "15m", "active": False, "reason": "no_15m_klines"}
+                )
+            except Exception as exc_struct:
+                self.logger.warning("structure_15m_failed error=%s", exc_struct)
+                structure_15m = {"approx": True, "timeframe": "15m", "active": False, "reason": "structure_15m_error"}
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
             range_lock["imbalance"] = ifvg  # legacy side-channel; trial prefers evidence.ifvg
             evidence_bundle = {
@@ -124,6 +150,7 @@ class SMCTScanner:
                 "sweep": sweep,
                 "delta_profile": delta_profile,
                 "ifvg": ifvg,
+                "structure_15m": structure_15m,
                 "core_levels_filter": aux.get("core_levels_filter"),
             }
             trend_state = load_trend_state(self.symbol, "1h")

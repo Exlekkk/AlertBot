@@ -357,3 +357,182 @@ def detect_near_pivot_level(
         if abs(float(latest["close"]) - price) <= tol * 2.0:
             return {"active": True, "price": round(price, 2), "index": idx}
     return None
+
+def detect_small_m_top(
+    klines: list[dict],
+    *,
+    lookback: int = 48,
+    atr_mult: float = 0.35,
+    supply_zone: tuple[float, float] | None = None,
+    max_bars_ago: int = 4,
+) -> dict[str, Any] | None:
+    """Detect a compact 15m M-top / double-top with rejection.
+
+    Two recent swing highs within tolerance (or both tapping ``supply_zone``),
+    a trough between them, and a bearish rejection near the right peak.
+    Used as formal-short structure evidence — never a solo alert.
+    """
+
+    if len(klines) < 12:
+        return None
+    window_start = max(0, len(klines) - lookback)
+    pivot_highs, _ = find_pivots(klines, left=1, right=1)
+    recent = [i for i in pivot_highs if i >= window_start]
+    # Also allow the absolute high of the last few bars as a right peak when a
+    # sharp wick rejection has not yet earned a fully confirmed pivot.
+    last = len(klines) - 1
+    local_high_idx = max(range(max(window_start, last - 6), last + 1), key=lambda i: float(klines[i]["high"]))
+    if local_high_idx not in recent:
+        recent.append(local_high_idx)
+    recent = sorted(set(recent))
+    if len(recent) < 2:
+        return None
+
+    tol = _price_tolerance(klines, atr_mult=atr_mult)
+    supply = None
+    if supply_zone is not None:
+        supply = (min(float(supply_zone[0]), float(supply_zone[1])), max(float(supply_zone[0]), float(supply_zone[1])))
+
+    best = None
+    for i in range(len(recent) - 1):
+        a = recent[i]
+        b = recent[i + 1]
+        if b - a < 2:
+            continue
+        if last - b > max_bars_ago:
+            continue
+        pa = float(klines[a]["high"])
+        pb = float(klines[b]["high"])
+        trough = min(float(klines[j]["low"]) for j in range(a, b + 1))
+        m_high = max(pa, pb)
+        if m_high - trough < tol * 0.8:
+            continue  # flat, not an M
+        near_equal = abs(pa - pb) <= tol * 1.25
+        taps_supply = False
+        if supply is not None:
+            pad = tol
+            right_taps = pb >= supply[0] - pad and pb <= supply[1] + pad * 3
+            # Left peak may be the rising shoulder below the band; require it
+            # near the right peak or also probing the supply area.
+            left_near = abs(pa - pb) <= max(tol * 2.8, (supply[1] - supply[0]) * 0.75) or (
+                pa >= supply[0] - pad * 2.5
+            )
+            taps_supply = bool(right_taps and left_near)
+        if not (near_equal or taps_supply):
+            continue
+        right = klines[b]
+        close_b = float(right["close"])
+        open_b = float(right["open"])
+        high_b = float(right["high"])
+        low_b = float(right["low"])
+        candle_range = max(high_b - low_b, 1e-9)
+        upper_wick = high_b - max(open_b, close_b)
+        rejected = close_b < open_b and close_b <= m_high - tol * 0.25 and upper_wick / candle_range >= 0.25
+        # Also accept rejection on a later bar that failed under the M high.
+        later = klines[b: last + 1]
+        later_reject = any(
+            float(k["close"]) < float(k["open"])
+            and float(k["high"]) >= m_high - tol
+            and float(k["close"]) <= m_high - tol * 0.25
+            for k in later
+        )
+        if not (rejected or later_reject):
+            continue
+        candidate = {
+            "active": True,
+            "side": "short",
+            "pattern": "small_m_top",
+            "left_index": a,
+            "right_index": b,
+            "left_high": round(pa, 2),
+            "right_high": round(pb, 2),
+            "trough": round(trough, 2),
+            "m_high": round(m_high, 2),
+            "bars_ago": last - b,
+            "near_equal": near_equal,
+            "taps_supply": taps_supply,
+            "supply_zone": [round(supply[0], 2), round(supply[1], 2)] if supply else None,
+        }
+        best = candidate
+    return best
+
+
+def build_structure_15m_context(
+    klines_15m: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Bundle 15m M-top / supply-reject cues for formal trial evidence."""
+
+    empty: dict[str, Any] = {
+        "approx": True,
+        "timeframe": "15m",
+        "small_m_top": None,
+        "supply_reject": False,
+        "reject_high": None,
+        "active": False,
+        "reason": "insufficient_history",
+    }
+    if len(klines_15m) < 12:
+        return empty
+    latest = klines_15m[-1]
+    high = float(latest["high"])
+    close = float(latest["close"])
+    open_ = float(latest["open"])
+    low = float(latest["low"])
+    atr = _atr_value(klines_15m)
+    pad = max(atr * 0.2, abs(close) * 0.0006)
+
+    chosen_supply = None
+    supply_reject = False
+    reject_high = None
+    scan = klines_15m[-6:]
+    for zone in supply_zones or []:
+        zl, zh = min(zone), max(zone)
+        for bar in scan:
+            bh = float(bar["high"])
+            bc = float(bar["close"])
+            bo = float(bar["open"])
+            if bh >= zl - pad and bc <= zl + pad and bc < bo:
+                supply_reject = True
+                chosen_supply = (zl, zh)
+                reject_high = bh
+                break
+        if supply_reject:
+            break
+    # Fall back: strong upper-wick rejection on a recent bar.
+    if not supply_reject:
+        for bar in reversed(scan):
+            bh = float(bar["high"])
+            bc = float(bar["close"])
+            bo = float(bar["open"])
+            bl = float(bar["low"])
+            candle_range = max(bh - bl, 1e-9)
+            upper_wick = bh - max(bo, bc)
+            if bc < bo and upper_wick / candle_range >= 0.35 and (bh - bc) >= atr * 0.35:
+                supply_reject = True
+                reject_high = bh
+                break
+    high = reject_high if reject_high is not None else high
+
+    m_top = detect_small_m_top(
+        klines_15m,
+        supply_zone=chosen_supply,
+        max_bars_ago=6,
+    )
+    # If supply zone known but M detector missed equal highs, retry with zone tap.
+    if m_top is None and chosen_supply is not None:
+        m_top = detect_small_m_top(klines_15m, supply_zone=chosen_supply, atr_mult=0.55, max_bars_ago=6)
+
+    active = bool(m_top and m_top.get("active") and supply_reject)
+    return {
+        "approx": True,
+        "timeframe": "15m",
+        "small_m_top": m_top,
+        "supply_reject": supply_reject,
+        "reject_high": round(float(reject_high if reject_high is not None else high), 2) if supply_reject else None,
+        "supply_zone": [round(chosen_supply[0], 2), round(chosen_supply[1], 2)] if chosen_supply else None,
+        "active": active,
+        "reason": "m15_supply_reject_m_top" if active else ("supply_reject_only" if supply_reject else ("m_top_only" if m_top else "no_pattern")),
+    }
+

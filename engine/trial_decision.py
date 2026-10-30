@@ -245,6 +245,14 @@ def build_trial_context(
         elif int(nearest_imb.get("direction") or 0) == -1:
             _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
 
+    # 15m 上方供给拒收 + 小 M 顶 → 正式空向催化剂（高权加分）
+    structure_15m = evidence_bundle.get("structure_15m") if isinstance(evidence_bundle.get("structure_15m"), dict) else {}
+    m15_active = bool(structure_15m.get("active")) and bool(structure_15m.get("supply_reject")) and bool(
+        (structure_15m.get("small_m_top") or {}).get("active")
+    )
+    if m15_active:
+        _append_score(scores, evidence, "short", 3.5, "m15_supply_reject_m_top")
+
     # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
     # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
     # core_levels remains soft filter-only weight, never structure confluence.
@@ -262,6 +270,7 @@ def build_trial_context(
             "sweep_buy_side_reject",
             "profile_node_bear",
             "imbalance_inverted_resistance",
+            "m15_supply_reject_m_top",
         ),
     }
     for _side, _tokens in _confluence_tokens.items():
@@ -492,8 +501,11 @@ def assess_trial_candidate(
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "evidence_confluence",
+            # 15m 供给拒收+小M顶：正式空向催化剂（对称多向暂不单开）
+            "m15_supply_reject_m_top" if side == "short" else "m15_demand_reclaim_m_bottom",
         )
     )
+    m15_short_catalyst = side == "short" and "m15_supply_reject_m_top" in reason_text
     structure_aligned = any(
         token in reason_text
         for token in (
@@ -565,7 +577,11 @@ def assess_trial_candidate(
     if not evidence_keys and not effective_directional_catalyst:
         hard_blocks.append("formal_without_evidence")
 
-    if opposite_score - score >= float(cfg.get("opposite_conflict_margin", 2.5)):
+    # 15m M-top supply reject + IFVG upper reaction: relax opposite-margin slightly
+    opposite_margin = float(cfg.get("opposite_conflict_margin", 2.5))
+    if m15_short_catalyst and zone_source in {"ifvg_zone", "imbalance_zone"} and alert_type in formal_reactions:
+        opposite_margin = float(cfg.get("m15_opposite_conflict_margin", 5.0))
+    if opposite_score - score >= opposite_margin:
         hard_blocks.append("opposite_structure_dominates")
     current_formal_side = "lower" if side == "long" else "upper"
     previous_formal_side = str(observation_state.get("last_formal_side", ""))
