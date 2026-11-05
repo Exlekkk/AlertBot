@@ -245,25 +245,33 @@ def build_trial_context(
         elif int(nearest_imb.get("direction") or 0) == -1:
             _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
 
-    # 15m 上方供给拒收 + 小 M 顶 → 最低权验证辅证（0.2），不当主催化剂抬 formal
-    structure_15m = evidence_bundle.get("structure_15m") if isinstance(evidence_bundle.get("structure_15m"), dict) else {}
-    m15_active = bool(structure_15m.get("active")) and bool(structure_15m.get("supply_reject")) and bool(
-        (structure_15m.get("small_m_top") or {}).get("active")
-    )
-    if m15_active:
-        _append_score(scores, evidence, "short", 0.2, "m15_supply_reject_m_top")
+    # TF-local 供给拒收 + 小 M 顶 → 各周期独立最低权验证辅证（0.2），不当主催化剂抬 formal
+    # Keys: structure_15m / structure_1h / structure_4h — never reuse another TF's result.
+    for _m_key, _m_tag in (
+        ("structure_15m", "m15_supply_reject_m_top"),
+        ("structure_1h", "h1_supply_reject_m_top"),
+        ("structure_4h", "h4_supply_reject_m_top"),
+    ):
+        _m_ctx = evidence_bundle.get(_m_key) if isinstance(evidence_bundle.get(_m_key), dict) else {}
+        _m_active = bool(_m_ctx.get("active")) and bool(_m_ctx.get("supply_reject")) and bool(
+            (_m_ctx.get("small_m_top") or {}).get("active")
+        )
+        if _m_active:
+            _append_score(scores, evidence, "short", 0.2, _m_tag)
 
-    # 15m 下方需求回收 + 独立 W 底 → 多向最低权验证辅证（0.2），不当主催化剂抬 formal
-    structure_15m_demand = (
-        evidence_bundle.get("structure_15m_demand")
-        if isinstance(evidence_bundle.get("structure_15m_demand"), dict)
-        else {}
-    )
-    m15_w_active = bool(structure_15m_demand.get("active")) and bool(structure_15m_demand.get("demand_reclaim")) and bool(
-        (structure_15m_demand.get("small_w_bottom") or {}).get("active")
-    )
-    if m15_w_active:
-        _append_score(scores, evidence, "long", 0.2, "m15_demand_reclaim_w_bottom")
+    # TF-local 需求回收 + 独立 W 底 → 各周期独立最低权验证辅证（0.2），不当主催化剂抬 formal
+    # Keys: structure_15m_demand / structure_1h_demand / structure_4h_demand — not M mirrors.
+    for _w_key, _w_tag in (
+        ("structure_15m_demand", "m15_demand_reclaim_w_bottom"),
+        ("structure_1h_demand", "h1_demand_reclaim_w_bottom"),
+        ("structure_4h_demand", "h4_demand_reclaim_w_bottom"),
+    ):
+        _w_ctx = evidence_bundle.get(_w_key) if isinstance(evidence_bundle.get(_w_key), dict) else {}
+        _w_active = bool(_w_ctx.get("active")) and bool(_w_ctx.get("demand_reclaim")) and bool(
+            (_w_ctx.get("small_w_bottom") or {}).get("active")
+        )
+        if _w_active:
+            _append_score(scores, evidence, "long", 0.2, _w_tag)
 
     # Dow HH/HL/LH/LL (1H primary): mid-low structure bonus — clearly below
     # main POI/RAR/Liquidity/IFVG/POC, above Auto Range. Turn breaks may
@@ -292,6 +300,8 @@ def build_trial_context(
             "profile_node_bull",
             "imbalance_inverted_support",
             "m15_demand_reclaim_w_bottom",
+            "h1_demand_reclaim_w_bottom",
+            "h4_demand_reclaim_w_bottom",
             "dow_break_lh",
         ),
         "short": (
@@ -301,6 +311,8 @@ def build_trial_context(
             "profile_node_bear",
             "imbalance_inverted_resistance",
             "m15_supply_reject_m_top",
+            "h1_supply_reject_m_top",
+            "h4_supply_reject_m_top",
             "dow_break_hl",
         ),
     }
@@ -540,8 +552,8 @@ def assess_trial_candidate(
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "evidence_confluence",
-            # m15 M-top / W-bottom are verification-layer only (0.2) — excluded
-            # from catalyst alignment so they cannot alone raise formal.
+            # M-top / W-bottom (15m/1H/4H) are verification-layer only (0.2) —
+            # excluded from catalyst alignment so they cannot alone raise formal.
             # Dow turn: break HL→short / break LH→long (must still stack POI)
             "dow_break_hl" if side == "short" else "dow_break_lh",
         )
@@ -617,7 +629,7 @@ def assess_trial_candidate(
     if not evidence_keys and not effective_directional_catalyst:
         hard_blocks.append("formal_without_evidence")
 
-    # M-top / W-bottom are verification-layer only — no opposite-margin relaxation.
+    # M-top / W-bottom (15m/1H/4H) are verification-layer only — no opposite-margin relaxation.
     opposite_margin = float(cfg.get("opposite_conflict_margin", 2.5))
     if opposite_score - score >= opposite_margin:
         hard_blocks.append("opposite_structure_dominates")

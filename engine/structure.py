@@ -676,36 +676,38 @@ def detect_small_m_top(
     return best
 
 
-def build_structure_15m_context(
-    klines_15m: list[dict],
+def build_structure_supply_m_top_context(
+    klines: list[dict],
     *,
+    timeframe: str,
+    reason_tag: str,
     supply_zones: list[tuple[float, float]] | None = None,
+    lookback: int = 48,
+    max_bars_ago: int = 6,
 ) -> dict[str, Any]:
-    """Bundle 15m M-top / supply-reject cues for formal trial evidence."""
+    """Bundle TF-local M-top / supply-reject cues (own evidence; never reuse another TF)."""
 
     empty: dict[str, Any] = {
         "approx": True,
-        "timeframe": "15m",
+        "timeframe": timeframe,
         "small_m_top": None,
         "supply_reject": False,
         "reject_high": None,
         "active": False,
         "reason": "insufficient_history",
     }
-    if len(klines_15m) < 12:
+    if len(klines) < 12:
         return empty
-    latest = klines_15m[-1]
+    latest = klines[-1]
     high = float(latest["high"])
     close = float(latest["close"])
-    open_ = float(latest["open"])
-    low = float(latest["low"])
-    atr = _atr_value(klines_15m)
+    atr = _atr_value(klines)
     pad = max(atr * 0.2, abs(close) * 0.0006)
 
     chosen_supply = None
     supply_reject = False
     reject_high = None
-    scan = klines_15m[-6:]
+    scan = klines[-6:]
     for zone in supply_zones or []:
         zl, zh = min(zone), max(zone)
         for bar in scan:
@@ -735,23 +737,89 @@ def build_structure_15m_context(
     high = reject_high if reject_high is not None else high
 
     m_top = detect_small_m_top(
-        klines_15m,
+        klines,
+        lookback=lookback,
         supply_zone=chosen_supply,
-        max_bars_ago=6,
+        max_bars_ago=max_bars_ago,
     )
     # If supply zone known but M detector missed equal highs, retry with zone tap.
     if m_top is None and chosen_supply is not None:
-        m_top = detect_small_m_top(klines_15m, supply_zone=chosen_supply, atr_mult=0.55, max_bars_ago=6)
+        m_top = detect_small_m_top(
+            klines,
+            lookback=lookback,
+            supply_zone=chosen_supply,
+            atr_mult=0.55,
+            max_bars_ago=max_bars_ago,
+        )
 
     active = bool(m_top and m_top.get("active") and supply_reject)
+    if active:
+        reason = reason_tag
+    elif supply_reject:
+        reason = "supply_reject_only"
+    elif m_top:
+        reason = "m_top_only"
+    else:
+        reason = "no_pattern"
     return {
         "approx": True,
-        "timeframe": "15m",
+        "timeframe": timeframe,
         "small_m_top": m_top,
         "supply_reject": supply_reject,
         "reject_high": round(float(reject_high if reject_high is not None else high), 2) if supply_reject else None,
         "supply_zone": [round(chosen_supply[0], 2), round(chosen_supply[1], 2)] if chosen_supply else None,
         "active": active,
-        "reason": "m15_supply_reject_m_top" if active else ("supply_reject_only" if supply_reject else ("m_top_only" if m_top else "no_pattern")),
+        "reason": reason,
     }
+
+
+def build_structure_15m_context(
+    klines_15m: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Bundle 15m M-top / supply-reject cues for formal trial evidence."""
+
+    return build_structure_supply_m_top_context(
+        klines_15m,
+        timeframe="15m",
+        reason_tag="m15_supply_reject_m_top",
+        supply_zones=supply_zones,
+        lookback=48,
+        max_bars_ago=6,
+    )
+
+
+def build_structure_1h_context(
+    klines_1h: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Independent 1H M-top / supply-reject evidence (not a 15m copy)."""
+
+    return build_structure_supply_m_top_context(
+        klines_1h,
+        timeframe="1h",
+        reason_tag="h1_supply_reject_m_top",
+        supply_zones=supply_zones,
+        lookback=36,
+        max_bars_ago=4,
+    )
+
+
+def build_structure_4h_context(
+    klines_4h: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Independent 4H M-top / supply-reject evidence (not a 15m/1h copy)."""
+
+    return build_structure_supply_m_top_context(
+        klines_4h,
+        timeframe="4h",
+        reason_tag="h4_supply_reject_m_top",
+        supply_zones=supply_zones,
+        lookback=30,
+        max_bars_ago=3,
+    )
 

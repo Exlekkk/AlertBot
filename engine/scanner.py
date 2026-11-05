@@ -17,8 +17,17 @@ from engine.range_lock import build_range_lock_context
 from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
 from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
 from engine.ifvg import build_ifvg_context
-from engine.structure import build_dow_structure_context, build_structure_15m_context
-from engine.m15_w_bottom import build_structure_15m_demand_context
+from engine.structure import (
+    build_dow_structure_context,
+    build_structure_15m_context,
+    build_structure_1h_context,
+    build_structure_4h_context,
+)
+from engine.m15_w_bottom import (
+    build_structure_15m_demand_context,
+    build_structure_1h_demand_context,
+    build_structure_4h_demand_context,
+)
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message, should_send_alert_copy
@@ -119,49 +128,79 @@ class SMCTScanner:
             delta_profile = build_delta_profile_context(klines_1h)
             vp = merge_delta_into_vp(vp, delta_profile)
             ifvg = build_ifvg_context(klines_1h, timeframe="1h")
-            # 15m structure: supply M-top (short aux) + independent demand W-bottom (long aux).
-            # Closed bars only; never forms 1H structure from raw 15m.
+            # Per-TF structure: supply M-top (short aux) + independent demand W-bottom (long aux).
+            # Each TF runs on its own closed bars + own IFVG zones — never copy 15m into 1H/4H.
             try:
                 klines_15m = self._fetch_enriched("15m")
             except Exception as exc_15m:
                 self.logger.warning("klines_15m_fetch_failed error=%s", exc_15m)
                 klines_15m = []
-            supply_zones = []
-            demand_zones = []
-            for z in list((ifvg or {}).get("zones") or []):
-                if not isinstance(z, dict) or z.get("invalidated") or not z.get("inverted"):
-                    continue
-                if z.get("top") is None or z.get("bottom") is None:
-                    continue
-                direction = int(z.get("direction") or 0)
-                band = (float(z["bottom"]), float(z["top"]))
-                if direction == 1:
-                    supply_zones.append(band)
-                elif direction == -1:
-                    demand_zones.append(band)
+
+            def _ifvg_supply_demand(ifvg_ctx: dict[str, Any]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+                supply: list[tuple[float, float]] = []
+                demand: list[tuple[float, float]] = []
+                for z in list((ifvg_ctx or {}).get("zones") or []):
+                    if not isinstance(z, dict) or z.get("invalidated") or not z.get("inverted"):
+                        continue
+                    if z.get("top") is None or z.get("bottom") is None:
+                        continue
+                    direction = int(z.get("direction") or 0)
+                    band = (float(z["bottom"]), float(z["top"]))
+                    if direction == 1:
+                        supply.append(band)
+                    elif direction == -1:
+                        demand.append(band)
+                return supply, demand
+
+            supply_zones_1h, demand_zones_1h = _ifvg_supply_demand(ifvg)
+            # 15m uses 1H inverted IFVG bands as proximate zones (same as prior tip).
+            supply_zones_15m, demand_zones_15m = supply_zones_1h, demand_zones_1h
             try:
-                structure_15m = (
-                    build_structure_15m_context(klines_15m, supply_zones=supply_zones)
-                    if klines_15m
-                    else {"approx": True, "timeframe": "15m", "active": False, "reason": "no_15m_klines"}
-                )
-            except Exception as exc_struct:
-                self.logger.warning("structure_15m_failed error=%s", exc_struct)
-                structure_15m = {"approx": True, "timeframe": "15m", "active": False, "reason": "structure_15m_error"}
-            try:
-                structure_15m_demand = (
-                    build_structure_15m_demand_context(klines_15m, demand_zones=demand_zones)
-                    if klines_15m
-                    else {"approx": True, "timeframe": "15m", "active": False, "reason": "no_15m_klines"}
-                )
-            except Exception as exc_demand:
-                self.logger.warning("structure_15m_demand_failed error=%s", exc_demand)
-                structure_15m_demand = {
-                    "approx": True,
-                    "timeframe": "15m",
-                    "active": False,
-                    "reason": "structure_15m_demand_error",
-                }
+                ifvg_4h = build_ifvg_context(klines_4h, timeframe="4h")
+            except Exception as exc_ifvg4:
+                self.logger.warning("ifvg_4h_failed error=%s", exc_ifvg4)
+                ifvg_4h = {"zones": [], "nearest_active": None, "approx": True, "timeframe": "4h"}
+            supply_zones_4h, demand_zones_4h = _ifvg_supply_demand(ifvg_4h)
+
+            def _safe_struct(label: str, timeframe: str, builder, klines, **kwargs):
+                if not klines:
+                    return {"approx": True, "timeframe": timeframe, "active": False, "reason": f"no_{timeframe}_klines"}
+                try:
+                    return builder(klines, **kwargs)
+                except Exception as exc:
+                    self.logger.warning("%s_failed error=%s", label, exc)
+                    return {"approx": True, "timeframe": timeframe, "active": False, "reason": f"{label}_error"}
+
+            structure_15m = _safe_struct(
+                "structure_15m", "15m", build_structure_15m_context, klines_15m, supply_zones=supply_zones_15m
+            )
+            structure_15m_demand = _safe_struct(
+                "structure_15m_demand",
+                "15m",
+                build_structure_15m_demand_context,
+                klines_15m,
+                demand_zones=demand_zones_15m,
+            )
+            structure_1h = _safe_struct(
+                "structure_1h", "1h", build_structure_1h_context, klines_1h, supply_zones=supply_zones_1h
+            )
+            structure_1h_demand = _safe_struct(
+                "structure_1h_demand",
+                "1h",
+                build_structure_1h_demand_context,
+                klines_1h,
+                demand_zones=demand_zones_1h,
+            )
+            structure_4h = _safe_struct(
+                "structure_4h", "4h", build_structure_4h_context, klines_4h, supply_zones=supply_zones_4h
+            )
+            structure_4h_demand = _safe_struct(
+                "structure_4h_demand",
+                "4h",
+                build_structure_4h_demand_context,
+                klines_4h,
+                demand_zones=demand_zones_4h,
+            )
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
             range_lock["imbalance"] = ifvg  # legacy side-channel; trial prefers evidence.ifvg
             # 1H Dow HH/HL/LH/LL (primary); 15m Dow is aux metadata only.
@@ -188,6 +227,10 @@ class SMCTScanner:
                 "ifvg": ifvg,
                 "structure_15m": structure_15m,
                 "structure_15m_demand": structure_15m_demand,
+                "structure_1h": structure_1h,
+                "structure_1h_demand": structure_1h_demand,
+                "structure_4h": structure_4h,
+                "structure_4h_demand": structure_4h_demand,
                 "structure_dow": structure_dow,
                 "core_levels_filter": aux.get("core_levels_filter"),
             }

@@ -1,4 +1,4 @@
-# PR#47 Draft: formal short bull-gate + M-top/W-bottom verification
+# PR#47 Draft: formal short bull-gate + M/W verify (15m/1H/4H)
 
 ## Locks (user nodded via L · Finance)
 
@@ -22,20 +22,29 @@
 - Purpose: bottom-fish + true/false rebound (`neckline_reclaim` / `false_bounce`)
 - Long-side 辅证 only — **cannot alone raise formal**
 
+### Knife D — extend M-top / W-bottom to 1H + 4H (user lock 2026-11-05 via L)
+- Weight still **0.2** each (verification layer; cannot alone raise formal)
+- M / W remain **independent** (no field-flip / mirror)
+- **Per-TF independent evidence** — never copy 15m result into 1H/4H
+- Tags / evidence keys:
+  - M: `h1_supply_reject_m_top` → `structure_1h`; `h4_supply_reject_m_top` → `structure_4h`
+  - W: `h1_demand_reclaim_w_bottom` → `structure_1h_demand`; `h4_demand_reclaim_w_bottom` → `structure_4h_demand`
+- Shared geometry helpers OK; detection entry + evidence keys must stay TF/pattern-split
+- Stack on tip `8135117`; tip-detach; rollback `8e3dbea`
+
 ## Baseline / rollback
+- **Prior tip**: `8135117157ae2b8dae9c3b690e7601e933dc6fdb` (#47 bull-gate + 15m M/W 0.2)
 - **Stack base tip**: `683b50b069f736bf7b9012dc1a329c9759c34fcb` (#47 bull-gate + CSV tip fix)
 - **Earlier baseline**: `22909372e3c25fee66fb6520932758f42f25ea44` (#35 + 15m M-top + Dow)
 - **Rollback label**: `8e3dbea` (#35)
 - **tip-detach** Draft: do **not** squash into `main`; do **not** deploy until L + user say so
 
 ## Code
-- `engine/trial_decision.py`
-  - bull-structure hard block (Knife A)
-  - M-top score 0.2; excluded from catalyst alignment (Knife B)
-  - W-bottom score 0.2 from `structure_15m_demand` (Knife C)
-- `engine/m15_w_bottom.py` — independent W detector + demand context builder
-- `engine/scanner.py` — demand IFVG zones → `structure_15m_demand`
-- Tests: `tests/test_formal_short_bull_gate.py`, `tests/test_m15_supply_reject_m_top.py`, `tests/test_m15_demand_reclaim_w_bottom.py`
+- `engine/structure.py` — `build_structure_supply_m_top_context` + 15m/1h/4h wrappers
+- `engine/m15_w_bottom.py` — `build_structure_demand_w_bottom_context` + 15m/1h/4h wrappers
+- `engine/trial_decision.py` — score each TF tag at 0.2; confluence tokens; still out of catalyst alignment
+- `engine/scanner.py` — per-TF klines + IFVG zones → independent evidence keys
+- Tests: `tests/test_formal_short_bull_gate.py`, `tests/test_m15_supply_reject_m_top.py`, `tests/test_m15_demand_reclaim_w_bottom.py`, `tests/test_htf_m_top_w_bottom_verify.py`
 
 ## Counterexamples (from LIVE postmortem — Knife A)
 | Case | Dow | lean | Expect |

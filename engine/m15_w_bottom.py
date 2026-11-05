@@ -1,9 +1,10 @@
-"""Independent 15m W-bottom / double-bottom demand-reclaim evidence.
+"""Independent W-bottom / double-bottom demand-reclaim evidence (per TF).
 
 Verification layer only (weight 0.2 in trial_decision). Never a solo formal
 catalyst. Deliberately NOT a field-flip of ``detect_small_m_top`` /
-``m15_supply_reject_m_top`` — own detector, own evidence key
-``structure_15m_demand``, own reason tag ``m15_demand_reclaim_w_bottom``.
+``*_supply_reject_m_top`` — own detector, own evidence keys
+(``structure_15m_demand`` / ``structure_1h_demand`` / ``structure_4h_demand``),
+own reason tags (``m15_`` / ``h1_`` / ``h4_demand_reclaim_w_bottom``).
 
 Purpose: bottom-fish + true vs false rebound (neckline reclaim vs fail).
 """
@@ -138,34 +139,38 @@ def detect_small_w_bottom(
     return best
 
 
-def build_structure_15m_demand_context(
-    klines_15m: list[dict],
+def build_structure_demand_w_bottom_context(
+    klines: list[dict],
     *,
+    timeframe: str,
+    reason_tag: str,
     demand_zones: list[tuple[float, float]] | None = None,
+    lookback: int = 48,
+    max_bars_ago: int = 6,
 ) -> dict[str, Any]:
-    """Bundle 15m W-bottom / demand-reclaim cues (independent of supply M-top)."""
+    """Bundle TF-local W-bottom / demand-reclaim cues (independent of supply M-top)."""
 
     empty: dict[str, Any] = {
         "approx": True,
-        "timeframe": "15m",
+        "timeframe": timeframe,
         "small_w_bottom": None,
         "demand_reclaim": False,
         "reclaim_low": None,
         "active": False,
         "reason": "insufficient_history",
     }
-    if len(klines_15m) < 12:
+    if len(klines) < 12:
         return empty
 
-    atr = _atr_value(klines_15m)
-    latest = klines_15m[-1]
+    atr = _atr_value(klines)
+    latest = klines[-1]
     close = float(latest["close"])
     pad = max(atr * 0.2, abs(close) * 0.0006)
 
     chosen_demand = None
     demand_reclaim = False
     reclaim_low = None
-    scan = klines_15m[-6:]
+    scan = klines[-6:]
     for zone in demand_zones or []:
         zl, zh = min(zone), max(zone)
         for bar in scan:
@@ -195,18 +200,23 @@ def build_structure_15m_demand_context(
                 break
 
     w_bottom = detect_small_w_bottom(
-        klines_15m,
+        klines,
+        lookback=lookback,
         demand_zone=chosen_demand,
-        max_bars_ago=6,
+        max_bars_ago=max_bars_ago,
     )
     if w_bottom is None and chosen_demand is not None:
         w_bottom = detect_small_w_bottom(
-            klines_15m, demand_zone=chosen_demand, atr_mult=0.55, max_bars_ago=6
+            klines,
+            lookback=lookback,
+            demand_zone=chosen_demand,
+            atr_mult=0.55,
+            max_bars_ago=max_bars_ago,
         )
 
     active = bool(w_bottom and w_bottom.get("active") and demand_reclaim)
     if active:
-        reason = "m15_demand_reclaim_w_bottom"
+        reason = reason_tag
     elif demand_reclaim:
         reason = "demand_reclaim_only"
     elif w_bottom:
@@ -216,7 +226,7 @@ def build_structure_15m_demand_context(
 
     return {
         "approx": True,
-        "timeframe": "15m",
+        "timeframe": timeframe,
         "small_w_bottom": w_bottom,
         "demand_reclaim": demand_reclaim,
         "reclaim_low": round(float(reclaim_low), 2) if reclaim_low is not None else None,
@@ -224,3 +234,54 @@ def build_structure_15m_demand_context(
         "active": active,
         "reason": reason,
     }
+
+
+def build_structure_15m_demand_context(
+    klines_15m: list[dict],
+    *,
+    demand_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Bundle 15m W-bottom / demand-reclaim cues (independent of supply M-top)."""
+
+    return build_structure_demand_w_bottom_context(
+        klines_15m,
+        timeframe="15m",
+        reason_tag="m15_demand_reclaim_w_bottom",
+        demand_zones=demand_zones,
+        lookback=48,
+        max_bars_ago=6,
+    )
+
+
+def build_structure_1h_demand_context(
+    klines_1h: list[dict],
+    *,
+    demand_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Independent 1H W-bottom / demand-reclaim evidence (not a 15m copy)."""
+
+    return build_structure_demand_w_bottom_context(
+        klines_1h,
+        timeframe="1h",
+        reason_tag="h1_demand_reclaim_w_bottom",
+        demand_zones=demand_zones,
+        lookback=36,
+        max_bars_ago=4,
+    )
+
+
+def build_structure_4h_demand_context(
+    klines_4h: list[dict],
+    *,
+    demand_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Independent 4H W-bottom / demand-reclaim evidence (not a 15m/1h copy)."""
+
+    return build_structure_demand_w_bottom_context(
+        klines_4h,
+        timeframe="4h",
+        reason_tag="h4_demand_reclaim_w_bottom",
+        demand_zones=demand_zones,
+        lookback=30,
+        max_bars_ago=3,
+    )

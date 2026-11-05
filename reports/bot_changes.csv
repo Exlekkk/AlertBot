@@ -6,3 +6,4 @@ date_cst,pr,tip,rollback,summary_en,note_cn
 2026-10-30,45,db6a44af970cb45d3eadc3d875e5ff010bffee42,b343966aca8b20dd9867bec733f99390fe5c52dc,docs: add drafts archive,主页卫生 docs/drafts/；合入 main d95f27a；不上机
 2026-11-05,47,a316590781694ce1dae809e0c9f11be1d360da50,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: block formal short vs bull Dow/lean,硬闸：1h Dow偏多或core_levels lean=bull禁formal试空；基线2290937；rollback金锚#35 8e3dbea；tip-detach不上机
 2026-11-05,47,256fe8e61caabf0584759a9e8d833bae92c34e92,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: M-top/W-bottom verify weight 0.2,M顶3.5→0.2+独立W底0.2验证层不当主催化；基线683b50b/#47；rollback金锚#35 8e3dbea；tip-detach不上机
+2026-11-05,47,fd16b95bf72de3637903ee6f85a4a4371bb39f7c,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: M/W verify on 15m+1H+4H,M顶/W底扩1H+4H各0.2验证层独立evidence；基线8135117/#47；rollback金锚#35 8e3dbea；tip-detach不上机
