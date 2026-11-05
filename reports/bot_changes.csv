@@ -5,4 +5,4 @@ date_cst,pr,tip,rollback,summary_en,note_cn
 2026-10-30,44,22909372e3c25fee66fb6520932758f42f25ea44,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: Dow HH/HL/LH/LL on #43 tip,#43 tip + 道氏中低结构证据；当前 LIVE tip；回滚金锚 #35
 2026-10-30,45,db6a44af970cb45d3eadc3d875e5ff010bffee42,b343966aca8b20dd9867bec733f99390fe5c52dc,docs: add drafts archive,主页卫生 docs/drafts/；合入 main d95f27a；不上机
 2026-11-05,47,a316590781694ce1dae809e0c9f11be1d360da50,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: block formal short vs bull Dow/lean,硬闸：1h Dow偏多或core_levels lean=bull禁formal试空；基线2290937；rollback金锚#35 8e3dbea；tip-detach不上机
-2026-11-05,47,65cd4807ebc4caba43f6ccbb1c69df59ee172bf2,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: M-top/W-bottom verify weight 0.2,M顶3.5→0.2+独立W底0.2验证层不当主催化；基线683b50b/#47；rollback金锚#35 8e3dbea；tip-detach不上机
+2026-11-05,47,256fe8e61caabf0584759a9e8d833bae92c34e92,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: M-top/W-bottom verify weight 0.2,M顶3.5→0.2+独立W底0.2验证层不当主催化；基线683b50b/#47；rollback金锚#35 8e3dbea；tip-detach不上机
