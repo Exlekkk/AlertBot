@@ -1,4 +1,4 @@
-# Draft: formal short blocked by bull structure
+# PR#47 Draft: formal short blocked by bull structure
 
 ## Locks (user nodded via L · Finance)
 

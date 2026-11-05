@@ -4,4 +4,4 @@ date_cst,pr,tip,rollback,summary_en,note_cn
 2026-10-30,43,e4296aca1efc81df646620e713ef30b2e146d315,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: #35 baseline plus M-top only,#35 基线+仅小M顶正式试空；tip-detach Draft 路径
 2026-10-30,44,22909372e3c25fee66fb6520932758f42f25ea44,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: Dow HH/HL/LH/LL on #43 tip,#43 tip + 道氏中低结构证据；当前 LIVE tip；回滚金锚 #35
 2026-10-30,45,db6a44af970cb45d3eadc3d875e5ff010bffee42,b343966aca8b20dd9867bec733f99390fe5c52dc,docs: add drafts archive,主页卫生 docs/drafts/；合入 main d95f27a；不上机
-2026-11-05,TBD,44b16a5a626d37514a1ca28d29260d2b34ed6042,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: block formal short vs bull Dow/lean,硬闸：1h Dow偏多或core_levels lean=bull禁formal试空；基线2290937；rollback金锚#35 8e3dbea；tip-detach不上机
+2026-11-05,47,4917ad0f86247c09c6f022d86254bb1fad3a3519,8e3dbead13eebe32731984bcaa3d77f6fcdb31cf,feat: block formal short vs bull Dow/lean,硬闸：1h Dow偏多或core_levels lean=bull禁formal试空；基线2290937；rollback金锚#35 8e3dbea；tip-detach不上机
