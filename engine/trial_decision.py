@@ -361,6 +361,14 @@ def build_trial_context(
         "evidence_bundle_keys": sorted(
             k for k, v in evidence_bundle.items() if isinstance(v, dict) and v
         ),
+        # Exposed for formal-short bull-structure hard gate (not scored alone).
+        "structure_dow": {
+            "trend": structure_dow.get("trend"),
+            "active_long_evidence": bool(structure_dow.get("active_long_evidence")),
+            "active_short_evidence": bool(structure_dow.get("active_short_evidence")),
+            "reason": structure_dow.get("reason"),
+        },
+        "core_levels_lean": str(core.get("lean") or "neutral"),
         "scores": scores,
         "evidence": evidence,
         "price": close,
@@ -689,6 +697,20 @@ def assess_trial_candidate(
         # formal_min — non-Dow score must already clear the line.
         elif _score_wo_dow < minimum <= score:
             hard_blocks.append("dow_alone_cannot_cross_formal")
+
+    # Hard gate (L 2026-11-05 / user nod): 1h Dow bullish OR core_levels
+    # lean=bull → forbid formal short. Kills A2/A3 against-structure shorts.
+    # A1 same-way short (Dow break HL / active_short_evidence, lean≠bull) passes.
+    # No long-side mirror in this knife.
+    if side == "short":
+        _dow_ctx = trial_context.get("structure_dow") if isinstance(trial_context.get("structure_dow"), dict) else {}
+        _lean = str(trial_context.get("core_levels_lean") or "neutral").lower()
+        _dow_bull = bool(_dow_ctx.get("active_long_evidence")) or str(_dow_ctx.get("trend") or "") == "up"
+        # Break-HL short evidence means Dow is not "偏多" for this gate.
+        if _dow_ctx.get("active_short_evidence"):
+            _dow_bull = False
+        if _dow_bull or _lean == "bull":
+            hard_blocks.append("formal_short_blocked_by_bull_structure")
 
     allow_formal = (
         not hard_blocks
