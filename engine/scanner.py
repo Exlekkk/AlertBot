@@ -18,6 +18,7 @@ from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
 from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
 from engine.ifvg import build_ifvg_context
 from engine.structure import build_dow_structure_context, build_structure_15m_context
+from engine.m15_w_bottom import build_structure_15m_demand_context
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.volume_profile import build_volume_profile_context
 from engine.trend_messages import format_trend_message, should_send_alert_copy
@@ -118,7 +119,7 @@ class SMCTScanner:
             delta_profile = build_delta_profile_context(klines_1h)
             vp = merge_delta_into_vp(vp, delta_profile)
             ifvg = build_ifvg_context(klines_1h, timeframe="1h")
-            # 15m structure for formal short path (supply reject + small M-top).
+            # 15m structure: supply M-top (short aux) + independent demand W-bottom (long aux).
             # Closed bars only; never forms 1H structure from raw 15m.
             try:
                 klines_15m = self._fetch_enriched("15m")
@@ -126,14 +127,18 @@ class SMCTScanner:
                 self.logger.warning("klines_15m_fetch_failed error=%s", exc_15m)
                 klines_15m = []
             supply_zones = []
+            demand_zones = []
             for z in list((ifvg or {}).get("zones") or []):
                 if not isinstance(z, dict) or z.get("invalidated") or not z.get("inverted"):
                     continue
-                if int(z.get("direction") or 0) != 1:
-                    continue
                 if z.get("top") is None or z.get("bottom") is None:
                     continue
-                supply_zones.append((float(z["bottom"]), float(z["top"])))
+                direction = int(z.get("direction") or 0)
+                band = (float(z["bottom"]), float(z["top"]))
+                if direction == 1:
+                    supply_zones.append(band)
+                elif direction == -1:
+                    demand_zones.append(band)
             try:
                 structure_15m = (
                     build_structure_15m_context(klines_15m, supply_zones=supply_zones)
@@ -143,6 +148,20 @@ class SMCTScanner:
             except Exception as exc_struct:
                 self.logger.warning("structure_15m_failed error=%s", exc_struct)
                 structure_15m = {"approx": True, "timeframe": "15m", "active": False, "reason": "structure_15m_error"}
+            try:
+                structure_15m_demand = (
+                    build_structure_15m_demand_context(klines_15m, demand_zones=demand_zones)
+                    if klines_15m
+                    else {"approx": True, "timeframe": "15m", "active": False, "reason": "no_15m_klines"}
+                )
+            except Exception as exc_demand:
+                self.logger.warning("structure_15m_demand_failed error=%s", exc_demand)
+                structure_15m_demand = {
+                    "approx": True,
+                    "timeframe": "15m",
+                    "active": False,
+                    "reason": "structure_15m_demand_error",
+                }
             range_lock = build_range_lock_context(klines_1h, htf, liq, msb, matrix, aux, vp, ict=ict)
             range_lock["imbalance"] = ifvg  # legacy side-channel; trial prefers evidence.ifvg
             # 1H Dow HH/HL/LH/LL (primary); 15m Dow is aux metadata only.
@@ -168,6 +187,7 @@ class SMCTScanner:
                 "delta_profile": delta_profile,
                 "ifvg": ifvg,
                 "structure_15m": structure_15m,
+                "structure_15m_demand": structure_15m_demand,
                 "structure_dow": structure_dow,
                 "core_levels_filter": aux.get("core_levels_filter"),
             }

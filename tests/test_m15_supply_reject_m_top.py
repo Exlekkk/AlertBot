@@ -1,11 +1,9 @@
-"""15m 供给拒收 + 小 M 顶 → 正式试空催化剂（#35 基线最小切片）。
+"""15m 供给拒收 + 小 M 顶 → 最低权验证辅证（0.2），不当主催化剂抬 formal。
 
 范围：detect_small_m_top / build_structure_15m_context、evidence.structure_15m、
-trial_decision 的 m15_supply_reject_m_top 正式空向催化剂。
+trial_decision 的 m15_supply_reject_m_top 计分（验证层）。
 
 不含：#36–#41、#42 key_zones 多 IFVG / 上沿 rejected_below 优先。
-04:00/~81759 双 IFVG nearest 抢区是选区债，不在本切片；本测在**已选上沿区**
-前提下验证小M顶能否单独撑起 formal short。
 """
 from __future__ import annotations
 
@@ -50,28 +48,30 @@ def _klines_0400_reject():
     return klines
 
 
-def _evidence_upper_ifvg(*, with_m15: bool = True):
-    """Single upper inverted IFVG as nearest — no dual-IFVG select rewrite."""
-    upper = {
-        "top": 82061.9,
-        "bottom": 81751.7,
-        "direction": 1,
-        "inverted": True,
-        "mitigated": False,
-        "invalidated": False,
-        "start_bar": 10,
-    }
+def _evidence_upper_ifvg(*, with_m15: bool = True, with_ifvg: bool = True):
+    """Upper inverted IFVG + optional 15m M-top. with_ifvg=False strips IFVG catalyst path."""
     evidence = {
         "auto_range": {"state": "none", "high": None, "low": None},
-        "ifvg": {
+        "ifvg": {},
+        "sweep": {},
+        "delta_profile": {},
+    }
+    if with_ifvg:
+        upper = {
+            "top": 82061.9,
+            "bottom": 81751.7,
+            "direction": 1,
+            "inverted": True,
+            "mitigated": False,
+            "invalidated": False,
+            "start_bar": 10,
+        }
+        evidence["ifvg"] = {
             "nearest_active": upper,
             "zones": [upper],
             "approx": True,
             "timeframe": "1h",
-        },
-        "sweep": {},
-        "delta_profile": {},
-    }
+        }
     if with_m15:
         evidence["structure_15m"] = {
             "approx": True,
@@ -131,17 +131,37 @@ def _liq():
 
 
 class M15SupplyRejectMTopFormalTests(unittest.TestCase):
-    def test_m15_enables_formal_short_when_upper_zone_selected(self):
-        """已选上沿 IFVG 拒收时：小M顶催化剂可单独撑 formal short（#35 基线）。"""
+    def test_m15_scores_at_verification_weight(self):
+        """M-top still lands in short evidence at 0.2 (verification layer)."""
         klines = _klines_0400_reject()
         evidence = _evidence_upper_ifvg(with_m15=True)
-        aux = _aux_neutral()
-        htf = {"text": "4H 震荡", "relation": "neutral", "h4_direction": "neutral", "bias": "neutral"}
-        zone = (81751.7, 82061.9)
-
         trial = build_trial_context(
             klines,
-            htf,
+            {"text": "4H 震荡", "relation": "neutral", "h4_direction": "neutral", "bias": "neutral"},
+            _liq(),
+            _msb_empty(),
+            {},
+            _aux_neutral(),
+            evidence_bundle=evidence,
+            range_lock={"active": False},
+        )
+        short_blob = " ".join(trial["evidence"]["short"])
+        self.assertIn("m15_supply_reject_m_top:+0.20", short_blob)
+        self.assertNotIn("m15_supply_reject_m_top:+3.50", short_blob)
+
+    def test_m15_alone_cannot_raise_formal_catalyst(self):
+        """Strip IFVG/other catalysts: M-top alone must not unlock directional catalyst."""
+        klines = _klines_0400_reject()
+        # Keep chart framework active via empty-but-present auto_range dict, but no IFVG.
+        evidence = _evidence_upper_ifvg(with_m15=True, with_ifvg=False)
+        evidence["auto_range"] = {"state": "none", "high": None, "low": None, "approx": True}
+        aux = _aux_neutral()
+        # Kill rar_below_trigger path by marking above trigger with flat slope.
+        aux["rar_above_trigger"] = True
+        aux["rar_slope"] = 0.0
+        trial = build_trial_context(
+            klines,
+            {"text": "4H 震荡", "relation": "neutral", "h4_direction": "neutral", "bias": "neutral"},
             _liq(),
             _msb_empty(),
             {},
@@ -151,31 +171,36 @@ class M15SupplyRejectMTopFormalTests(unittest.TestCase):
         )
         short_blob = " ".join(trial["evidence"]["short"])
         self.assertIn("m15_supply_reject_m_top", short_blob)
-
+        # No imbalance / sweep / rar_turn — only verification tag.
+        self.assertNotIn("imbalance_inverted_resistance", short_blob)
         assessment = assess_trial_candidate(
             "short",
             "UPPER_KEY_ZONE_REJECTION",
-            zone,
-            zone[1],
+            (81751.7, 82061.9),
+            82061.9,
             klines[-1],
             float(klines[-3]["close"]),
-            "ifvg_zone",
+            "key_level",  # not ifvg — blocks poi_catalyst via zone_source
             "rejected_below",
             trial,
             current_bar=len(klines) - 1,
         )
-        self.assertTrue(assessment["directional_catalyst"], msg=assessment)
-        self.assertTrue(assessment["allow_formal"], msg=assessment)
+        self.assertFalse(assessment["directional_catalyst"], msg=assessment)
+        self.assertIn("formal_without_directional_catalyst", assessment["hard_blocks"])
+        self.assertFalse(assessment["allow_formal"], msg=assessment)
 
-    def test_without_m15_upper_reject_may_lack_catalyst_or_score(self):
-        """无 15m M 顶时，同区拒收不保证 formal（对照：催化剂/分数路径依赖 m15）。"""
+    def test_without_m15_tag_absent(self):
         klines = _klines_0400_reject()
         evidence = _evidence_upper_ifvg(with_m15=False)
-        aux = _aux_neutral()
-        htf = {"text": "4H 震荡", "relation": "neutral", "h4_direction": "neutral"}
-        zone = (81751.7, 82061.9)
         trial = build_trial_context(
-            klines, htf, _liq(), _msb_empty(), {}, aux, evidence_bundle=evidence, range_lock={"active": False}
+            klines,
+            {"text": "4H 震荡", "relation": "neutral", "h4_direction": "neutral"},
+            _liq(),
+            _msb_empty(),
+            {},
+            _aux_neutral(),
+            evidence_bundle=evidence,
+            range_lock={"active": False},
         )
         short_blob = " ".join(trial["evidence"]["short"])
         self.assertNotIn("m15_supply_reject_m_top", short_blob)

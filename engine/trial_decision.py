@@ -245,13 +245,25 @@ def build_trial_context(
         elif int(nearest_imb.get("direction") or 0) == -1:
             _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
 
-    # 15m 上方供给拒收 + 小 M 顶 → 正式空向催化剂（高权加分）
+    # 15m 上方供给拒收 + 小 M 顶 → 最低权验证辅证（0.2），不当主催化剂抬 formal
     structure_15m = evidence_bundle.get("structure_15m") if isinstance(evidence_bundle.get("structure_15m"), dict) else {}
     m15_active = bool(structure_15m.get("active")) and bool(structure_15m.get("supply_reject")) and bool(
         (structure_15m.get("small_m_top") or {}).get("active")
     )
     if m15_active:
-        _append_score(scores, evidence, "short", 3.5, "m15_supply_reject_m_top")
+        _append_score(scores, evidence, "short", 0.2, "m15_supply_reject_m_top")
+
+    # 15m 下方需求回收 + 独立 W 底 → 多向最低权验证辅证（0.2），不当主催化剂抬 formal
+    structure_15m_demand = (
+        evidence_bundle.get("structure_15m_demand")
+        if isinstance(evidence_bundle.get("structure_15m_demand"), dict)
+        else {}
+    )
+    m15_w_active = bool(structure_15m_demand.get("active")) and bool(structure_15m_demand.get("demand_reclaim")) and bool(
+        (structure_15m_demand.get("small_w_bottom") or {}).get("active")
+    )
+    if m15_w_active:
+        _append_score(scores, evidence, "long", 0.2, "m15_demand_reclaim_w_bottom")
 
     # Dow HH/HL/LH/LL (1H primary): mid-low structure bonus — clearly below
     # main POI/RAR/Liquidity/IFVG/POC, above Auto Range. Turn breaks may
@@ -279,6 +291,7 @@ def build_trial_context(
             "sweep_sell_side_reclaim",
             "profile_node_bull",
             "imbalance_inverted_support",
+            "m15_demand_reclaim_w_bottom",
             "dow_break_lh",
         ),
         "short": (
@@ -527,13 +540,12 @@ def assess_trial_candidate(
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "evidence_confluence",
-            # 15m 供给拒收+小M顶：正式空向催化剂（对称多向暂不单开）
-            "m15_supply_reject_m_top" if side == "short" else "m15_demand_reclaim_m_bottom",
+            # m15 M-top / W-bottom are verification-layer only (0.2) — excluded
+            # from catalyst alignment so they cannot alone raise formal.
             # Dow turn: break HL→short / break LH→long (must still stack POI)
             "dow_break_hl" if side == "short" else "dow_break_lh",
         )
     )
-    m15_short_catalyst = side == "short" and "m15_supply_reject_m_top" in reason_text
     structure_aligned = any(
         token in reason_text
         for token in (
@@ -605,10 +617,8 @@ def assess_trial_candidate(
     if not evidence_keys and not effective_directional_catalyst:
         hard_blocks.append("formal_without_evidence")
 
-    # 15m M-top supply reject + IFVG upper reaction: relax opposite-margin slightly
+    # M-top / W-bottom are verification-layer only — no opposite-margin relaxation.
     opposite_margin = float(cfg.get("opposite_conflict_margin", 2.5))
-    if m15_short_catalyst and zone_source in {"ifvg_zone", "imbalance_zone"} and alert_type in formal_reactions:
-        opposite_margin = float(cfg.get("m15_opposite_conflict_margin", 5.0))
     if opposite_score - score >= opposite_margin:
         hard_blocks.append("opposite_structure_dominates")
     current_formal_side = "lower" if side == "long" else "upper"
