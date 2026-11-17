@@ -58,9 +58,17 @@ pending state. Closed eligible alerts take precedence over early delivery.
 Optional early-data/ledger errors are logged and do not stop closed scans.
 
 The previous standalone volume-weak and 15m shadow scripts are unchanged and
-remain log-only. Their old flags do not enable this new integration. The legacy
-freeze flag does not gate the scanner's existing trial send path; use the new
-explicit mode switch to disable early sends. No server flags are changed by this PR.
+remain log-only. Their old flags do not enable this new integration.
+
+`FREEZE_MODE_SEND_X_ONLY=1` blocks scanner trial and live early business sends.
+Frozen candidates do not consume formal signatures, early reservations or
+formal pending state. Closed decision evaluation and Shadow remain available;
+ops replies and backend-error notifications keep their existing behavior.
+This flag is read at process startup, so changing it requires a scanner restart.
+Its existing config default is **1**: a server that previously displayed freeze
+while still sending scanner trials will stop those sends after this patch.
+Review the host's intended freeze setting before deployment. This PR does not
+edit host environment files or enable any delivery mode.
 
 ## Validation
 

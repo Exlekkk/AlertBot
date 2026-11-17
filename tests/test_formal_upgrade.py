@@ -36,7 +36,7 @@ class FormalUpgradeTests(unittest.TestCase):
         self.env.stop();self.tmp.cleanup()
 
     def run_decision(self, send_error=None):
-        with patch('engine.scanner.load_trend_state',return_value={}), patch('engine.scanner.decide_trend_segment',return_value=copy.deepcopy(self.closed)), patch('engine.scanner.send_telegram_message',side_effect=send_error) as send, patch('engine.scanner.save_observation_state') as save:
+        with patch('engine.scanner.FREEZE_MODE_SEND_X_ONLY',False), patch('engine.scanner.load_trend_state',return_value={}), patch('engine.scanner.decide_trend_segment',return_value=copy.deepcopy(self.closed)), patch('engine.scanner.send_telegram_message',side_effect=send_error) as send, patch('engine.scanner.save_observation_state') as save:
             result=self.scanner.run_once()
             return result,send.call_count,sum(c.args[2].get("pending_confirm") is True for c in save.call_args_list)
 
