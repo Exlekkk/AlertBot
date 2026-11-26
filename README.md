@@ -46,33 +46,33 @@ Exact indicator brands, chart-vendor scripts, and strategy jargon are intentiona
 
 ## Install
 
-Typical host layout uses `/opt/smct-alert` as the install root and a local venv.
+Typical host layout uses `/opt/amst-alert` as the install root and a local venv.
 
 ```bash
-sudo mkdir -p /opt/smct-alert
+sudo mkdir -p /opt/amst-alert
 sudo rsync -a --exclude '.git' --exclude '.env' --exclude 'config/.env' \
   --exclude 'venv' --exclude 'logs' --exclude 'state' \
-  ./ /opt/smct-alert/
-cd /opt/smct-alert
+  ./ /opt/amst-alert/
+cd /opt/amst-alert
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ```
 
-Copy `.env.example` to the host env file (default: `/opt/smct-alert/config/.env`) and fill secrets locally. Point `SMCT_ENV_FILE` at that absolute path if it is not the default.
+Copy `.env.example` to the host env file (default: `/opt/amst-alert/config/.env`) and fill secrets locally. Point `AMST_ENV_FILE` at that absolute path if it is not the default.
 
 Do not commit tokens, chat ids, webhook secrets, or production `.env` files.
 
 ## Configuration
 
-Load env via `SMCT_ENV_FILE` (see `.env.example` and `docs/DEPLOY_CHECKLIST.md`).
+Load env via `AMST_ENV_FILE` (see `.env.example` and `docs/DEPLOY_CHECKLIST.md`). `AMST_*` keys are read first; if unset or empty, the matching `SMCT_*` key is used.
 
 Important ops flags (names only; set values on the host):
 
 | Key | Purpose |
 |-----|---------|
 | `FREEZE_MODE_SEND_X_ONLY` | `1` / `0` delivery freeze flag |
-| `SMCT_ENV_FILE` | Absolute path to the env file |
-| `SMCT_SIGNAL_STATE_FILE` / `SMCT_RUNTIME_STATE_FILE` | State JSON paths |
+| `AMST_ENV_FILE` | Absolute path to the env file |
+| `AMST_SIGNAL_STATE_FILE` / `AMST_RUNTIME_STATE_FILE` | State JSON paths |
 | `BINANCE_SYMBOL` | Symbol (default `BTCUSDT`) |
 | `MARKET_SOURCE` | `binance_futures` (default) or `binance_spot` |
 | `SCAN_INTERVAL_SECONDS` / `ALERT_COOLDOWN_SECONDS` | Loop and cooldown |
@@ -85,20 +85,20 @@ Production expects five units (host names may match these examples):
 
 | Unit | Role |
 |------|------|
-| `smct-scanner` | Scanner loop (`scripts/run_scanner.py`) |
-| `smct-alert` | App process (shared `app:app` with webhook on many hosts) |
-| `smct-webhook` | Webhook / HTTP surface |
-| `smct-15m-shadow` | 15m shadow log-only (`scripts/run_15m_shadow.py --shadow`); must stay running even if later TG weak reminders enable |
-| `smct-volume-weak-shadow` | Unclosed volume weak shadow log-only (`scripts/run_volume_weak_shadow.py --shadow`); TG env default off |
+| `amst-scanner` | Scanner loop (`scripts/run_scanner.py`) |
+| `amst-alert` | App process (shared `app:app` with webhook on many hosts) |
+| `amst-webhook` | Webhook / HTTP surface |
+| `amst-15m-shadow` | 15m shadow log-only (`scripts/run_15m_shadow.py --shadow`); must stay running even if later TG weak reminders enable |
+| `amst-volume-weak-shadow` | Unclosed volume weak shadow log-only (`scripts/run_volume_weak_shadow.py --shadow`); TG env default off |
 
-Example unit files in-repo: `systemd/smct-scanner.service`, `systemd/smct-15m-shadow.service`, `systemd/smct-volume-weak-shadow.service` (WorkingDirectory `/opt/smct-alert`, venv interpreter in `ExecStart`).
+Example unit files in-repo: `systemd/amst-alert.service`, `systemd/amst-scanner.service`, `systemd/amst-webhook.service`, `systemd/amst-15m-shadow.service`, `systemd/amst-volume-weak-shadow.service` (WorkingDirectory `/opt/amst-alert`, venv interpreter in `ExecStart`). Scanner also has `systemd/amst-scanner.service.d/90-alertbot-early-shadow.conf` (legacy `SMCT_*` env key kept alongside `AMST_*` for compatibility).
 
 After install or unit edits:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart smct-alert smct-scanner smct-webhook smct-15m-shadow smct-volume-weak-shadow
-sudo systemctl is-active smct-alert smct-scanner smct-webhook smct-15m-shadow smct-volume-weak-shadow
+sudo systemctl restart amst-alert amst-scanner amst-webhook amst-15m-shadow amst-volume-weak-shadow
+sudo systemctl is-active amst-alert amst-scanner amst-webhook amst-15m-shadow amst-volume-weak-shadow
 ```
 
 Prefer `Restart=always`; investigate crash loops via journal before force-restarting.
@@ -116,7 +116,7 @@ python -m compileall -q engine services scripts tests
 
 1. Backup state JSON and note the current commit/tag.
 2. Fetch and check out the reviewed commit (do **not** cut over from an unreviewed Draft PR).
-3. Sync code into `/opt/smct-alert` without overwriting `.env`, `venv`, `logs`, or `state`.
+3. Sync code into `/opt/amst-alert` without overwriting `.env`, `venv`, `logs`, or `state`.
 4. `pip install -r requirements.txt` in the host venv if dependencies changed.
 5. Run `./scripts/run_ci.sh` on the host.
 6. Restart the three units; confirm they are active.
@@ -130,13 +130,13 @@ sudo rsync -a \
   --exclude 'venv' --exclude '.venv' \
   --exclude 'logs' --exclude 'state' \
   --exclude '__pycache__' --exclude '*.pyc' \
-  /path/to/reviewed/checkout/ /opt/smct-alert/
+  /path/to/reviewed/checkout/ /opt/amst-alert/
 ```
 
 ## Rollback
 
 1. Freeze or stop outbound send if alerts misfire (`FREEZE_MODE_SEND_X_ONLY=1` or stop units).
-2. Check out the previous known-good commit/tag and sync into `/opt/smct-alert` the same way.
+2. Check out the previous known-good commit/tag and sync into `/opt/amst-alert` the same way.
 3. Restore state JSON from the pre-cutover backup if needed.
 4. Reinstall requirements if pins changed; restart the three units.
 5. Confirm one healthy scan cycle before re-enabling live delivery.

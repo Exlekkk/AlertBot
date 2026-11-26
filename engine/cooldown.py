@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import SMCT_SIGNAL_STATE_FILE
+from config import AMST_SIGNAL_STATE_FILE
 
 
 logger = logging.getLogger("scanner")
@@ -19,7 +19,7 @@ class SignalStateStore:
         state_file: str | None = None,
     ):
         self.price_change_threshold = price_change_threshold
-        self.state_file = Path(state_file or SMCT_SIGNAL_STATE_FILE)
+        self.state_file = Path(state_file or AMST_SIGNAL_STATE_FILE)
         self.last_sent: dict[str, dict[str, Any]] = {}
         self._load()
 

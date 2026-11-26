@@ -27,7 +27,7 @@ def build_msb_ob_context(_klines, _liq) -> dict[str, Any]:
     """MSB-OB stack hard-deleted; OTE comes from chart fibonacci in scanner."""
     return {"direction": "neutral"}
 from engine.range_lock import build_range_lock_context
-from engine.scanner import SMCTScanner
+from engine.scanner import AMSTScanner
 from engine.trend_matrix import build_trend_matrix_proxy
 from engine.trend_segments import decide_trend_segment
 from engine.volume_profile import build_volume_profile_context
@@ -89,7 +89,7 @@ def replay(
     end_ms: int,
     timezone: ZoneInfo,
 ) -> list[dict[str, Any]]:
-    scanner = SMCTScanner.__new__(SMCTScanner)
+    scanner = AMSTScanner.__new__(AMSTScanner)
     observation_state: dict[str, Any] = {}
     trend_state: dict[str, Any] = {"direction": "neutral", "has_snapshot": False}
     output: list[dict[str, Any]] = []

@@ -4,14 +4,21 @@ FILES = {
     "config.py": '''import os
 from dotenv import load_dotenv
 
-ENV_FILE = os.getenv("SMCT_ENV_FILE", "/opt/smct-alert/config/.env")
+def env_amst_then_smct(suffix, default=""):
+    for key in (f"AMST_{suffix}", f"SMCT_{suffix}"):
+        raw = os.getenv(key)
+        if raw is not None and raw.strip() != "":
+            return raw
+    return default
+
+ENV_FILE = env_amst_then_smct("ENV_FILE", "/opt/amst-alert/config/.env")
 load_dotenv(ENV_FILE)
 load_dotenv(override=False)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-WEBHOOK_LOG_FILE = os.getenv("WEBHOOK_LOG_FILE", "/opt/smct-alert/logs/smct-alert.log")
+WEBHOOK_LOG_FILE = os.getenv("WEBHOOK_LOG_FILE", "/opt/amst-alert/logs/amst-alert.log")
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
 BINANCE_SYMBOL = os.getenv("BINANCE_SYMBOL", "BTCUSDT")
@@ -22,9 +29,9 @@ BINANCE_FUTURES_KLINES_URL = os.getenv("BINANCE_FUTURES_KLINES_URL", "https://fa
 KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "300"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 
-SMCT_SIGNAL_STATE_FILE = os.getenv("SMCT_SIGNAL_STATE_FILE", "/opt/smct-alert/state/signal_state.json")
-SMCT_RUNTIME_STATE_FILE = os.getenv("SMCT_RUNTIME_STATE_FILE", "/opt/smct-alert/state/runtime_state.json")
-WEBHOOK_STATE_FILE = os.getenv("WEBHOOK_STATE_FILE", "/opt/smct-alert/state/webhook_state.json")
+AMST_SIGNAL_STATE_FILE = env_amst_then_smct("SIGNAL_STATE_FILE", "/opt/amst-alert/state/signal_state.json")
+AMST_RUNTIME_STATE_FILE = env_amst_then_smct("RUNTIME_STATE_FILE", "/opt/amst-alert/state/runtime_state.json")
+WEBHOOK_STATE_FILE = os.getenv("WEBHOOK_STATE_FILE", "/opt/amst-alert/state/webhook_state.json")
 
 FREEZE_MODE_SEND_X_ONLY = os.getenv("FREEZE_MODE_SEND_X_ONLY", "1") == "1"
 SEND_NEAR_MISS_SUMMARY = os.getenv("SEND_NEAR_MISS_SUMMARY", "0") == "1"
@@ -71,7 +78,7 @@ def root():
     snapshot = runtime_state.get_snapshot()
     return {
         "status": "ok",
-        "message": "SMCT Alert Bot is running",
+        "message": "AMST Alert Bot is running",
         "runtime": snapshot,
     }
 
@@ -178,7 +185,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import SMCT_SIGNAL_STATE_FILE
+from config import AMST_SIGNAL_STATE_FILE
 
 
 class SignalStateStore:
@@ -188,7 +195,7 @@ class SignalStateStore:
         state_file: str | None = None,
     ):
         self.price_change_threshold = price_change_threshold
-        self.state_file = Path(state_file or SMCT_SIGNAL_STATE_FILE)
+        self.state_file = Path(state_file or AMST_SIGNAL_STATE_FILE)
         self.last_sent: dict[str, dict[str, Any]] = {}
         self._load()
 
@@ -285,12 +292,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import HEARTBEAT_STALE_AFTER_SECONDS, SMCT_RUNTIME_STATE_FILE
+from config import HEARTBEAT_STALE_AFTER_SECONDS, AMST_RUNTIME_STATE_FILE
 
 
 class RuntimeStateStore:
     def __init__(self, state_file: str | None = None):
-        self.state_file = Path(state_file or SMCT_RUNTIME_STATE_FILE)
+        self.state_file = Path(state_file or AMST_RUNTIME_STATE_FILE)
         self.state: dict[str, Any] = {
             "last_scan_at": 0.0,
             "last_scan_ok": False,
@@ -539,7 +546,7 @@ def format_webhook_message(signal: str, symbol: str, timeframe: str, direction: 
         f"信号：{signal}\\n"
         f"周期：{timeframe}\\n"
         f"方向：{direction_text}\\n"
-        f"说明：该消息来自外部触发源，未经过SMCT内部多周期分层解释。"
+        f"说明：该消息来自外部触发源，未经过AMST内部多周期分层解释。"
     )
 
 

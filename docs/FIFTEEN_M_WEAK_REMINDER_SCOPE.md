@@ -1,6 +1,6 @@
 # Scope: 15m weak reminders (business chat)
 
-Status: **Draft PR#29 — merge waits for L business pass**. Phase 1 deliverable in this PR: `systemd/smct-15m-shadow.service` (resident log-only shadow). Phase 2 TG remains env-gated off (`SMCT_15M_WEAK_REMINDER_ENABLED` default `0`; not wired in this cut).  
+Status: **Draft PR#29 — merge waits for L business pass**. Phase 1 deliverable in this PR: `systemd/amst-15m-shadow.service` (resident log-only shadow). Phase 2 TG remains env-gated off (`AMST_15M_WEAK_REMINDER_ENABLED` default `0`; not wired in this cut).  
 Does **not** change 1H formal trial alerts (`EARLY_LONG_TRIAL` / `EARLY_SHORT_TRIAL`).
 
 ## Goal
@@ -41,7 +41,7 @@ Same skeleton; swap 做空🔴→做多🟢, 站回→跌破 for the invalidatio
 | Gate | Rule |
 |------|------|
 | Bars | **Closed 15m only** (`klines[:-1]`); never forming 1H chase |
-| Env master | `SMCT_15M_WEAK_REMINDER_ENABLED` default **`0`**; log-only until on |
+| Env master | `AMST_15M_WEAK_REMINDER_ENABLED` default **`0`**; log-only until on |
 | Dedupe | Same zone cluster + side cooldown (`zone_hash` / `recommended_cooldown_bars`) |
 | Flip-flop | Side-neutral `zone_cluster_hash` short opposite-side suppress |
 | Isolation | Must not mutate 1H cooldown, observation pending, formal scores, or formal titles |
@@ -55,22 +55,22 @@ Same skeleton; swap 做空🔴→做多🟢, 站回→跌破 for the invalidatio
 |-------|------|
 | `engine/prealert_15m.py` | Candidate eval; types `PREALERT_LONG` / `PREALERT_SHORT` |
 | `scripts/run_15m_shadow.py` | Log-only today (`--shadow`; refuses without flag; never sends TG) |
-| `systemd/smct-15m-shadow.service` | **Phase 1 deliverable**: resident shadow unit (`--shadow --log …/logs/15m_shadow.log`) |
-| Host | Restore via `smct-15m-shadow`; shadow log was stale since ~2026-05 |
+| `systemd/amst-15m-shadow.service` | **Phase 1 deliverable**: resident shadow unit (`--shadow --log …/logs/15m_shadow.log`) |
+| Host | Restore via `amst-15m-shadow`; shadow log was stale since ~2026-05 |
 
 ## Phased delivery
 
 1. **This doc** (copy + gates locked).  
-2. **Phase 1 — shadow** (this PR): ship `systemd/smct-15m-shadow.service`; enable resident shadow; calibrate false positives; **no TG**.  
+2. **Phase 1 — shadow** (this PR): ship `systemd/amst-15m-shadow.service`; enable resident shadow; calibrate false positives; **no TG**.  
 3. **Phase 2 — TG** (later): format L-locked template on the **same** candidates; own dedupe store; env default off / still gated; **shadow keeps running**; enable TG only after resident shadow is healthy.
 
-Suggested env (names provisional): `SMCT_15M_WEAK_REMINDER_ENABLED`, optional `SMCT_15M_WEAK_REMINDER_CHAT_ID`, optional `SMCT_15M_WEAK_MIN_SCORE`.
+Suggested env (names provisional): `AMST_15M_WEAK_REMINDER_ENABLED`, optional `AMST_15M_WEAK_REMINDER_CHAT_ID`, optional `AMST_15M_WEAK_MIN_SCORE`.
 
 ## Shadow continuity (user + L 2026-10-24)
 
 - **Shadow never stops** when TG weak reminders turn on. Phase 2 only adds an env-gated outbound formatter on the **same** `evaluate_15m_prealert` candidates.
 - Shadow log path remains the calibration / backtest record (`would_send` / suppress), even while TG is enabled.
-- Host note: live `15m_shadow.log` last lines are ~2026-05 — **restore resident shadow first** via `smct-15m-shadow` (`--shadow`) before enabling `SMCT_15M_WEAK_REMINDER_ENABLED=1`. Phase 2 stays env-gated off until then.
+- Host note: live `15m_shadow.log` last lines are ~2026-05 — **restore resident shadow first** via `amst-15m-shadow` (`--shadow`) before enabling `AMST_15M_WEAK_REMINDER_ENABLED=1`. Phase 2 stays env-gated off until then.
 
 ## Non-goals
 

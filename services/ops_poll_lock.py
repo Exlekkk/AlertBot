@@ -1,6 +1,6 @@
 """Exclusive flock for Telegram ops getUpdates poller.
 
-When smct-alert and smct-webhook both load app:app, only one process should
+When amst-alert and amst-webhook both load app:app, only one process should
 long-poll getUpdates. Hold the returned file handle for the poller's lifetime.
 """
 
