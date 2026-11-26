@@ -184,7 +184,7 @@ class TelegramSendTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["sent"], 0)
-        self.assertEqual(sorted(fetch_calls), ["15m", "1h", "4h"])
+        self.assertEqual(sorted(fetch_calls), ["1h", "4h"])
         scanner.state_store.mark_sent.assert_not_called()
         scanner.runtime_state.mark_sent_signal.assert_not_called()
 
@@ -437,7 +437,7 @@ class ScannerPipelineTests(unittest.TestCase):
         ctx = scanner._htf_context([{"ema10": 2.0, "ema20": 1.0, "close": 100.0, "atr": 1.0}], "neutral")
         self.assertEqual(ctx["relation"], "neutral")
 
-    def test_scanner_fetches_4h_1h_and_15m(self):
+    def test_scanner_only_fetches_4h_and_1h(self):
         from engine.scanner import SMCTScanner
 
         calls: list[str] = []
@@ -458,7 +458,7 @@ class ScannerPipelineTests(unittest.TestCase):
             result = scanner.run_once()
 
         self.assertTrue(result["ok"])
-        self.assertEqual(sorted(calls), ["15m", "1h", "4h"])
+        self.assertEqual(sorted(calls), ["1h", "4h"])
 
 
 class StatePersistenceTests(unittest.TestCase):
@@ -787,21 +787,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏空", "relation": "aligned", "h4_direction": "bear"},
+            {"text": "4H 偏震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏弱",
-                "temperature_desc": "热度 中性",
-                "price": 9990,
-                "rar_slope": -1.0,
-                "rar_above_trigger": False,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_weakening": True,
-            },
+            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 中性", "price": 9990, "rar_slope": -1.0},
             evidence_bundle=_ifvg_evidence((10000, 10120), bull=False),
             observation_state={"inside_zone": False},
         )
@@ -859,21 +849,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏多", "relation": "aligned", "h4_direction": "bull"},
+            {"text": "4H 偏震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏强",
-                "temperature_desc": "热度 中性",
-                "price": 10140,
-                "rar_slope": 0.8,
-                "rar_above_trigger": True,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_strengthening": True,
-            },
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
             evidence_bundle=_ifvg_evidence((9950, 10020), bull=True),
             observation_state={"inside_zone": False},
         )
@@ -916,21 +896,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏多", "relation": "aligned", "h4_direction": "bull"},
+            {"text": "4H 震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏强",
-                "temperature_desc": "热度 中性",
-                "price": 10140,
-                "rar_slope": 0.8,
-                "rar_above_trigger": True,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_strengthening": True,
-            },
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
             observation_state={"inside_zone": False},
         )
 
@@ -967,21 +937,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏多", "relation": "aligned", "h4_direction": "bull"},
+            {"text": "4H 偏震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏强",
-                "temperature_desc": "热度 中性",
-                "price": 10140,
-                "rar_slope": 0.8,
-                "rar_above_trigger": True,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_strengthening": True,
-            },
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
             observation_state={"inside_zone": False},
         )
         msg = format_trend_message(decision)
