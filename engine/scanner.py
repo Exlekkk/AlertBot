@@ -14,7 +14,7 @@ from engine.late_filter import apply_late_filter
 from engine.market_data import BinanceMarketDataClient
 from engine.runtime_state import RuntimeStateStore
 from engine.range_lock import build_range_lock_context
-from engine.sweep_hunter import build_sweep_context, merge_sweep_into_liquidity
+from engine.sweep_hunter import attach_path_context, build_sweep_context, merge_sweep_into_liquidity
 from engine.delta_profile import build_delta_profile_context, merge_delta_into_vp
 from engine.ifvg import build_ifvg_context
 from engine.structure import (
@@ -122,9 +122,6 @@ class SMCTScanner:
                 ict=ict_4h,
                 chart=chart_4h,
             )
-            # Evidence helpers (candle approx); merge into legacy liq/vp fields
-            sweep = build_sweep_context(klines_1h)
-            liq = merge_sweep_into_liquidity(liq, sweep)
             delta_profile = build_delta_profile_context(klines_1h)
             vp = merge_delta_into_vp(vp, delta_profile)
             ifvg = build_ifvg_context(klines_1h, timeframe="1h")
@@ -135,6 +132,13 @@ class SMCTScanner:
             except Exception as exc_15m:
                 self.logger.warning("klines_15m_fetch_failed error=%s", exc_15m)
                 klines_15m = []
+
+            # 1H map + independent 15m path. 15m must not revive an ended 1H line.
+            sweep = build_sweep_context(klines_1h, timeframe="1h")
+            if klines_15m:
+                sweep_15m = build_sweep_context(klines_15m, timeframe="15m")
+                sweep = attach_path_context(sweep, sweep_15m)
+            liq = merge_sweep_into_liquidity(liq, sweep)
 
             def _ifvg_supply_demand(ifvg_ctx: dict[str, Any]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
                 supply: list[tuple[float, float]] = []

@@ -172,12 +172,18 @@ TREND_ENGINE_CONFIG = {
         "max_range_age": 0,
     },
     "sweep_hunter": {
-        "length": 10,
-        "filter": 1.0,
-        "max_line_width": 4,
-        "min_transparency": 0,
-        "max_transparency": 60,
-        "calc_bars": 700,
+        # Detection defaults for the multi-scale sweep map. Unused trade-drawing
+        # knobs are omitted on purpose so alerts never inherit TP / SL geometry.
+        "fast_bars": 14,
+        "mid_bars": 42,
+        "slow_bars": 120,
+        "max_age": 1000,
+        "remove_on": "wick",
+        "range_lookback": 777,
+        "price_resolution": 200,
+        "cell_width": 5,
+        "filter_by_strength": True,
+        "strength_threshold": 33.0,
     },
     "delta_profile": {
         "length": 200,

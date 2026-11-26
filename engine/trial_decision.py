@@ -529,14 +529,12 @@ def assess_trial_candidate(
     else:
         reward_risk = None
 
-    reason_blob = " ".join(reasons)
     # Auto Range confirmed breakout no longer sole-drives matching_fresh_event
     # (L: forbid high-weight / naked chase from Auto Range). accepted_breakout
     # still used for range-edge hard-block exemptions above.
-    matching_fresh_event = (
-        (side == "long" and "sweep_sell_side_reclaim" in reason_blob)
-        or (side == "short" and "sweep_buy_side_reject" in reason_blob)
-    )
+    # Liquidity sweep is evidence-only: it does not unlock formal by itself
+    # and is not a matching_fresh_event exemption.
+    matching_fresh_event = False
     reason_text = " ".join(reasons)
     evidence_keys = list(trial_context.get("evidence_bundle_keys") or [])
     # MSS/BOS from deleted ICT stack no longer qualify as fresh structure.
@@ -546,7 +544,8 @@ def assess_trial_candidate(
     evidence_aux_aligned = any(
         token in reason_text
         for token in (
-            "sweep_sell_side_reclaim" if side == "long" else "sweep_buy_side_reject",
+            # Sweep tags stay scored at 2.0 but are excluded from catalyst
+            # alignment so a liquidity event cannot alone raise formal.
             "range_reclaim_after_break_down" if side == "long" else "range_reclaim_after_break_up",
             "range_breakout_up_annotation" if side == "long" else "range_breakout_down_annotation",
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",

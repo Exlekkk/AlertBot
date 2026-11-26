@@ -49,7 +49,7 @@ def _series(n=120, base=10000.0):
 
 class SweepHunterTests(unittest.TestCase):
     def test_not_stub(self):
-        ctx = build_sweep_context(_series())
+        ctx = build_sweep_context(_series(200))
         self.assertNotEqual(ctx.get("reason"), "stub_pending_algorithm")
         self.assertTrue(ctx.get("approx"))
         self.assertTrue(ctx.get("candle_proxy"))
@@ -57,12 +57,12 @@ class SweepHunterTests(unittest.TestCase):
             self.assertIn(key, ctx)
 
     def test_merge_into_liquidity(self):
-        sweep = build_sweep_context(_series())
+        sweep = build_sweep_context(_series(200))
         liq = {"sweep_type": "none", "bars_since_sweep": 99}
         out = merge_sweep_into_liquidity(liq, sweep)
         self.assertIn("sweep_hunter", out)
         if sweep.get("swept") and sweep.get("recent_sweep_valid"):
-            self.assertEqual(out.get("sweep_source"), "sweep_hunter_approx")
+            self.assertEqual(out.get("sweep_source"), "sweep_hunter")
 
 
 class DeltaProfileTests(unittest.TestCase):
