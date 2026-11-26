@@ -3,7 +3,7 @@
 Status: **Draft PR#32 — merge waits for L final pass + user awake**.  
 Rollback tip: **`ceb42f1`** (main before this Draft).  
 Does **not** change 1H formal trial titles (`EARLY_LONG_TRIAL` / `EARLY_SHORT_TRIAL`) or open TG by default.  
-Resident unit: `systemd/smct-volume-weak-shadow.service` (log-only; TG env still default off).
+Resident unit: `systemd/amst-volume-weak-shadow.service` (log-only; TG env still default off).
 
 ## L locks (2026-10-25)
 
@@ -25,7 +25,7 @@ Resident unit: `systemd/smct-volume-weak-shadow.service` (log-only; TG env still
 | Product | Weak reminder on **forming / unclosed** abnormal volume |
 | Isolation | Must **not** mutate 1H cooldown, observation pending, formal scores, or formal title family |
 | Bars | Forming-bar read OK for this weak path only; formal 1H stays closed-candle |
-| Env master | `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED` default **`0`** |
+| Env master | `AMST_ABNORMAL_VOLUME_WEAK_ENABLED` default **`0`** |
 | Copy | L-locked Chinese (see below); forbid 试多/试空 |
 | Bias | Prefer miss over false positive |
 
@@ -63,10 +63,10 @@ Wired in `engine/volume_weak.py` + `scripts/run_volume_weak_shadow.py` defaults.
 | Same-side cooldown | **4** × 15m bars | Per side |
 | Opposite-side cooldown | **2** × 15m bars | Flip-flop dampen |
 | Side from | Forming 15m body (`close` vs `open`) | Neutral/flat → no alert |
-| Shadow log | `logs/volume_weak_shadow.log` | Via `smct-volume-weak-shadow` unit |
-| TG | `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED=0` | Enable only after merge + shadow calm |
+| Shadow log | `logs/volume_weak_shadow.log` | Via `amst-volume-weak-shadow` unit |
+| TG | `AMST_ABNORMAL_VOLUME_WEAK_ENABLED=0` | Enable only after merge + shadow calm |
 
-Env: `SMCT_ABNORMAL_VOLUME_WEAK_ENABLED` (optional later chat id).
+Env: `AMST_ABNORMAL_VOLUME_WEAK_ENABLED` (optional later chat id).
 
 ## Volume weak — copy (**L-locked**)
 

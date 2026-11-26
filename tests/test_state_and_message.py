@@ -139,7 +139,7 @@ class TelegramSendTests(unittest.TestCase):
         self.assertEqual(result["result"]["message_id"], 123)
 
     def test_scanner_does_not_mark_sent_when_telegram_fails(self):
-        from engine.scanner import SMCTScanner
+        from engine.scanner import AMSTScanner
         from services.telegram import TelegramSendError
 
         fetch_calls: list[str] = []
@@ -167,7 +167,7 @@ class TelegramSendTests(unittest.TestCase):
             "metrics": {"atr_move": 1.0, "range_ratio": 0.5, "body_quality": 0.7},
         }
 
-        with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
+        with patch.object(AMSTScanner, "_fetch_enriched", fake_fetch), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
              patch("engine.scanner.build_liquidity_context", return_value=liq), \
              patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "bull"}), \
@@ -175,7 +175,7 @@ class TelegramSendTests(unittest.TestCase):
              patch("engine.scanner.load_trend_state", return_value={"direction": "neutral", "has_snapshot": False}), \
              patch("engine.scanner.save_trend_state"), \
              patch("engine.scanner.send_telegram_message", side_effect=TelegramSendError("fail")):
-            scanner = SMCTScanner("BTCUSDT")
+            scanner = AMSTScanner("BTCUSDT")
             scanner.state_store = Mock()
             scanner.state_store.should_send.return_value = True
             scanner.runtime_state = Mock()
@@ -430,15 +430,15 @@ class MessageTests(unittest.TestCase):
 
 class ScannerPipelineTests(unittest.TestCase):
     def test_htf_context_keeps_neutral_relation(self):
-        from engine.scanner import SMCTScanner
+        from engine.scanner import AMSTScanner
 
         with patch("engine.scanner.get_logger", return_value=Mock()):
-            scanner = SMCTScanner("BTCUSDT")
+            scanner = AMSTScanner("BTCUSDT")
         ctx = scanner._htf_context([{"ema10": 2.0, "ema20": 1.0, "close": 100.0, "atr": 1.0}], "neutral")
         self.assertEqual(ctx["relation"], "neutral")
 
-    def test_scanner_fetches_4h_1h_and_15m(self):
-        from engine.scanner import SMCTScanner
+    def test_scanner_fetches_4h_1h_and_15m_structure(self):
+        from engine.scanner import AMSTScanner
 
         calls: list[str] = []
 
@@ -446,13 +446,13 @@ class ScannerPipelineTests(unittest.TestCase):
             calls.append(interval)
             return [{"close": 100.0, "ema10": 1.0, "ema20": 1.0, "volume": 100.0, "atr": 1.0}] * 30
 
-        with patch.object(SMCTScanner, "_fetch_enriched", fake_fetch), \
+        with patch.object(AMSTScanner, "_fetch_enriched", fake_fetch), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
              patch("engine.scanner.build_liquidity_context", return_value={"sweep_type": "none", "reclaim_or_reject": "none", "sweep_level": None, "recent_sweep_valid": False, "prev_low": 90.0, "prev_high": 110.0}), \
              patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "neutral"}), \
              patch("engine.scanner.build_aux_filters_proxy", return_value={"momentum_desc": "动能 一般", "temperature_desc": "热度 中性", "price": 100.0}), \
              patch("engine.scanner.load_trend_state", return_value={"direction": "neutral", "has_snapshot": False}):
-            scanner = SMCTScanner("BTCUSDT")
+            scanner = AMSTScanner("BTCUSDT")
             scanner.state_store = Mock()
             scanner.runtime_state = Mock()
             result = scanner.run_once()
@@ -787,21 +787,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏空", "relation": "aligned", "h4_direction": "bear"},
+            {"text": "4H 偏震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏弱",
-                "temperature_desc": "热度 中性",
-                "price": 9990,
-                "rar_slope": -1.0,
-                "rar_above_trigger": False,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_weakening": True,
-            },
+            {"momentum_desc": "动能 偏弱", "temperature_desc": "热度 中性", "price": 9990, "rar_slope": -1.0},
             evidence_bundle=_ifvg_evidence((10000, 10120), bull=False),
             observation_state={"inside_zone": False},
         )
@@ -859,21 +849,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏多", "relation": "aligned", "h4_direction": "bull"},
+            {"text": "4H 偏震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏强",
-                "temperature_desc": "热度 中性",
-                "price": 10140,
-                "rar_slope": 0.8,
-                "rar_above_trigger": True,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_strengthening": True,
-            },
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
             evidence_bundle=_ifvg_evidence((9950, 10020), bull=True),
             observation_state={"inside_zone": False},
         )
@@ -916,21 +896,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏多", "relation": "aligned", "h4_direction": "bull"},
+            {"text": "4H 震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏强",
-                "temperature_desc": "热度 中性",
-                "price": 10140,
-                "rar_slope": 0.8,
-                "rar_above_trigger": True,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_strengthening": True,
-            },
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
             observation_state={"inside_zone": False},
         )
 
@@ -967,21 +937,11 @@ class KeyZoneObservationTests(unittest.TestCase):
             "BTCUSDT",
             "1h",
             klines,
-            {"text": "4H 偏多", "relation": "aligned", "h4_direction": "bull"},
+            {"text": "4H 偏震荡", "relation": "neutral"},
             liq,
             msb,
             {},
-            {
-                "momentum_desc": "动能 偏强",
-                "temperature_desc": "热度 中性",
-                "price": 10140,
-                "rar_slope": 0.8,
-                "rar_above_trigger": True,
-                "rar_spread": 12.0,
-                "rar_trend_strong": True,
-                "rar_spread_rising": True,
-                "rar_vs_trigger_strengthening": True,
-            },
+            {"momentum_desc": "动能 偏强", "temperature_desc": "热度 中性", "price": 10140},
             observation_state={"inside_zone": False},
         )
         msg = format_trend_message(decision)
@@ -1119,10 +1079,10 @@ class KeyZoneObservationTests(unittest.TestCase):
 
 
     def test_scanner_health_compatibility_methods_exist(self):
-        from engine.scanner import SMCTScanner
+        from engine.scanner import AMSTScanner
 
         with patch("engine.scanner.get_logger", return_value=Mock()):
-            scanner = SMCTScanner("BTCUSDT")
+            scanner = AMSTScanner("BTCUSDT")
 
         self.assertTrue(scanner.health_check()["ok"])
         self.assertTrue(scanner.healthcheck()["ok"])
@@ -1704,7 +1664,7 @@ class V139LayeredDecisionTests(unittest.TestCase):
         self.assertIn("严格按关注点管理。", message)
 
     def test_failed_observation_delivery_does_not_open_pending_state(self):
-        from engine.scanner import SMCTScanner
+        from engine.scanner import AMSTScanner
         from services.telegram import TelegramSendError
 
         bars = [self._bar(10000, 10050, 9950, 10000) for _ in range(30)]
@@ -1736,7 +1696,7 @@ class V139LayeredDecisionTests(unittest.TestCase):
             "invalid_level": 10000.0,
         }
 
-        with patch.object(SMCTScanner, "_fetch_enriched", return_value=bars), \
+        with patch.object(AMSTScanner, "_fetch_enriched", return_value=bars), \
              patch("engine.scanner.get_logger", return_value=Mock()), \
              patch("engine.scanner.build_liquidity_context", return_value=self._neutral_liq()), \
              patch("engine.scanner.build_trend_matrix_proxy", return_value={"matrix_direction": "neutral"}), \
@@ -1751,7 +1711,7 @@ class V139LayeredDecisionTests(unittest.TestCase):
              patch("engine.scanner.apply_late_filter", side_effect=lambda decision, _: decision), \
              patch("engine.scanner.format_trend_message", return_value="message"), \
              patch("engine.scanner.send_telegram_message", side_effect=TelegramSendError("fail")):
-            scanner = SMCTScanner("BTCUSDT")
+            scanner = AMSTScanner("BTCUSDT")
             scanner.state_store = Mock()
             scanner.state_store.should_send.return_value = True
             scanner.runtime_state = Mock()

@@ -31,7 +31,7 @@ class BihourlyReporter:
     def run_healthcheck(self) -> dict:
         try:
             scanner_module = import_module("engine.scanner")
-            scanner_cls = getattr(scanner_module, "SMCTScanner")
+            scanner_cls = getattr(scanner_module, "AMSTScanner")
             scanner = scanner_cls(symbol=self.symbol)
 
             if hasattr(scanner, "health_check"):
@@ -40,7 +40,7 @@ class BihourlyReporter:
             if hasattr(scanner, "healthcheck"):
                 return scanner.healthcheck()
 
-            raise AttributeError("SMCTScanner has neither 'health_check' nor 'healthcheck'")
+            raise AttributeError("AMSTScanner has neither 'health_check' nor 'healthcheck'")
 
         except Exception as exc:
             self.logger.exception("bihourly_healthcheck_failed error=%s", exc)

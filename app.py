@@ -129,7 +129,7 @@ def root():
     snapshot = runtime_state.get_snapshot()
     return {
         "status": "ok",
-        "message": "SMCT Alert Bot is running",
+        "message": "AMST Alert Bot is running",
         "runtime": snapshot,
     }
 

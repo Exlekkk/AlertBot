@@ -43,67 +43,6 @@ def _append_score(scores: dict[str, float], evidence: dict[str, list[str]], side
     evidence[side].append(f"{reason}:{value:+.2f}")
 
 
-def _rar_bandwidth_expansion(aux: dict[str, Any], side: str) -> bool:
-    """Bandwidth expansion aligned with formal trial side.
-
-    Short: spread >= SMA15 (trend_strong) + spread rising + value vs trigger weakening.
-    Long:  spread >= SMA15 (trend_strong) + spread rising + value vs trigger strengthening.
-    """
-    if not aux.get("rar_trend_strong"):
-        return False
-    if not aux.get("rar_spread_rising"):
-        return False
-    if side == "short":
-        return bool(aux.get("rar_vs_trigger_weakening")) or not bool(aux.get("rar_above_trigger", True))
-    return bool(aux.get("rar_vs_trigger_strengthening")) or bool(aux.get("rar_above_trigger"))
-
-
-def _rar_adverse_penalty(aux: dict[str, Any], side: str) -> float:
-    """High-weight reverse-RAR penalty (score path, never a hard_block veto).
-
-    Short adverse requires above_trigger + positive slope (10/28 14:00 class);
-    long requires below_trigger + negative slope. Momentum alone never triggers.
-    Narrow band / steep slope deepen the drag; IFVG/structure may still resonate.
-    """
-    slope = _f(aux.get("rar_slope"))
-    momentum = str(aux.get("momentum_desc", ""))
-    bullish_mom = ("偏强" in momentum) or ("买盘" in momentum) or ("修复" in momentum)
-    bearish_mom = ("偏弱" in momentum) or ("卖压" in momentum) or ("转弱" in momentum)
-    above = bool(aux.get("rar_above_trigger"))
-    # Only treat as "narrow" when spread fields were supplied; missing → not assumed narrow.
-    has_spread_meta = ("rar_trend_strong" in aux) or ("rar_spread" in aux)
-    narrow = has_spread_meta and not bool(aux.get("rar_trend_strong"))
-
-    if side == "short":
-        if _rar_bandwidth_expansion(aux, "short") or slope <= -0.35:
-            return 0.0
-        if not (above and slope > 0):
-            return 0.0
-        penalty = -2.5
-        if slope >= 0.35:
-            penalty -= 1.5
-        if narrow:
-            penalty -= 1.5
-        if bullish_mom:
-            penalty -= 0.5
-        return penalty
-
-    if _rar_bandwidth_expansion(aux, "long") or slope >= 0.35:
-        return 0.0
-    below = not above
-    if not (below and slope < 0):
-        return 0.0
-    penalty = -2.5
-    if slope <= -0.35:
-        penalty -= 1.5
-    if narrow:
-        penalty -= 1.5
-    if bearish_mom:
-        penalty -= 0.5
-    return penalty
-
-
-
 def _box_context(
     close: float,
     range_lock: dict[str, Any],
@@ -207,18 +146,6 @@ def build_trial_context(
         _append_score(scores, evidence, "long", 0.5, "rar_above_trigger")
     elif not aux.get("rar_above_trigger", True) and rar_slope <= 0:
         _append_score(scores, evidence, "short", 0.5, "rar_below_trigger")
-    # rar_spread / rar_trend_strong enter decision (high-weight score / resonance).
-    # Aligned bandwidth adds; reverse regime subtracts heavily — no hard_block veto.
-    if _rar_bandwidth_expansion(aux, "long"):
-        _append_score(scores, evidence, "long", 0.75, "rar_bullish_bandwidth")
-    if _rar_bandwidth_expansion(aux, "short"):
-        _append_score(scores, evidence, "short", 0.75, "rar_bearish_bandwidth")
-    short_adverse = _rar_adverse_penalty(aux, "short")
-    if short_adverse:
-        _append_score(scores, evidence, "short", short_adverse, "rar_adverse_bull_regime")
-    long_adverse = _rar_adverse_penalty(aux, "long")
-    if long_adverse:
-        _append_score(scores, evidence, "long", long_adverse, "rar_adverse_bear_regime")
 
     momentum = str(aux.get("momentum_desc", ""))
     if "偏强" in momentum or "买盘" in momentum or ("修复" in momentum and rar_slope > 0):
@@ -255,18 +182,12 @@ def build_trial_context(
     elif volume_flow.get("absorption") == "buy_absorption_proxy":
         _append_score(scores, evidence, "short", 0.75, "buy_absorption_proxy")
 
-    h4 = str(htf_ctx.get("h4_direction", "") or htf_ctx.get("bias", "") or "")
+    h4 = str(htf_ctx.get("h4_direction", ""))
     htf_text = str(htf_ctx.get("text", ""))
-    h4_bull = h4 == "bull" or "偏多" in htf_text
-    h4_bear = h4 == "bear" or "偏空" in htf_text
-    h4_neutral = (not h4_bull and not h4_bear) or h4 in {"", "neutral", "none"} or "中性" in htf_text or "震荡" in htf_text
-    if h4_bull and not h4_bear:
+    if h4 == "bull" or "偏多" in htf_text:
         _append_score(scores, evidence, "long", 0.75, "h4_bull_background")
-        h4_neutral = False
-    elif h4_bear and not h4_bull:
+    elif h4 == "bear" or "偏空" in htf_text:
         _append_score(scores, evidence, "short", 0.75, "h4_bear_background")
-        h4_neutral = False
-    # 4H 中性：不赠方向分；正式路径在 assess 中抬高 formal_min / catalyst 要求。
 
     # --- Candle-approx evidence: prefer scanner evidence_bundle; side-channels are fallback ---
     auto_range = evidence_bundle.get("auto_range") if isinstance(evidence_bundle.get("auto_range"), dict) else {}
@@ -317,73 +238,56 @@ def build_trial_context(
     if not imbalance:
         imbalance = range_lock.get("imbalance") if isinstance(range_lock.get("imbalance"), dict) else {}
     nearest_imb = imbalance.get("nearest_active") if isinstance(imbalance.get("nearest_active"), dict) else None
-    # Multi-IFVG: score resistance/support from an inverted zone the candle actually
-    # touched (wick), not only nearest-to-close — otherwise a post-reject close sitting
-    # inside lower IFVG steals the short lean from an upper supply reject.
-    touched_resistance = False
-    touched_support = False
-    pad_ifvg = max(atr * 0.15, abs(close) * 0.001)
-    high = _f(latest.get("high"), close)
-    low = _f(latest.get("low"), close)
-    for item in list(imbalance.get("zones") or []) + ([nearest_imb] if nearest_imb else []):
-        if not isinstance(item, dict) or item.get("invalidated") or not item.get("inverted"):
-            continue
-        top = item.get("top")
-        bottom = item.get("bottom")
-        if top is None or bottom is None:
-            continue
-        zl, zh = min(float(bottom), float(top)), max(float(bottom), float(top))
-        touched = high >= zl - pad_ifvg and low <= zh + pad_ifvg
-        if not touched:
-            continue
-        direction = int(item.get("direction") or 0)
-        if direction == 1:
-            touched_resistance = True
-        elif direction == -1:
-            touched_support = True
-    if not touched_resistance and not touched_support and nearest_imb and nearest_imb.get("inverted") and not nearest_imb.get("invalidated"):
-        # Untouched nearest still contributes soft lean (legacy), weaker than touch.
+    if nearest_imb and nearest_imb.get("inverted") and not nearest_imb.get("invalidated"):
+        # inverted gap: direction 1 (bullish origin) acting as resistance after invert → short lean
         if int(nearest_imb.get("direction") or 0) == 1:
-            _append_score(scores, evidence, "short", 0.5, "imbalance_inverted_resistance_near")
+            _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
         elif int(nearest_imb.get("direction") or 0) == -1:
-            _append_score(scores, evidence, "long", 0.5, "imbalance_inverted_support_near")
-    if touched_resistance:
-        _append_score(scores, evidence, "short", 1.25, "imbalance_inverted_resistance")
-        if rar_slope <= -0.35 or _rar_bandwidth_expansion(aux, "short"):
-            _append_score(scores, evidence, "short", 0.75, "rar_ifvg_short_resonance")
-    if touched_support:
-        _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
-        if rar_slope >= 0.35 or _rar_bandwidth_expansion(aux, "long"):
-            _append_score(scores, evidence, "long", 0.75, "rar_ifvg_long_resonance")
+            _append_score(scores, evidence, "long", 1.25, "imbalance_inverted_support")
 
-    # 15m 上方供给拒收 + 小 M 顶 → 正式空向互通（高权加分；可削弱但不取消反向 RAR）
-    structure_15m = evidence_bundle.get("structure_15m") if isinstance(evidence_bundle.get("structure_15m"), dict) else {}
-    m15_active = bool(structure_15m.get("active")) and bool(structure_15m.get("supply_reject")) and bool(
-        (structure_15m.get("small_m_top") or {}).get("active")
-    )
-    if m15_active:
-        _append_score(scores, evidence, "short", 3.5, "m15_supply_reject_m_top")
-        # Cap reverse-RAR drag when 15m M-top supply reject is present (互通, not hard veto).
-        # 10/28 14:00 反例无此结构 → 仍吃满 adverse。
-        short_blob = " ".join(evidence["short"])
-        if "rar_adverse_bull_regime" in short_blob:
-            # Remove prior adverse and re-apply capped.
-            capped = max(_rar_adverse_penalty(aux, "short"), -2.0)
-            # Strip old adverse entries and score
-            new_reasons = []
-            removed = 0.0
-            for r in evidence["short"]:
-                if r.startswith("rar_adverse_bull_regime:"):
-                    try:
-                        removed += float(r.split(":", 1)[1])
-                    except ValueError:
-                        removed += -4.5
-                else:
-                    new_reasons.append(r)
-            evidence["short"] = new_reasons
-            scores["short"] -= removed
-            if capped < 0:
-                _append_score(scores, evidence, "short", capped, "rar_adverse_bull_regime_capped")
+    # TF-local 供给拒收 + 小 M 顶 → 各周期独立最低权验证辅证（0.2），不当主催化剂抬 formal
+    # Keys: structure_15m / structure_1h / structure_4h — never reuse another TF's result.
+    for _m_key, _m_tag in (
+        ("structure_15m", "m15_supply_reject_m_top"),
+        ("structure_1h", "h1_supply_reject_m_top"),
+        ("structure_4h", "h4_supply_reject_m_top"),
+    ):
+        _m_ctx = evidence_bundle.get(_m_key) if isinstance(evidence_bundle.get(_m_key), dict) else {}
+        _m_active = bool(_m_ctx.get("active")) and bool(_m_ctx.get("supply_reject")) and bool(
+            (_m_ctx.get("small_m_top") or {}).get("active")
+        )
+        if _m_active:
+            _append_score(scores, evidence, "short", 0.2, _m_tag)
+
+    # TF-local 需求回收 + 独立 W 底 → 各周期独立最低权验证辅证（0.2），不当主催化剂抬 formal
+    # Keys: structure_15m_demand / structure_1h_demand / structure_4h_demand — not M mirrors.
+    for _w_key, _w_tag in (
+        ("structure_15m_demand", "m15_demand_reclaim_w_bottom"),
+        ("structure_1h_demand", "h1_demand_reclaim_w_bottom"),
+        ("structure_4h_demand", "h4_demand_reclaim_w_bottom"),
+    ):
+        _w_ctx = evidence_bundle.get(_w_key) if isinstance(evidence_bundle.get(_w_key), dict) else {}
+        _w_active = bool(_w_ctx.get("active")) and bool(_w_ctx.get("demand_reclaim")) and bool(
+            (_w_ctx.get("small_w_bottom") or {}).get("active")
+        )
+        if _w_active:
+            _append_score(scores, evidence, "long", 0.2, _w_tag)
+
+    # Dow HH/HL/LH/LL (1H primary): mid-low structure bonus — clearly below
+    # main POI/RAR/Liquidity/IFVG/POC, above Auto Range. Turn breaks may
+    # enter the stack only with Liquidity/IFVG/POC; same-way BOS strengthen-
+    # only. Dow alone must never push score across the formal line.
+    structure_dow = evidence_bundle.get("structure_dow") if isinstance(evidence_bundle.get("structure_dow"), dict) else {}
+    if structure_dow.get("active_short_evidence") and isinstance(structure_dow.get("break_hl"), dict):
+        _append_score(scores, evidence, "short", 0.75, "dow_break_hl")
+    if structure_dow.get("active_long_evidence") and isinstance(structure_dow.get("break_lh"), dict):
+        _append_score(scores, evidence, "long", 0.75, "dow_break_lh")
+    bos = structure_dow.get("bos_same_way") if isinstance(structure_dow.get("bos_same_way"), dict) else None
+    if bos and bos.get("active") and bos.get("strengthen_only"):
+        if bos.get("direction") == "up":
+            _append_score(scores, evidence, "long", 0.35, "dow_bos_same_way_up")
+        elif bos.get("direction") == "down":
+            _append_score(scores, evidence, "short", 0.35, "dow_bos_same_way_down")
 
     # Soft confluence when 2+ structure candle-evidence tags agree (joint weight).
     # Pending-break, soft leans, and core_levels_* filter tags do NOT count —
@@ -395,6 +299,10 @@ def build_trial_context(
             "sweep_sell_side_reclaim",
             "profile_node_bull",
             "imbalance_inverted_support",
+            "m15_demand_reclaim_w_bottom",
+            "h1_demand_reclaim_w_bottom",
+            "h4_demand_reclaim_w_bottom",
+            "dow_break_lh",
         ),
         "short": (
             "range_reclaim_after_break_up",
@@ -403,6 +311,9 @@ def build_trial_context(
             "profile_node_bear",
             "imbalance_inverted_resistance",
             "m15_supply_reject_m_top",
+            "h1_supply_reject_m_top",
+            "h4_supply_reject_m_top",
+            "dow_break_hl",
         ),
     }
     for _side, _tokens in _confluence_tokens.items():
@@ -443,18 +354,6 @@ def build_trial_context(
 
     return {
         "market_phase": phase,
-        "h4_neutral": bool(h4_neutral),
-        "h4_direction": "bull" if h4_bull and not h4_bear else "bear" if h4_bear and not h4_bull else "neutral",
-        "rar_aux": {
-            "rar_slope": rar_slope,
-            "rar_above_trigger": bool(aux.get("rar_above_trigger")),
-            "rar_spread": _f(aux.get("rar_spread")),
-            "rar_trend_strong": bool(aux.get("rar_trend_strong")),
-            "rar_spread_rising": bool(aux.get("rar_spread_rising")),
-            "rar_vs_trigger_weakening": bool(aux.get("rar_vs_trigger_weakening")),
-            "rar_vs_trigger_strengthening": bool(aux.get("rar_vs_trigger_strengthening")),
-            "momentum_desc": str(aux.get("momentum_desc", "")),
-        },
         "range_active": range_active,
         "box_low": box_low,
         "box_high": box_high,
@@ -487,6 +386,14 @@ def build_trial_context(
         "evidence_bundle_keys": sorted(
             k for k, v in evidence_bundle.items() if isinstance(v, dict) and v
         ),
+        # Exposed for formal-short bull-structure hard gate (not scored alone).
+        "structure_dow": {
+            "trend": structure_dow.get("trend"),
+            "active_long_evidence": bool(structure_dow.get("active_long_evidence")),
+            "active_short_evidence": bool(structure_dow.get("active_short_evidence")),
+            "reason": structure_dow.get("reason"),
+        },
+        "core_levels_lean": str(core.get("lean") or "neutral"),
         "scores": scores,
         "evidence": evidence,
         "price": close,
@@ -550,11 +457,10 @@ def assess_trial_candidate(
         "SECONDARY_CONFIRM_UPPER",
     }
     secondary_confirmation = alert_type in {"SECONDARY_CONFIRM_LOWER", "SECONDARY_CONFIRM_UPPER"}
-    forming = bool(latest.get("forming"))
-    if alert_type in formal_reactions and not forming:
+    if alert_type in formal_reactions:
         reaction_score += 3.5
         reasons.append("confirmed_zone_reaction:+3.50")
-    elif interaction in {"reclaimed_above", "rejected_below"} and not forming:
+    elif interaction in {"reclaimed_above", "rejected_below"}:
         reaction_score += 2.5
         reasons.append("zone_accept_reject:+2.50")
 
@@ -602,14 +508,15 @@ def assess_trial_candidate(
     ):
         hard_blocks.append("late_chase")
 
-    # Auto Range annotation never grants permission to bypass safety gates.
+    accepted_breakout = str(trial_context.get("accepted_breakout", "none"))
+    breakout_matches = (side == "long" and accepted_breakout == "up") or (side == "short" and accepted_breakout == "down")
     box_position = str(trial_context.get("box_position", "unknown"))
     has_reference_box = trial_context.get("box_low") is not None and trial_context.get("box_high") is not None
-    if has_reference_box:
+    if has_reference_box and not breakout_matches:
         if (side == "long" and box_position == "upper_edge") or (side == "short" and box_position == "lower_edge"):
             hard_blocks.append("wrong_range_edge")
 
-    if trial_context.get("range_active"):
+    if trial_context.get("range_active") and not breakout_matches:
         box_low = trial_context.get("box_low")
         box_high = trial_context.get("box_high")
         if box_low is not None and box_high is not None and risk_distance > 0:
@@ -622,12 +529,12 @@ def assess_trial_candidate(
     else:
         reward_risk = None
 
-    reason_blob = " ".join(reasons)
-    # Only independent closed-candle sweep evidence is a fresh event.
-    matching_fresh_event = (
-        (side == "long" and "sweep_sell_side_reclaim" in reason_blob)
-        or (side == "short" and "sweep_buy_side_reject" in reason_blob)
-    )
+    # Auto Range confirmed breakout no longer sole-drives matching_fresh_event
+    # (L: forbid high-weight / naked chase from Auto Range). accepted_breakout
+    # still used for range-edge hard-block exemptions above.
+    # Liquidity sweep is evidence-only: it does not unlock formal by itself
+    # and is not a matching_fresh_event exemption.
+    matching_fresh_event = False
     reason_text = " ".join(reasons)
     evidence_keys = list(trial_context.get("evidence_bundle_keys") or [])
     # MSS/BOS from deleted ICT stack no longer qualify as fresh structure.
@@ -637,17 +544,19 @@ def assess_trial_candidate(
     evidence_aux_aligned = any(
         token in reason_text
         for token in (
-            "sweep_sell_side_reclaim" if side == "long" else "sweep_buy_side_reject",
+            # Sweep tags stay scored at 2.0 but are excluded from catalyst
+            # alignment so a liquidity event cannot alone raise formal.
             "range_reclaim_after_break_down" if side == "long" else "range_reclaim_after_break_up",
             "range_breakout_up_annotation" if side == "long" else "range_breakout_down_annotation",
             "imbalance_inverted_support" if side == "long" else "imbalance_inverted_resistance",
             "profile_node_bull" if side == "long" else "profile_node_bear",
             "evidence_confluence",
-            # 15m 供给拒收+小M顶：正式空向催化剂（对称多向暂不单开）
-            "m15_supply_reject_m_top" if side == "short" else "m15_demand_reclaim_m_bottom",
+            # M-top / W-bottom (15m/1H/4H) are verification-layer only (0.2) —
+            # excluded from catalyst alignment so they cannot alone raise formal.
+            # Dow turn: break HL→short / break LH→long (must still stack POI)
+            "dow_break_hl" if side == "short" else "dow_break_lh",
         )
     )
-    m15_short_catalyst = side == "short" and "m15_supply_reject_m_top" in reason_text
     structure_aligned = any(
         token in reason_text
         for token in (
@@ -662,8 +571,6 @@ def assess_trial_candidate(
             "sell_absorption_proxy" if side == "long" else "buy_absorption_proxy",
         )
     )
-    if forming and "forming_abnormal_volume:" in reason_text:
-        volume_catalyst = True
     # Gate: directional catalyst needs evidence/RAR/volume/OTE-IFVG reaction —
     # not deleted ICT/MSB proximity and not core_levels soft filter alone.
     auxiliary_reversal = (
@@ -721,14 +628,8 @@ def assess_trial_candidate(
     if not evidence_keys and not effective_directional_catalyst:
         hard_blocks.append("formal_without_evidence")
 
-    # RAR reverse regime is score/resonance only — never rar_regime_blocks_* hard veto.
-    _ = trial_context.get("rar_aux")
-
-    # 15m M-top supply reject + IFVG upper reaction: allow score/互通 to fight
-    # opposite lean without a dead veto (仍可用分数不够挡；非 rar hard_block).
+    # M-top / W-bottom (15m/1H/4H) are verification-layer only — no opposite-margin relaxation.
     opposite_margin = float(cfg.get("opposite_conflict_margin", 2.5))
-    if m15_short_catalyst and zone_source in {"ifvg_zone", "imbalance_zone"} and alert_type in formal_reactions:
-        opposite_margin = float(cfg.get("m15_opposite_conflict_margin", 5.0))
     if opposite_score - score >= opposite_margin:
         hard_blocks.append("opposite_structure_dominates")
     current_formal_side = "lower" if side == "long" else "upper"
@@ -748,7 +649,8 @@ def assess_trial_candidate(
         same_box = observation_state.get("last_formal_range_cluster") == trial_context.get("range_cluster")
     bars_since_flip = _bars_between(int(current_bar), observation_state.get("last_formal_open_time")) if current_bar is not None else None
     new_event_now = bool(
-        fresh_structure_matches
+        breakout_matches
+        or fresh_structure_matches
         or (
             matching_fresh_event
             and trial_context.get("liquidity_bars_since") is not None
@@ -775,11 +677,61 @@ def assess_trial_candidate(
         hard_blocks.append("same_box_opposite_flip_without_new_information")
 
     minimum = float(cfg.get("formal_min_score", 7.0))
-    if trial_context.get("range_active") and box_position == "middle":
+    if trial_context.get("range_active") and box_position == "middle" and not breakout_matches:
         minimum = float(cfg.get("range_mid_min_score", 10.0))
-    # 4H 中性收紧：只抬 formal_min，不再叠第二层 hard_block 死锁。
-    if trial_context.get("h4_neutral"):
-        minimum = max(minimum, float(cfg.get("neutral_htf_formal_min_score", 8.5)))
+
+    # Dow mid-low only: strip Dow tags and re-check — Dow alone cannot cross formal.
+    _dow_tokens = (
+        "dow_break_hl",
+        "dow_break_lh",
+        "dow_bos_same_way_up",
+        "dow_bos_same_way_down",
+    )
+    _dow_present = any(tok in reason_text for tok in _dow_tokens)
+    if _dow_present:
+        _score_wo_dow = score
+        for r in reasons:
+            for tok in _dow_tokens:
+                if r.startswith(tok + ":") or r == tok:
+                    try:
+                        _score_wo_dow -= float(r.split(":", 1)[1])
+                    except (IndexError, ValueError):
+                        pass
+                    break
+        _poi_stack = zone_source in {"ifvg_zone", "imbalance_zone", "fibonacci_ote"} or any(
+            tok in reason_text
+            for tok in (
+                "sweep_sell_side_reclaim",
+                "sweep_buy_side_reject",
+                "imbalance_inverted_support",
+                "imbalance_inverted_resistance",
+                "profile_node_bull",
+                "profile_node_bear",
+                "rar_turn_up",
+                "rar_turn_down",
+            )
+        )
+        # No POI/Liquidity/RAR stack → Dow cannot formal.
+        if not _poi_stack:
+            hard_blocks.append("dow_requires_poi_or_liquidity_stack")
+        # Dow may add mid-low weight but must never be the tip that crosses
+        # formal_min — non-Dow score must already clear the line.
+        elif _score_wo_dow < minimum <= score:
+            hard_blocks.append("dow_alone_cannot_cross_formal")
+
+    # Hard gate (L 2026-11-05 / user nod): 1h Dow bullish OR core_levels
+    # lean=bull → forbid formal short. Kills A2/A3 against-structure shorts.
+    # A1 same-way short (Dow break HL / active_short_evidence, lean≠bull) passes.
+    # No long-side mirror in this knife.
+    if side == "short":
+        _dow_ctx = trial_context.get("structure_dow") if isinstance(trial_context.get("structure_dow"), dict) else {}
+        _lean = str(trial_context.get("core_levels_lean") or "neutral").lower()
+        _dow_bull = bool(_dow_ctx.get("active_long_evidence")) or str(_dow_ctx.get("trend") or "") == "up"
+        # Break-HL short evidence means Dow is not "偏多" for this gate.
+        if _dow_ctx.get("active_short_evidence"):
+            _dow_bull = False
+        if _dow_bull or _lean == "bull":
+            hard_blocks.append("formal_short_blocked_by_bull_structure")
 
     allow_formal = (
         not hard_blocks

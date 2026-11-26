@@ -6,14 +6,28 @@ except ModuleNotFoundError:
     def load_dotenv(*args, **kwargs):
         return False
 
-ENV_FILE = os.getenv("SMCT_ENV_FILE", "/opt/smct-alert/config/.env")
+
+def env_amst_then_smct(suffix: str, default: str = "") -> str:
+    """Read AMST_<suffix> first; if unset or empty, fall back to SMCT_<suffix>.
+
+    Empty means the variable is unset or whitespace-only. Used for the
+    SMCT → AMST env-key rename transition.
+    """
+    for key in (f"AMST_{suffix}", f"SMCT_{suffix}"):
+        raw = os.getenv(key)
+        if raw is not None and raw.strip() != "":
+            return raw
+    return default
+
+
+ENV_FILE = env_amst_then_smct("ENV_FILE", "/opt/amst-alert/config/.env")
 load_dotenv(ENV_FILE)
 load_dotenv(override=False)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-WEBHOOK_LOG_FILE = os.getenv("WEBHOOK_LOG_FILE", "/opt/smct-alert/logs/smct-alert.log")
+WEBHOOK_LOG_FILE = os.getenv("WEBHOOK_LOG_FILE", "/opt/amst-alert/logs/amst-alert.log")
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
 BINANCE_SYMBOL = os.getenv("BINANCE_SYMBOL", "BTCUSDT")
@@ -28,9 +42,13 @@ KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "500"))
 KLINE_LIMIT_15M = int(os.getenv("KLINE_LIMIT_15M", "600"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 
-SMCT_SIGNAL_STATE_FILE = os.getenv("SMCT_SIGNAL_STATE_FILE", "/opt/smct-alert/state/signal_state.json")
-SMCT_RUNTIME_STATE_FILE = os.getenv("SMCT_RUNTIME_STATE_FILE", "/opt/smct-alert/state/runtime_state.json")
-WEBHOOK_STATE_FILE = os.getenv("WEBHOOK_STATE_FILE", "/opt/smct-alert/state/webhook_state.json")
+AMST_SIGNAL_STATE_FILE = env_amst_then_smct(
+    "SIGNAL_STATE_FILE", "/opt/amst-alert/state/signal_state.json"
+)
+AMST_RUNTIME_STATE_FILE = env_amst_then_smct(
+    "RUNTIME_STATE_FILE", "/opt/amst-alert/state/runtime_state.json"
+)
+WEBHOOK_STATE_FILE = os.getenv("WEBHOOK_STATE_FILE", "/opt/amst-alert/state/webhook_state.json")
 
 FREEZE_MODE_SEND_X_ONLY = os.getenv("FREEZE_MODE_SEND_X_ONLY", "1") == "1"
 SEND_NEAR_MISS_SUMMARY = os.getenv("SEND_NEAR_MISS_SUMMARY", "0") == "1"
@@ -39,12 +57,16 @@ TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS = int(os.getenv("TELEGRAM_ERROR_ALERT_COOL
 TELEGRAM_OPS_POLL_ENABLED = os.getenv("TELEGRAM_OPS_POLL_ENABLED", "1") == "1"
 TELEGRAM_OPS_POLL_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_OPS_POLL_TIMEOUT_SECONDS", "25"))
 TELEGRAM_OPS_POLL_LOCK_FILE = os.getenv(
-    "TELEGRAM_OPS_POLL_LOCK_FILE", "/tmp/smct-tg-ops-poll.lock"
+    "TELEGRAM_OPS_POLL_LOCK_FILE", "/tmp/amst-tg-ops-poll.lock"
 )
-SMCT_REPO_ROOT = os.getenv("SMCT_REPO_ROOT", "").strip()
+AMST_REPO_ROOT = env_amst_then_smct("REPO_ROOT", "").strip()
 WEBHOOK_PERSIST_SECONDS = int(os.getenv("WEBHOOK_PERSIST_SECONDS", "300"))
 
-TREND_SNAPSHOT_STATE_FILE = os.getenv("TREND_SNAPSHOT_STATE_FILE", "/opt/smct-alert/state/trend_snapshot_state.json")
+TREND_SNAPSHOT_STATE_FILE = os.getenv(
+    "TREND_SNAPSHOT_STATE_FILE", "/opt/amst-alert/state/trend_snapshot_state.json"
+)
 
 # Unclosed abnormal-volume weak reminder (TG); default off — shadow/log does not need this.
-SMCT_ABNORMAL_VOLUME_WEAK_ENABLED = os.getenv("SMCT_ABNORMAL_VOLUME_WEAK_ENABLED", "0") == "1"
+AMST_ABNORMAL_VOLUME_WEAK_ENABLED = (
+    env_amst_then_smct("ABNORMAL_VOLUME_WEAK_ENABLED", "0").strip() == "1"
+)

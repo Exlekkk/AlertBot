@@ -124,7 +124,7 @@ class VolumeWeakEvalTests(unittest.TestCase):
         ]
         d = evaluate_forming_volume_weak("BTCUSDT", bars)
         self.assertTrue(d["should_alert"])
-        with mock.patch.dict(os.environ, {"SMCT_ABNORMAL_VOLUME_WEAK_ENABLED": "0"}, clear=False):
+        with mock.patch.dict(os.environ, {"AMST_ABNORMAL_VOLUME_WEAK_ENABLED": "0"}, clear=False):
             self.assertFalse(should_send_volume_weak_tg(d))
 
     def test_tg_on_when_env_enabled(self):
@@ -141,7 +141,7 @@ class VolumeWeakEvalTests(unittest.TestCase):
                 ts=3,
             ),
         ]
-        with mock.patch.dict(os.environ, {"SMCT_ABNORMAL_VOLUME_WEAK_ENABLED": "1"}, clear=False):
+        with mock.patch.dict(os.environ, {"AMST_ABNORMAL_VOLUME_WEAK_ENABLED": "1"}, clear=False):
             d = evaluate_forming_volume_weak("BTCUSDT", bars)
             self.assertTrue(d["should_alert"])
             self.assertTrue(should_send_volume_weak_tg(d))

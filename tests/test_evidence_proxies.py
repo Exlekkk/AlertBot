@@ -49,7 +49,7 @@ def _series(n=120, base=10000.0):
 
 class SweepHunterTests(unittest.TestCase):
     def test_not_stub(self):
-        ctx = build_sweep_context(_series())
+        ctx = build_sweep_context(_series(200))
         self.assertNotEqual(ctx.get("reason"), "stub_pending_algorithm")
         self.assertTrue(ctx.get("approx"))
         self.assertTrue(ctx.get("candle_proxy"))
@@ -57,12 +57,12 @@ class SweepHunterTests(unittest.TestCase):
             self.assertIn(key, ctx)
 
     def test_merge_into_liquidity(self):
-        sweep = build_sweep_context(_series())
+        sweep = build_sweep_context(_series(200))
         liq = {"sweep_type": "none", "bars_since_sweep": 99}
         out = merge_sweep_into_liquidity(liq, sweep)
         self.assertIn("sweep_hunter", out)
         if sweep.get("swept") and sweep.get("recent_sweep_valid"):
-            self.assertEqual(out.get("sweep_source"), "sweep_hunter_approx")
+            self.assertEqual(out.get("sweep_source"), "sweep_hunter")
 
 
 class DeltaProfileTests(unittest.TestCase):
@@ -129,9 +129,7 @@ class IFVGInvertedActiveTests(unittest.TestCase):
         bars.append(_bar(10100, 10140, 10090, 10120, ts=42 * 3600000))  # gap
         # invert through underside
         bars.append(_bar(10050, 10060, 10000, 10010, ts=43 * 3600000))
-        # Prevent a new overlapping bearish gap: this case isolates a touch
-        # of the existing inverted zone, rather than replacement by a new one.
-        bars.append(_bar(10010, 10100, 9950, 9980, ts=44 * 3600000))
+        bars.append(_bar(10010, 10020, 9950, 9980, ts=44 * 3600000))
         # touch the inverted zone (reaction) without cancelling
         bars.append(_bar(10040, 10100, 10030, 10070, ts=45 * 3600000))
 

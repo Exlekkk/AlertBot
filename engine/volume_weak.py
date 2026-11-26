@@ -5,7 +5,7 @@ Must NOT mutate 1H cooldown, observation pending, formal scores, or formal
 title family (试多/试空). Formal 1H stays closed-candle; forming-bar read is
 OK for this weak path only.
 
-Env kill switch: SMCT_ABNORMAL_VOLUME_WEAK_ENABLED default 0 (TG off).
+Env kill switch: AMST_ABNORMAL_VOLUME_WEAK_ENABLED default 0 (TG off).
 Shadow / log path always available via scripts/run_volume_weak_shadow.py.
 No systemd unit in this PR (deferred until after merge + user awake).
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from config import env_amst_then_smct
 from engine.x_signals import MIN_15M_ABNORMAL_VOLUME, MIN_1H_ABNORMAL_VOLUME
 
 # L-locked frequency (2026-10-25): prefer miss over false positive.
@@ -51,7 +52,7 @@ def _fmt_ratio(ratio: Any) -> str:
 
 def abnormal_volume_weak_enabled() -> bool:
     """TG outbound gate; default off. Shadow/log does not require this."""
-    return os.getenv("SMCT_ABNORMAL_VOLUME_WEAK_ENABLED", "0").strip() == "1"
+    return env_amst_then_smct("ABNORMAL_VOLUME_WEAK_ENABLED", "0").strip() == "1"
 
 
 def evaluate_forming_volume_weak(

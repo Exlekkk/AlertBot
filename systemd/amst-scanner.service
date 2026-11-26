@@ -1,0 +1,16 @@
+[Unit]
+Description=AMST BTCUSDT Scanner Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/amst-alert
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/amst-alert
+ExecStart=/opt/amst-alert/venv/bin/python /opt/amst-alert/scripts/run_scanner.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

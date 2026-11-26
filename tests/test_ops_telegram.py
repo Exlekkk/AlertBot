@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -398,14 +399,26 @@ class ResolveGitHeadTests(unittest.TestCase):
             with patch("services.ops_status._repo_root_candidates", return_value=[tmp]):
                 self.assertEqual(resolve_git_head(cwd=tmp), "n/a")
 
-    def test_prefers_smct_repo_root_over_bad_cwd(self):
+    def test_prefers_amst_repo_root_over_bad_cwd(self):
         from services import ops_status
 
         repo_root = str(Path(__file__).resolve().parents[1])
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.object(ops_status, "SMCT_REPO_ROOT", repo_root), \
-                 patch.dict("os.environ", {"SMCT_REPO_ROOT": repo_root}, clear=False):
+            with patch.object(ops_status, "AMST_REPO_ROOT", repo_root), \
+                 patch.dict("os.environ", {"AMST_REPO_ROOT": repo_root}, clear=False):
                 # Process cwd is irrelevant; env/install root should still resolve.
+                sha = ops_status.resolve_git_head(cwd=tmp)
+        self.assertNotEqual(sha, "n/a")
+        self.assertTrue(len(sha) >= 7)
+
+    def test_falls_back_to_legacy_smct_repo_root_over_bad_cwd(self):
+        from services import ops_status
+
+        repo_root = str(Path(__file__).resolve().parents[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(ops_status, "AMST_REPO_ROOT", ""), \
+                 patch.dict("os.environ", {"SMCT_REPO_ROOT": repo_root}, clear=False):
+                os.environ.pop("AMST_REPO_ROOT", None)
                 sha = ops_status.resolve_git_head(cwd=tmp)
         self.assertNotEqual(sha, "n/a")
         self.assertTrue(len(sha) >= 7)
@@ -425,7 +438,7 @@ class OpsPollLockTests(unittest.TestCase):
         from services.ops_poll_lock import release_ops_poll_lock, try_acquire_ops_poll_lock
 
         with tempfile.TemporaryDirectory() as tmp:
-            lock_path = str(Path(tmp) / "smct-tg-ops-poll.lock")
+            lock_path = str(Path(tmp) / "amst-tg-ops-poll.lock")
             first = try_acquire_ops_poll_lock(lock_path)
             self.assertIsNotNone(first)
             second = try_acquire_ops_poll_lock(lock_path)

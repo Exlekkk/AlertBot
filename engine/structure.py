@@ -359,6 +359,224 @@ def detect_near_pivot_level(
     return None
 
 
+def label_dow_swings(
+    klines: list[dict],
+    *,
+    left: int = 2,
+    right: int = 2,
+    lookback: int = 120,
+) -> dict[str, Any]:
+    """Label 1H fractal swings as HH/HL/LH/LL (Dow).
+
+    Pivots reuse ``find_pivots`` (default left=right=2). First swing of each
+    side is tagged ``H`` / ``L`` (seed); subsequent highs are HH or LH, lows
+    HL or LL.
+    """
+
+    empty: dict[str, Any] = {
+        "swing_highs": [],
+        "swing_lows": [],
+        "trend": "none",
+        "last_hh": None,
+        "last_hl": None,
+        "last_lh": None,
+        "last_ll": None,
+    }
+    if len(klines) < left + right + 3:
+        return empty
+
+    pivot_highs, pivot_lows = find_pivots(klines, left=left, right=right)
+    window_start = max(0, len(klines) - lookback)
+    highs = [i for i in pivot_highs if i >= window_start]
+    lows = [i for i in pivot_lows if i >= window_start]
+
+    swing_highs: list[dict[str, Any]] = []
+    prev_high: float | None = None
+    for idx in highs:
+        price = float(klines[idx]["high"])
+        if prev_high is None:
+            label = "H"
+        else:
+            label = "HH" if price > prev_high else "LH"
+        swing_highs.append({"index": idx, "price": round(price, 2), "label": label})
+        prev_high = price
+
+    swing_lows: list[dict[str, Any]] = []
+    prev_low: float | None = None
+    for idx in lows:
+        price = float(klines[idx]["low"])
+        if prev_low is None:
+            label = "L"
+        else:
+            label = "HL" if price > prev_low else "LL"
+        swing_lows.append({"index": idx, "price": round(price, 2), "label": label})
+        prev_low = price
+
+    def _last(label: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for row in reversed(rows):
+            if row["label"] == label:
+                return row
+        return None
+
+    last_high = swing_highs[-1] if swing_highs else None
+    last_low = swing_lows[-1] if swing_lows else None
+    trend = "none"
+    if last_high and last_low:
+        if last_high["label"] == "HH" and last_low["label"] == "HL":
+            trend = "up"
+        elif last_high["label"] == "LH" and last_low["label"] == "LL":
+            trend = "down"
+
+    return {
+        "swing_highs": swing_highs,
+        "swing_lows": swing_lows,
+        "trend": trend,
+        "last_hh": _last("HH", swing_highs),
+        "last_hl": _last("HL", swing_lows),
+        "last_lh": _last("LH", swing_highs),
+        "last_ll": _last("LL", swing_lows),
+    }
+
+
+def build_dow_structure_context(
+    klines: list[dict],
+    *,
+    left: int = 2,
+    right: int = 2,
+    lookback: int = 120,
+    timeframe: str = "1h",
+    max_break_bars_ago: int = 2,
+) -> dict[str, Any]:
+    """1H Dow structure evidence for trial stack (not a hard gate alone).
+
+    - Trend: HH+HL = up, LH+LL = down.
+    - Turn evidence: 1H close breaks nearest HL → short; breaks nearest LH → long.
+    - Same-way BOS (break prior HH while up / prior LL while down, HL/LH intact)
+      is strengthen-only metadata — caller must not solo-formal on it.
+    """
+
+    base = label_dow_swings(klines, left=left, right=right, lookback=lookback)
+    out: dict[str, Any] = {
+        "approx": True,
+        "timeframe": timeframe,
+        **base,
+        "break_hl": None,
+        "break_lh": None,
+        "bos_same_way": None,
+        "active_short_evidence": False,
+        "active_long_evidence": False,
+        "reason": "insufficient_swings",
+    }
+    if len(klines) < left + right + 5:
+        return out
+
+    tol = _price_tolerance(klines)
+    last_index = len(klines) - 1
+    close = float(klines[last_index]["close"])
+
+    # L lock: break nearest HL → short; break nearest LH → long.
+    # Seed H/L are unlabeled baselines — do not treat as turn evidence.
+    nearest_support = None
+    for row in reversed(base["swing_lows"]):
+        if row["label"] == "HL":
+            nearest_support = row
+            break
+    nearest_resistance = None
+    for row in reversed(base["swing_highs"]):
+        if row["label"] == "LH":
+            nearest_resistance = row
+            break
+
+    if nearest_support is not None:
+        level = float(nearest_support["price"])
+        bars_ago = last_index - int(nearest_support["index"])
+        # Break counted on recent closes after the swing is confirmed.
+        if close < level - tol and bars_ago >= right:
+            # Find which bar first closed below (prefer last bar).
+            trigger = last_index
+            for j in range(last_index, max(int(nearest_support["index"]) + right, last_index - max_break_bars_ago) - 1, -1):
+                if float(klines[j]["close"]) < level - tol:
+                    trigger = j
+                    break
+            if last_index - trigger <= max_break_bars_ago:
+                out["break_hl"] = {
+                    "active": True,
+                    "side": "short",
+                    "level": round(level, 2),
+                    "swing_index": nearest_support["index"],
+                    "swing_label": nearest_support["label"],
+                    "trigger_index": trigger,
+                    "bars_ago": last_index - trigger,
+                    "close": round(close, 2),
+                }
+                out["active_short_evidence"] = True
+
+    if nearest_resistance is not None:
+        level = float(nearest_resistance["price"])
+        bars_ago = last_index - int(nearest_resistance["index"])
+        if close > level + tol and bars_ago >= right:
+            trigger = last_index
+            for j in range(last_index, max(int(nearest_resistance["index"]) + right, last_index - max_break_bars_ago) - 1, -1):
+                if float(klines[j]["close"]) > level + tol:
+                    trigger = j
+                    break
+            if last_index - trigger <= max_break_bars_ago:
+                out["break_lh"] = {
+                    "active": True,
+                    "side": "long",
+                    "level": round(level, 2),
+                    "swing_index": nearest_resistance["index"],
+                    "swing_label": nearest_resistance["label"],
+                    "trigger_index": trigger,
+                    "bars_ago": last_index - trigger,
+                    "close": round(close, 2),
+                }
+                out["active_long_evidence"] = True
+
+    # Same-way BOS: structure intact (no opposing break), break prior extreme.
+    trend = base["trend"]
+    if trend == "up" and not out["active_short_evidence"] and base["last_hh"] is not None:
+        hh = base["last_hh"]
+        level = float(hh["price"])
+        if close > level + tol and last_index - int(hh["index"]) >= right:
+            out["bos_same_way"] = {
+                "active": True,
+                "direction": "up",
+                "kind": "bos",
+                "level": round(level, 2),
+                "swing_index": hh["index"],
+                "bars_ago": 0,
+                "strengthen_only": True,
+            }
+    elif trend == "down" and not out["active_long_evidence"] and base["last_ll"] is not None:
+        ll = base["last_ll"]
+        level = float(ll["price"])
+        if close < level - tol and last_index - int(ll["index"]) >= right:
+            out["bos_same_way"] = {
+                "active": True,
+                "direction": "down",
+                "kind": "bos",
+                "level": round(level, 2),
+                "swing_index": ll["index"],
+                "bars_ago": 0,
+                "strengthen_only": True,
+            }
+
+    if out["active_short_evidence"]:
+        out["reason"] = "dow_break_hl"
+    elif out["active_long_evidence"]:
+        out["reason"] = "dow_break_lh"
+    elif out["bos_same_way"]:
+        out["reason"] = "dow_bos_same_way"
+    elif trend == "up":
+        out["reason"] = "dow_trend_up_hh_hl"
+    elif trend == "down":
+        out["reason"] = "dow_trend_down_lh_ll"
+    else:
+        out["reason"] = "dow_no_clear_trend"
+    return out
+
+
 def detect_small_m_top(
     klines: list[dict],
     *,
@@ -458,36 +676,38 @@ def detect_small_m_top(
     return best
 
 
-def build_structure_15m_context(
-    klines_15m: list[dict],
+def build_structure_supply_m_top_context(
+    klines: list[dict],
     *,
+    timeframe: str,
+    reason_tag: str,
     supply_zones: list[tuple[float, float]] | None = None,
+    lookback: int = 48,
+    max_bars_ago: int = 6,
 ) -> dict[str, Any]:
-    """Bundle 15m M-top / supply-reject cues for formal trial evidence."""
+    """Bundle TF-local M-top / supply-reject cues (own evidence; never reuse another TF)."""
 
     empty: dict[str, Any] = {
         "approx": True,
-        "timeframe": "15m",
+        "timeframe": timeframe,
         "small_m_top": None,
         "supply_reject": False,
         "reject_high": None,
         "active": False,
         "reason": "insufficient_history",
     }
-    if len(klines_15m) < 12:
+    if len(klines) < 12:
         return empty
-    latest = klines_15m[-1]
+    latest = klines[-1]
     high = float(latest["high"])
     close = float(latest["close"])
-    open_ = float(latest["open"])
-    low = float(latest["low"])
-    atr = _atr_value(klines_15m)
+    atr = _atr_value(klines)
     pad = max(atr * 0.2, abs(close) * 0.0006)
 
     chosen_supply = None
     supply_reject = False
     reject_high = None
-    scan = klines_15m[-6:]
+    scan = klines[-6:]
     for zone in supply_zones or []:
         zl, zh = min(zone), max(zone)
         for bar in scan:
@@ -517,23 +737,89 @@ def build_structure_15m_context(
     high = reject_high if reject_high is not None else high
 
     m_top = detect_small_m_top(
-        klines_15m,
+        klines,
+        lookback=lookback,
         supply_zone=chosen_supply,
-        max_bars_ago=6,
+        max_bars_ago=max_bars_ago,
     )
     # If supply zone known but M detector missed equal highs, retry with zone tap.
     if m_top is None and chosen_supply is not None:
-        m_top = detect_small_m_top(klines_15m, supply_zone=chosen_supply, atr_mult=0.55, max_bars_ago=6)
+        m_top = detect_small_m_top(
+            klines,
+            lookback=lookback,
+            supply_zone=chosen_supply,
+            atr_mult=0.55,
+            max_bars_ago=max_bars_ago,
+        )
 
     active = bool(m_top and m_top.get("active") and supply_reject)
+    if active:
+        reason = reason_tag
+    elif supply_reject:
+        reason = "supply_reject_only"
+    elif m_top:
+        reason = "m_top_only"
+    else:
+        reason = "no_pattern"
     return {
         "approx": True,
-        "timeframe": "15m",
+        "timeframe": timeframe,
         "small_m_top": m_top,
         "supply_reject": supply_reject,
         "reject_high": round(float(reject_high if reject_high is not None else high), 2) if supply_reject else None,
         "supply_zone": [round(chosen_supply[0], 2), round(chosen_supply[1], 2)] if chosen_supply else None,
         "active": active,
-        "reason": "m15_supply_reject_m_top" if active else ("supply_reject_only" if supply_reject else ("m_top_only" if m_top else "no_pattern")),
+        "reason": reason,
     }
+
+
+def build_structure_15m_context(
+    klines_15m: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Bundle 15m M-top / supply-reject cues for formal trial evidence."""
+
+    return build_structure_supply_m_top_context(
+        klines_15m,
+        timeframe="15m",
+        reason_tag="m15_supply_reject_m_top",
+        supply_zones=supply_zones,
+        lookback=48,
+        max_bars_ago=6,
+    )
+
+
+def build_structure_1h_context(
+    klines_1h: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Independent 1H M-top / supply-reject evidence (not a 15m copy)."""
+
+    return build_structure_supply_m_top_context(
+        klines_1h,
+        timeframe="1h",
+        reason_tag="h1_supply_reject_m_top",
+        supply_zones=supply_zones,
+        lookback=36,
+        max_bars_ago=4,
+    )
+
+
+def build_structure_4h_context(
+    klines_4h: list[dict],
+    *,
+    supply_zones: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
+    """Independent 4H M-top / supply-reject evidence (not a 15m/1h copy)."""
+
+    return build_structure_supply_m_top_context(
+        klines_4h,
+        timeframe="4h",
+        reason_tag="h4_supply_reject_m_top",
+        supply_zones=supply_zones,
+        lookback=30,
+        max_bars_ago=3,
+    )
 
