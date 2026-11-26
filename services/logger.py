@@ -16,7 +16,7 @@ def get_logger(name: str, log_file: str) -> logging.Logger:
         handler: logging.Handler = logging.FileHandler(log_file)
     except OSError:
         # Local tests or restricted deployments may not be able to create
-        # /opt/smct-alert/logs.  Logging must not block FastAPI/scanner import.
+        # /opt/amst-alert/logs.  Logging must not block FastAPI/scanner import.
         handler = logging.StreamHandler(sys.stderr)
 
     handler.setFormatter(formatter)

@@ -37,7 +37,7 @@ from services.logger import get_logger
 from services.telegram import TelegramSendError, send_telegram_message
 
 
-class SMCTScanner:
+class AMSTScanner:
     def __init__(self, symbol: str = BINANCE_SYMBOL):
         self.symbol = symbol
         self.market_data = BinanceMarketDataClient()
@@ -86,7 +86,7 @@ class SMCTScanner:
             "ok": True,
             "status": "ok",
             "symbol": self.symbol,
-            "scanner": "SMCTScanner",
+            "scanner": "AMSTScanner",
             "engine": "btc_smc_ict_chart_v1",
         }
 

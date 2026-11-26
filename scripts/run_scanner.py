@@ -10,18 +10,18 @@ if str(ROOT) not in sys.path:
 
 
 from config import BINANCE_SYMBOL, SCAN_INTERVAL_SECONDS
-from engine.scanner import SMCTScanner
+from engine.scanner import AMSTScanner
 
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-logger = logging.getLogger("smct_scanner")
+logger = logging.getLogger("amst_scanner")
 
 
 def main():
-    scanner = SMCTScanner(symbol=BINANCE_SYMBOL)
+    scanner = AMSTScanner(symbol=BINANCE_SYMBOL)
     logger.info(
         "scanner_loop_started symbol=%s interval_seconds=%s",
         BINANCE_SYMBOL,

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import HEARTBEAT_STALE_AFTER_SECONDS, SMCT_RUNTIME_STATE_FILE
+from config import HEARTBEAT_STALE_AFTER_SECONDS, AMST_RUNTIME_STATE_FILE
 
 
 logger = logging.getLogger("scanner")
@@ -14,7 +14,7 @@ logger = logging.getLogger("scanner")
 
 class RuntimeStateStore:
     def __init__(self, state_file: str | None = None):
-        self.state_file = Path(state_file or SMCT_RUNTIME_STATE_FILE)
+        self.state_file = Path(state_file or AMST_RUNTIME_STATE_FILE)
         self.state: dict[str, Any] = {
             "last_scan_at": 0.0,
             "last_scan_ok": False,

@@ -14,10 +14,11 @@ from typing import Any
 
 from config import (
     FREEZE_MODE_SEND_X_ONLY,
-    SMCT_REPO_ROOT,
+    AMST_REPO_ROOT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     TELEGRAM_ERROR_ALERT_COOLDOWN_SECONDS,
+    env_amst_then_smct,
 )
 from engine.runtime_state import RuntimeStateStore
 from engine.trend_messages import build_format_test_message, build_format_test_message_15m
@@ -53,11 +54,11 @@ def extract_bot_command_arg(text: str | None) -> str | None:
 
 
 def _repo_root_candidates(explicit_cwd: str | None = None) -> list[str]:
-    """Ordered git cwd candidates: explicit, SMCT_REPO_ROOT, install root, cwd."""
+    """Ordered git cwd candidates: explicit, AMST_REPO_ROOT, install root, cwd."""
     roots: list[str] = []
     if explicit_cwd:
         roots.append(explicit_cwd)
-    env_root = (SMCT_REPO_ROOT or os.getenv("SMCT_REPO_ROOT", "") or "").strip()
+    env_root = (AMST_REPO_ROOT or env_amst_then_smct("REPO_ROOT", "") or "").strip()
     if env_root:
         roots.append(env_root)
     # services/ops_status.py -> repo install root
@@ -77,7 +78,7 @@ def _repo_root_candidates(explicit_cwd: str | None = None) -> list[str]:
 
 
 def resolve_git_head(cwd: str | None = None) -> str:
-    """Return short HEAD sha; prefer SMCT_REPO_ROOT / install root over fragile cwd."""
+    """Return short HEAD sha; prefer AMST_REPO_ROOT / install root over fragile cwd."""
     for root in _repo_root_candidates(cwd):
         try:
             out = subprocess.check_output(

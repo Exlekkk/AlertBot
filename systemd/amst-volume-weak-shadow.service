@@ -1,0 +1,15 @@
+[Unit]
+Description=AMST BTCUSDT unclosed volume weak shadow (log-only)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/amst-alert
+ExecStart=/opt/amst-alert/venv/bin/python /opt/amst-alert/scripts/run_volume_weak_shadow.py --shadow --log /opt/amst-alert/logs/volume_weak_shadow.log
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
